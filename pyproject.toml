@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meetbot"
+version = "1.0.0"
+description = "Google Meet transcription and meeting-intelligence bot"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "playwright>=1.45,<2.0",
+    "websockets>=12.0,<16.0",
+    "python-dotenv>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.40"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+meetbot = "meetbot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["meetbot*"]
+
+[tool.setuptools.package-data]
+# inject.js must ship with the package - the join flow reads it at runtime.
+"meetbot.capture" = ["*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning:meetbot.*"]
