@@ -8,6 +8,11 @@ python-dotenv>=1.0,<2.0      # .env loading
 anthropic>=0.40              # LLM_PROVIDER=anthropic (default)
 openai>=1.40                 # LLM_PROVIDER=openai
 
+# Web UI (`python -m meetbot serve`). Optional: the CLI works without them,
+# and `serve` prints an install hint if they are missing.
+fastapi>=0.110              # HTTP API for sending the bot to meetings
+uvicorn>=0.27               # ASGI server the UI runs on
+
 # Tests
 pytest>=8.0
 pytest-asyncio>=0.23

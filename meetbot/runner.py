@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from meetbot.analysis.llm import LLMError, build_client
 from meetbot.analysis.summarize import (
@@ -155,11 +155,33 @@ async def _poll_captions(
             logger.debug("Caption poll failed", exc_info=True)
 
 
-async def run_meeting(config: Config) -> MeetingRun:
+async def run_meeting(
+    config: Config,
+    *,
+    install_signal_handlers: bool = True,
+    on_stop: Callable[[Callable[[], None]], None] | None = None,
+    on_output_dir: Callable[[Path], None] | None = None,
+    reconfigure_logging: bool = True,
+) -> MeetingRun:
     """Join the configured meeting and run the full pipeline.
 
     Args:
         config: A validated :class:`~meetbot.config.Config`.
+        install_signal_handlers: Route SIGINT/SIGTERM to stopping this
+            meeting. Correct for the CLI, wrong for a long-lived service:
+            handlers are process-global, so concurrent meetings would clobber
+            each other's and Ctrl+C would stop one arbitrary meeting instead
+            of the server. Services pass ``False`` and use ``on_stop``.
+        on_stop: Called once with a zero-argument callable that stops this
+            meeting. Lets a caller that is not driving the process (a service
+            handling an HTTP "stop" request) cancel this specific run.
+        on_output_dir: Called with this run's artifact directory as soon as
+            it exists, before the browser starts. Lets a service follow the
+            run live by reading the transcript store, which is append-only
+            and flushed per record, without new plumbing through the runner.
+        reconfigure_logging: Point the root logger at this run's log file.
+            A service handles many runs in one process, so it leaves the
+            process-wide logging configuration alone.
 
     Returns:
         A :class:`MeetingRun` describing what was produced. Recoverable
@@ -168,7 +190,10 @@ async def run_meeting(config: Config) -> MeetingRun:
         can still report the artifacts that *were* written.
     """
     output_dir = make_output_dir(config)
-    configure_logging(config.log_level, log_file=output_dir / "meetbot.log")
+    if on_output_dir is not None:
+        on_output_dir(output_dir)
+    if reconfigure_logging:
+        configure_logging(config.log_level, log_file=output_dir / "meetbot.log")
     logger.info("Run artifacts will be written to %s", output_dir)
     logger.debug("Effective configuration: %s", config.redacted())
 
@@ -207,7 +232,10 @@ async def run_meeting(config: Config) -> MeetingRun:
                 "Another process may be using the port - set BRIDGE_PORT."
             ) from exc
 
-        stop_handlers = _install_signal_handlers(session.request_stop)
+        if install_signal_handlers:
+            stop_handlers = _install_signal_handlers(session.request_stop)
+        if on_stop is not None:
+            on_stop(session.request_stop)
 
         await session.start()
         try:
