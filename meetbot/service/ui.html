@@ -132,12 +132,19 @@
     <input type="text" id="url" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off">
     <div class="opts">
       <label class="opt"><input type="checkbox" id="opt-names"> Real speaker names</label>
-      <label class="opt"><input type="checkbox" id="opt-overlay"> Show captions in the call</label>
+      <label class="opt" title="Shares the transcript as a screen-share tile. There is no host-only screen-share - everyone in the call sees it.">
+        <input type="checkbox" id="opt-overlay"> Show captions <strong>to everyone</strong> in the call
+      </label>
       <label class="opt"><input type="checkbox" id="opt-anon"> Anonymise before AI summary</label>
     </div>
     <div class="row">
       <button id="send">Send bot</button>
       <span class="meta" id="hint"></span>
+    </div>
+    <div class="meta" style="margin-top:10px">
+      The transcript below is private to this page. Ticking
+      <em>show captions to everyone</em> presents it as a screen-share, which
+      every participant sees.
     </div>
     <div class="err" id="error" hidden></div>
   </div>

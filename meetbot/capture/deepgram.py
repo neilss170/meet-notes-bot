@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 
 DEEPGRAM_WS_URL: Final[str] = "wss://api.deepgram.com/v1/listen"
 
+#: Silence that ends an utterance. Long enough to survive an ordinary pause
+#: for breath - at the old 300 ms, sentences were being cut in half, which
+#: cost both readability and the context the model uses to pick words and
+#: punctuation.
+DEFAULT_ENDPOINTING_MS = 800
+
+#: Hard ceiling on how long one utterance may run without a pause, so
+#: continuous speech still gets broken into readable turns.
+DEFAULT_UTTERANCE_END_MS = 1000
+
 #: Deepgram closes an idle socket after ~12 s; ping well inside that.
 KEEPALIVE_INTERVAL_S: Final[float] = 8.0
 
@@ -63,11 +73,19 @@ def build_stream_url(
     diarize: bool,
     encoding: str = "linear16",
     channels: int = 1,
+    endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
+    utterance_end_ms: int = DEFAULT_UTTERANCE_END_MS,
 ) -> str:
     """Build the Deepgram streaming URL with our option set.
 
     ``interim_results`` is off deliberately: we persist finalised utterances
     only, so partial hypotheses would just be rewritten noise in the JSONL.
+
+    ``endpointing_ms`` is the silence that ends an utterance, and it is a
+    real accuracy control rather than only a latency one. It was 300 ms,
+    which is shorter than an ordinary pause for breath: speech was cut into
+    fragments mid-sentence, which both reads badly and denies the model the
+    surrounding context it uses to choose words and place punctuation.
     """
     params = {
         "encoding": encoding,
@@ -76,12 +94,16 @@ def build_stream_url(
         "model": model,
         "language": language,
         "punctuate": "true",
+        # Sentence casing, punctuation, and formatting of numbers, dates and
+        # times. Wants whole phrases to work on, hence the endpointing above.
         "smart_format": "true",
         "interim_results": "false",
         "diarize": "true" if diarize else "false",
-        # Emit a result after ~300 ms of silence, so the live transcript keeps
-        # up with the conversation instead of arriving in large blocks.
-        "endpointing": "300",
+        "endpointing": str(endpointing_ms),
+        # Deepgram closes an utterance after this much silence even when
+        # endpointing has not fired, which keeps a long unbroken stretch of
+        # speech from becoming one enormous block.
+        "utterance_end_ms": str(utterance_end_ms),
     }
     return f"{DEEPGRAM_WS_URL}?{urlencode(params)}"
 
@@ -193,6 +215,8 @@ class DeepgramLiveClient:
         channel_label: str = "mixed",
         max_queued_frames: int = 600,
         on_connect: Callable[[], None] | None = None,
+        endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
+        utterance_end_ms: int = DEFAULT_UTTERANCE_END_MS,
     ) -> None:
         """Create a client. Nothing connects until :meth:`run` is awaited.
 
@@ -212,6 +236,12 @@ class DeepgramLiveClient:
             on_connect: Called each time a Deepgram stream is (re)established.
                 Segment timestamps are relative to the current stream, so the
                 caller needs this to rebase them onto the meeting timeline.
+            endpointing_ms: Silence that ends an utterance. Raising it gives
+                the model more context per utterance, which improves both
+                wording and punctuation; lowering it makes captions appear
+                sooner but fragments sentences.
+            utterance_end_ms: Ceiling on one utterance's length without a
+                pause, so continuous speech is still broken into turns.
         """
         self._api_key = api_key
         self._on_segment = on_segment
@@ -221,6 +251,8 @@ class DeepgramLiveClient:
             language=language,
             sample_rate=sample_rate,
             diarize=diarize,
+            endpointing_ms=endpointing_ms,
+            utterance_end_ms=utterance_end_ms,
         )
         self._default_speaker = default_speaker
         self._channel_label = channel_label
