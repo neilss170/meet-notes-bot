@@ -247,6 +247,57 @@ class CaptionWatcher:
         return self.timeline.resolve(start, end)
 
 
+@dataclass
+class SpeakerRegistry:
+    """Learns which real name belongs to each diarization id.
+
+    Caption attribution works per utterance: it needs a caption whose time
+    window overlaps the speech. Plenty of utterances have no such overlap -
+    a short reply between polls, speech while the panel was scrolling - and
+    those fall back to "Speaker 0".
+
+    Deepgram's diarization ids are stable within a stream though, so the
+    problem only has to be solved once per person. When captions do name an
+    utterance, the id that produced it can be remembered, and every other
+    utterance carrying that id - before and after - takes the same name. One
+    confident match names the whole meeting.
+
+    Evidence is counted rather than taken on faith. Diarization drifts and
+    captions can land on the wrong side of a boundary, and a wrong name
+    applied to every one of a speaker's utterances is far worse than the
+    generic label it replaced. A name has to win a majority and clear
+    ``min_votes`` before it is used.
+    """
+
+    min_votes: int = 2
+    _votes: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def learn(self, diarization_id: str, name: str) -> None:
+        """Record one piece of evidence that ``diarization_id`` is ``name``."""
+        clean = normalise_name(name)
+        if not clean or not diarization_id:
+            return
+        tally = self._votes.setdefault(diarization_id, {})
+        tally[clean] = tally.get(clean, 0) + 1
+
+    def name_for(self, diarization_id: str) -> str | None:
+        """The name for ``diarization_id``, or ``None`` if not yet confident."""
+        tally = self._votes.get(diarization_id)
+        if not tally:
+            return None
+        name, votes = max(tally.items(), key=lambda item: item[1])
+        return name if votes >= self.min_votes else None
+
+    def mapping(self) -> dict[str, str]:
+        """Every confident id -> name pair, for relabelling a transcript."""
+        resolved = {}
+        for diarization_id in self._votes:
+            name = self.name_for(diarization_id)
+            if name is not None:
+                resolved[diarization_id] = name
+        return resolved
+
+
 def anonymise(name: str, mapping: dict[str, str]) -> str:
     """Map a real name to a stable pseudonym, extending ``mapping`` in place.
 
@@ -270,6 +321,7 @@ __all__ = [
     "MIN_OVERLAP_S",
     "NOMINAL_WIDTH_S",
     "CaptionWatcher",
+    "SpeakerRegistry",
     "SpeakerTimeline",
     "anonymise",
     "normalise_name",

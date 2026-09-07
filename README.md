@@ -371,8 +371,24 @@ text *changed* between polls belongs to whoever is speaking now, while an
 unchanged entry is just history still on screen. Without that distinction a
 speaker who finished ten seconds ago would keep stealing the current utterance.
 
-When captions are unavailable, or nothing overlaps an utterance's window, the
-label falls back to `Speaker 0`. **A generic label is the correct answer when
+One match names the speaker's whole meeting. Deepgram's diarization ids are
+stable within a stream, so when captions do name an utterance, the id that
+produced it is remembered and every other utterance carrying that id - before
+and after - takes the same name. Utterances with no caption overlap of their
+own (a short reply, speech between polls) are named anyway.
+
+A name has to win a majority and be seen at least twice before it is trusted:
+diarization drifts and captions can land on the wrong side of a boundary, and
+a wrong name on *every* one of a speaker's utterances is far worse than the
+generic label it replaced.
+
+The transcript log is append-only for crash durability, so it is never
+rewritten. The mapping is recorded as an event and applied when the transcript
+is read back, which also means `python -m meetbot analyze` on an old
+transcript sees the names.
+
+When captions are unavailable, or a speaker is never identified, the label
+falls back to `Speaker 0`. **A generic label is the correct answer when
 we do not know** — a wrong name is worse than no name, so attribution declines
 rather than guesses.
 

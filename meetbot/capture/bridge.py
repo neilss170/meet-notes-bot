@@ -28,6 +28,7 @@ from meetbot.capture.deepgram import (
     DeepgramLiveClient,
     TranscriptSegment,
 )
+from meetbot.captions import SpeakerRegistry
 from meetbot.config import Config
 from meetbot.transcript.store import TranscriptStore, Utterance
 
@@ -125,6 +126,10 @@ class AudioBridge:
         #: ``None`` leaves whatever label diarization produced, so a missing
         #: or unmatched caption degrades to "Speaker 0" instead of guessing.
         self.speaker_resolver: Callable[[float, float], str | None] | None = None
+        #: Learns diarization-id -> real-name, so one caption match names
+        #: every utterance from that speaker rather than only the one whose
+        #: timing happened to line up.
+        self.speaker_registry = SpeakerRegistry()
 
     def meeting_elapsed(self) -> float:
         """Seconds since capture started - the clock ``Utterance.start`` uses.
@@ -452,6 +457,11 @@ class AudioBridge:
         # Meet's own captions carry the speaker names that the audio path
         # cannot see. When the timeline can name whoever was talking across
         # this window, that real name beats a diarization index.
+        #
+        # A match also teaches the registry which diarization id this person
+        # is, so utterances with no caption overlap of their own - a short
+        # reply, speech between polls - still get named.
+        diarization_id = speaker
         if self.speaker_resolver is not None:
             try:
                 resolved = self.speaker_resolver(start, end)
@@ -459,7 +469,15 @@ class AudioBridge:
                 logger.exception("Speaker resolver failed; keeping %r", speaker)
             else:
                 if resolved:
+                    self.speaker_registry.learn(diarization_id, resolved)
                     speaker = resolved
+
+        if speaker == diarization_id:
+            # No caption for this utterance; fall back to what this
+            # diarization id has been shown to be elsewhere in the meeting.
+            learned = self.speaker_registry.name_for(diarization_id)
+            if learned:
+                speaker = learned
 
         utterance = Utterance(
             speaker=speaker,

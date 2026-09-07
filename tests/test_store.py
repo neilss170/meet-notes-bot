@@ -9,10 +9,13 @@ import pytest
 
 from meetbot.transcript.store import (
     MeetingMeta,
+    SPEAKER_NAMES_EVENT,
     TranscriptStore,
     Utterance,
+    apply_speaker_names,
     iter_records,
     read_meta,
+    read_speaker_names,
     read_utterances,
     speakers,
 )
@@ -173,3 +176,50 @@ def test_non_ascii_text_survives_roundtrip(tmp_path: Path) -> None:
     loaded = read_utterances(path)
     assert loaded[0].speaker == "Renée"
     assert loaded[0].text == "Café — naïve résumé 🎧"
+
+
+class TestRetroactiveSpeakerNames:
+    """Utterances written before their speaker was identified.
+
+    The log is append-only for crash durability, so it is never rewritten.
+    The mapping is recorded as an event and applied when the transcript is
+    read back.
+    """
+
+    def test_generic_labels_are_replaced(self, tmp_path) -> None:
+        utterances = [
+            Utterance("Speaker 0", "Morning.", 0.0, 1.0),
+            Utterance("Speaker 1", "Hello.", 1.0, 2.0),
+        ]
+        named = apply_speaker_names(
+            utterances, {"Speaker 0": "Neil Sharma", "Speaker 1": "Priya"}
+        )
+        assert [u.speaker for u in named] == ["Neil Sharma", "Priya"]
+
+    def test_names_recorded_at_capture_time_are_left_alone(self) -> None:
+        utterances = [Utterance("Neil Sharma", "Morning.", 0.0, 1.0)]
+        named = apply_speaker_names(utterances, {"Speaker 0": "Someone Else"})
+        assert named[0].speaker == "Neil Sharma"
+
+    def test_an_empty_mapping_changes_nothing(self) -> None:
+        utterances = [Utterance("Speaker 0", "Morning.", 0.0, 1.0)]
+        assert apply_speaker_names(utterances, {}) == utterances
+
+    def test_the_mapping_round_trips_through_the_log(self, tmp_path) -> None:
+        path = tmp_path / "t.jsonl"
+        store = TranscriptStore(path)
+        store.write_meta(MeetingMeta(meet_url="https://meet.google.com/a-b-c", bot_name="bot"))
+        store.append(Utterance("Speaker 0", "Morning.", 0.0, 1.0))
+        store.append_event(SPEAKER_NAMES_EVENT, names={"Speaker 0": "Neil Sharma"})
+        store.close()
+
+        assert read_speaker_names(path) == {"Speaker 0": "Neil Sharma"}
+        named = apply_speaker_names(read_utterances(path), read_speaker_names(path))
+        assert named[0].speaker == "Neil Sharma"
+
+    def test_a_transcript_without_the_event_is_unaffected(self, tmp_path) -> None:
+        path = tmp_path / "t.jsonl"
+        store = TranscriptStore(path)
+        store.append(Utterance("Speaker 0", "Morning.", 0.0, 1.0))
+        store.close()
+        assert read_speaker_names(path) == {}

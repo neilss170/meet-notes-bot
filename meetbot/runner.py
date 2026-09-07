@@ -35,9 +35,12 @@ from meetbot.join import EndReason, JoinError, MeetSession, MeetingState
 from meetbot.logging_setup import configure_logging
 from meetbot.transcript.format import format_timestamp, render_markdown
 from meetbot.transcript.store import (
+    SPEAKER_NAMES_EVENT,
     MeetingMeta,
     TranscriptStore,
     Utterance,
+    apply_speaker_names,
+    read_speaker_names,
     read_utterances,
 )
 
@@ -322,6 +325,16 @@ async def run_meeting(
             await session.close()
         with contextlib.suppress(Exception):
             await bridge.stop()
+        # Recorded before the store closes, so the relabelling survives a
+        # crash and so `analyze` on this transcript later sees it too.
+        learned = bridge.speaker_registry.mapping()
+        if learned:
+            store.append_event(SPEAKER_NAMES_EVENT, names=learned)
+            logger.info(
+                "Identified %d speaker(s) from captions: %s",
+                len(learned),
+                ", ".join(f"{k} = {v}" for k, v in sorted(learned.items())),
+            )
         if bridge.fatal_error is not None:
             run.errors.append(f"Transcription error: {bridge.fatal_error}")
         if not bridge.received_any_audio:
@@ -376,10 +389,22 @@ def _make_health_check(
     return check
 
 
+def _named_utterances(path: Path) -> list[Utterance]:
+    """Read the transcript with learned speaker names already applied.
+
+    An utterance recorded before its speaker was identified still carries a
+    diarization label on disk; the mapping is stored alongside as an event
+    and applied here, so the rendered transcript and the LLM prompt both see
+    real names without the append-only log ever being rewritten.
+    """
+    utterances = read_utterances(path)
+    return apply_speaker_names(utterances, read_speaker_names(path))
+
+
 def _write_transcript_markdown(config: Config, run: MeetingRun) -> None:
     """Render the JSONL transcript to Markdown, tolerating a failure."""
     try:
-        utterances = read_utterances(run.transcript_jsonl)
+        utterances = _named_utterances(run.transcript_jsonl)
     except (OSError, FileNotFoundError) as exc:
         logger.error("Could not read back the transcript: %s", exc)
         run.errors.append(f"Could not read the transcript: {exc}")
@@ -426,7 +451,7 @@ async def _maybe_analyse(config: Config, run: MeetingRun) -> None:
         return
 
     try:
-        utterances = read_utterances(run.transcript_jsonl)
+        utterances = _named_utterances(run.transcript_jsonl)
         captured = max((u.end for u in utterances), default=0.0)
         # The provider SDKs are synchronous; keep the event loop free.
         analysis = await asyncio.to_thread(
