@@ -384,3 +384,64 @@ async def test_meeting_elapsed_shares_the_utterance_clock(store, stub_deepgram) 
     assert bridge.meeting_elapsed() == 0.0  # not started yet
     bridge._started_at = bridge_module.time.monotonic() - 12.0
     assert bridge.meeting_elapsed() == pytest.approx(12.0, abs=0.5)
+
+
+async def test_one_caption_match_names_a_speakers_whole_meeting(
+    store, stub_deepgram
+) -> None:
+    """The point of the registry, end to end.
+
+    Utterance 1 gets a caption match. Utterances 2 and 3 have no caption
+    overlap at all, but carry the same diarization id, so they take the same
+    name instead of falling back to "Speaker 0".
+    """
+    bridge = make_bridge(store)
+    bridge._started_at = bridge_module.time.monotonic() - 30.0
+    bridge._handle_audio_frame(pcm_frame(MIXED_CHANNEL, [1, 2]))
+
+    # Captions resolve only the first two windows; enough to clear min_votes.
+    resolved = {(0.0, 1.0): "Neil Sharma", (1.0, 2.0): "Neil Sharma"}
+    bridge.speaker_resolver = lambda start, end: resolved.get(
+        (round(start - 30.0, 3), round(end - 30.0, 3))
+    )
+
+    for start, end in ((0.0, 1.0), (1.0, 2.0), (5.0, 6.0), (9.0, 10.0)):
+        bridge._record_segment(
+            MIXED_CHANNEL,
+            TranscriptSegment(
+                speaker="Speaker 0", text=f"line {start}", start=start, end=end
+            ),
+        )
+    await bridge.stop()
+    store.close()
+
+    speakers = [u.speaker for u in read_utterances(store.path)]
+    assert speakers == ["Neil Sharma"] * 4, (
+        f"unmatched utterances kept a generic label: {speakers}"
+    )
+    assert bridge.speaker_registry.mapping() == {"Speaker 0": "Neil Sharma"}
+
+
+async def test_an_unlearned_speaker_still_falls_back(store, stub_deepgram) -> None:
+    """Learning one speaker must not put their name on everyone else."""
+    bridge = make_bridge(store)
+    bridge._started_at = bridge_module.time.monotonic() - 30.0
+    bridge._handle_audio_frame(pcm_frame(MIXED_CHANNEL, [1, 2]))
+    bridge.speaker_resolver = lambda start, end: (
+        "Neil Sharma" if start < 32.5 else None
+    )
+
+    for speaker, start, end in (
+        ("Speaker 0", 0.0, 1.0),
+        ("Speaker 0", 1.0, 2.0),
+        ("Speaker 1", 5.0, 6.0),
+    ):
+        bridge._record_segment(
+            MIXED_CHANNEL,
+            TranscriptSegment(speaker=speaker, text="x", start=start, end=end),
+        )
+    await bridge.stop()
+    store.close()
+
+    speakers = [u.speaker for u in read_utterances(store.path)]
+    assert speakers == ["Neil Sharma", "Neil Sharma", "Speaker 1"]

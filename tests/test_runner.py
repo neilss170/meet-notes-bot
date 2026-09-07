@@ -16,6 +16,7 @@ import pytest
 
 from meetbot import runner as runner_module
 from meetbot.analysis.summarize import AnalysisError, MeetingAnalysis
+from meetbot.captions import SpeakerRegistry
 from meetbot.config import Config
 from meetbot.join import EndReason, JoinError, JoinOutcome, MeetingState
 from meetbot.runner import meeting_code, run_meeting
@@ -98,6 +99,7 @@ class FakeBridge:
         self.fatal_error = None
         self.sole_participant_name = None
         self.speaker_resolver = None
+        self.speaker_registry = SpeakerRegistry()
 
     def meeting_elapsed(self) -> float:
         return 0.0

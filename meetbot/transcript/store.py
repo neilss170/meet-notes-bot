@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Literal
@@ -226,6 +226,48 @@ def read_utterances(path: Path) -> list[Utterance]:
         except (TypeError, ValueError) as exc:
             logger.warning("Skipping unreadable utterance in %s: %s", path, exc)
     return utterances
+
+
+#: Event kind carrying a learned diarization-id -> real-name mapping.
+SPEAKER_NAMES_EVENT = "speaker_names"
+
+
+def read_speaker_names(path: Path) -> dict[str, str]:
+    """Learned diarization-id to real-name mappings, latest winning.
+
+    The transcript is append-only, so an utterance written before its
+    speaker was identified still carries the generic label. Rather than
+    rewrite history - which would cost the crash-durability the whole format
+    exists for - the mapping is recorded as an event and applied when the
+    transcript is read.
+    """
+    mapping: dict[str, str] = {}
+    for record in iter_records(path):
+        if record.get("type") != "event" or record.get("kind") != SPEAKER_NAMES_EVENT:
+            continue
+        # append_event nests its keyword arguments under "details".
+        details = record.get("details")
+        names = details.get("names") if isinstance(details, dict) else None
+        if isinstance(names, dict):
+            mapping.update({str(k): str(v) for k, v in names.items() if k and v})
+    return mapping
+
+
+def apply_speaker_names(
+    utterances: list[Utterance], mapping: dict[str, str]
+) -> list[Utterance]:
+    """Relabel utterances still carrying a diarization id.
+
+    Only generic labels are replaced. Real names never collide with the
+    ``"Speaker 0"``-shaped keys, so an utterance named at capture time is
+    left exactly as it was recorded.
+    """
+    if not mapping:
+        return utterances
+    return [
+        replace(u, speaker=mapping[u.speaker]) if u.speaker in mapping else u
+        for u in utterances
+    ]
 
 
 def read_meta(path: Path) -> dict[str, Any] | None:

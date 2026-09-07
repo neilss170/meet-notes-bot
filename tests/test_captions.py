@@ -12,6 +12,7 @@ import pytest
 
 from meetbot.captions import (
     CaptionWatcher,
+    SpeakerRegistry,
     SpeakerTimeline,
     anonymise,
     normalise_name,
@@ -188,3 +189,50 @@ class TestAnonymise:
         mapping: dict[str, str] = {}
         aliases = [anonymise(f"Person {i}", mapping) for i in range(30)]
         assert len(set(aliases)) == 30
+
+
+class TestSpeakerRegistry:
+    """One confident caption match should name a speaker's whole meeting.
+
+    Attribution works per utterance and needs a caption overlapping that
+    speech. Plenty of utterances have none - a short reply, speech between
+    polls - and fall back to "Speaker 0". Diarization ids are stable within
+    a stream, so the problem only has to be solved once per person.
+    """
+
+    def test_a_learned_name_covers_other_utterances(self) -> None:
+        registry = SpeakerRegistry(min_votes=1)
+        registry.learn("Speaker 0", "Neil Sharma")
+        assert registry.name_for("Speaker 0") == "Neil Sharma"
+
+    def test_a_single_match_is_not_trusted_by_default(self) -> None:
+        """A wrong name on every utterance is worse than a generic label."""
+        registry = SpeakerRegistry()
+        registry.learn("Speaker 0", "Neil Sharma")
+        assert registry.name_for("Speaker 0") is None
+        registry.learn("Speaker 0", "Neil Sharma")
+        assert registry.name_for("Speaker 0") == "Neil Sharma"
+
+    def test_a_stray_mismatch_does_not_win(self) -> None:
+        """Captions can land on the wrong side of a speaker boundary."""
+        registry = SpeakerRegistry()
+        for _ in range(4):
+            registry.learn("Speaker 0", "Neil Sharma")
+        registry.learn("Speaker 0", "Priya")
+        assert registry.name_for("Speaker 0") == "Neil Sharma"
+
+    def test_speakers_are_kept_apart(self) -> None:
+        registry = SpeakerRegistry(min_votes=1)
+        registry.learn("Speaker 0", "Neil Sharma")
+        registry.learn("Speaker 1", "Priya")
+        assert registry.mapping() == {"Speaker 0": "Neil Sharma", "Speaker 1": "Priya"}
+
+    def test_unusable_names_are_ignored(self) -> None:
+        registry = SpeakerRegistry(min_votes=1)
+        for junk in ("You", "11:32", "", "   "):
+            registry.learn("Speaker 0", junk)
+        assert registry.name_for("Speaker 0") is None
+
+    def test_an_unknown_id_resolves_to_nothing(self) -> None:
+        assert SpeakerRegistry().name_for("Speaker 9") is None
+        assert SpeakerRegistry().mapping() == {}
