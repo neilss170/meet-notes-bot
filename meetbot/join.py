@@ -70,6 +70,14 @@ _POLL_INTERVAL_S = 5.0
 #: list of candidates and a slow probe multiplies across every fallback.
 _PROBE_TIMEOUT_MS = 1500
 
+#: How long to wait for Meet to actually call getDisplayMedia after the share
+#: controls have been clicked, before giving up and reporting the overlay as
+#: not started.
+_OVERLAY_SHARE_TIMEOUT_S = 6.0
+#: Short first wait: if Meet skips its own source menu the request lands
+#: almost immediately, and we should not click a menu that is not there.
+_OVERLAY_MENU_PROBE_S = 1.0
+
 
 class JoinOutcome(str, Enum):
     """Why :meth:`MeetSession.join` finished the way it did."""
@@ -682,33 +690,83 @@ class MeetSession:
                     "No 'Present now' control found; captions will not be "
                     "visible in the call. Check selectors.PRESENT_NOW_BUTTON."
                 )
-                with contextlib.suppress(PlaywrightError):
-                    labels = await self._page.eval_on_selector_all(
-                        selectors.ALL_LABELED_ELEMENTS[0],
-                        selectors.LABEL_ATTRIBUTE_EXTRACTOR,
-                    )
-                    real_labels = sorted({label for label in labels if label})
-                    logger.warning(
-                        "Every labeled control on the page right now, to fix "
-                        "PRESENT_NOW_BUTTON with real data: %s",
-                        real_labels,
-                    )
+                await self._log_labelled_controls("PRESENT_NOW_BUTTON")
                 return False
             await present_button.click(timeout=3000)
-            # getDisplayMedia is patched to resolve immediately with the
-            # canvas stream, so Meet's real source-picker dialog should
-            # never appear; PRESENT_SOURCE_TAB exists only in case some
-            # Meet variant still shows an intermediate confirmation step.
-            confirm = await first_visible(
-                self._page, selectors.PRESENT_SOURCE_TAB, timeout_ms=1500
-            )
-            if confirm is not None:
-                await confirm.click(timeout=2000)
+
+            # Patching getDisplayMedia suppresses the *browser's* source
+            # picker, but not Meet's own "entire screen / window / tab" menu,
+            # which opens first and still has to be clicked through. If Meet
+            # asked for the stream straight away, skip the menu entirely.
+            if not await self._wait_for_overlay_share(_OVERLAY_MENU_PROBE_S):
+                source = await first_visible(
+                    self._page, selectors.PRESENT_SOURCE_TAB, timeout_ms=2000
+                )
+                if source is not None:
+                    await source.click(timeout=2000)
+
+            # The click sequence is not the success signal - the page hook
+            # recording that Meet actually requested a display stream is.
+            # Without this check a wrong selector reports success and the
+            # captions are silently invisible for the whole meeting.
+            if not await self._wait_for_overlay_share(_OVERLAY_SHARE_TIMEOUT_S):
+                logger.warning(
+                    "Share controls were clicked but Meet never requested a "
+                    "display stream, so captions are NOT visible in the call. "
+                    "Check selectors.PRESENT_SOURCE_TAB."
+                )
+                await self._log_labelled_controls("PRESENT_SOURCE_TAB")
+                return False
+
             logger.info("Caption overlay sharing started")
             return True
         except PlaywrightError as exc:
             logger.warning("Could not start the caption overlay: %s", exc)
             return False
+
+    async def _overlay_is_shared(self) -> bool:
+        """Whether the page hook has handed Meet the caption stream."""
+        if self._page is None or self._page.is_closed():
+            return False
+        try:
+            return bool(
+                await self._page.evaluate(
+                    "() => !!(window.__meetbot && window.__meetbot.overlayShared())"
+                )
+            )
+        except PlaywrightError:
+            return False
+
+    async def _wait_for_overlay_share(self, timeout_s: float) -> bool:
+        """Poll :meth:`_overlay_is_shared` until it is true or time runs out."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if await self._overlay_is_shared():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.2)
+
+    async def _log_labelled_controls(self, selector_name: str) -> None:
+        """Dump every labelled control on the page, to fix a selector with real data.
+
+        Best effort and never raises: this only ever runs on a path that has
+        already failed, and must not turn a warning into a crash.
+        """
+        if self._page is None or self._page.is_closed():
+            return
+        with contextlib.suppress(PlaywrightError):
+            labels = await self._page.eval_on_selector_all(
+                selectors.ALL_LABELED_ELEMENTS[0],
+                selectors.LABEL_ATTRIBUTE_EXTRACTOR,
+            )
+            real_labels = sorted({label for label in labels if label})
+            logger.warning(
+                "Every labeled control on the page right now, to fix %s with "
+                "real data: %s",
+                selector_name,
+                real_labels,
+            )
 
     async def update_caption(self, speaker: str, text: str) -> bool:
         """Push one finalised utterance onto the live-caption canvas.

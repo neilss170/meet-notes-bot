@@ -8,6 +8,7 @@ from meetbot.analysis.llm import (
     LLMError,
     OpenAIClient,
     build_client,
+    probe_llm,
 )
 from meetbot.analysis.summarize import (
     ActionItem,
@@ -31,5 +32,6 @@ __all__ = [
     "build_client",
     "chunk_transcript",
     "parse_analysis_payload",
+    "probe_llm",
     "render_analysis_markdown",
 ]

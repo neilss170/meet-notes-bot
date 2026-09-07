@@ -87,9 +87,17 @@ Verify the install without joining anything:
 python -m meetbot check
 ```
 
-`check` opens a real (brief) Deepgram connection to confirm the key, model and
-language are accepted, so a bad key fails here rather than on a live call.
-Pass `--offline` to skip that and make no network calls.
+`check` makes two real (brief) API calls so credentials fail here rather than
+on a live call:
+
+- **Deepgram** — opens a streaming connection to confirm the key, model and
+  language are accepted.
+- **LLM** — sends one trivial completion to confirm the key, model id and
+  endpoint work. This matters because the summary is generated *after* the
+  meeting ends, so a dead key would otherwise only surface once the call is
+  over and the material is gone.
+
+Pass `--offline` to skip both and make no network calls.
 
 ---
 
@@ -136,12 +144,38 @@ python -m meetbot check
 |---|---|
 | `--no-headless` | **The** debugging tool. Watch the join flow and inspect the DOM when selectors break. |
 | `--per-participant` | One Deepgram stream per participant instead of diarizing a mixed stream — much better speaker separation, one connection per person. |
+| `--live-captions-overlay` | Show the running transcript **inside the call**, as a screen-share tile everyone can see. See below. |
 | `--no-analysis` | Transcript only; no LLM key needed. |
 | `--llm-provider openai` | Switch the analysis to GPT. |
 | `--admission-timeout 600` | Wait longer in the lobby. |
 | `--log-level DEBUG` | Verbose console output. It is a **global** flag: it goes before the subcommand, not after. |
 
 Everything is also settable via `.env` — see `.env.example` for the full list.
+
+---
+
+### Live captions in the call
+
+`--live-captions-overlay` makes the transcript visible to every participant,
+without ever turning the bot's camera on:
+
+1. The hook paints recent utterances onto an offscreen 1280×720 canvas.
+2. `navigator.mediaDevices.getDisplayMedia` is patched to return that canvas
+   as a video stream, so the browser's own screen-picker never appears.
+3. The bot clicks Meet's share control once, and Meet presents the canvas as
+   an ordinary screen-share tile.
+
+Two details are load-bearing:
+
+- **The canvas is repainted on a timer, not only when someone speaks.** A
+  canvas capture stream emits a frame only when the canvas is actually
+  painted — it does not resample a static one. Painting only on new speech
+  made the stream stall at a single frame, so the shared tile stayed black.
+  `tests/test_overlay_browser.py` covers this against a real Chromium.
+- **Success is measured by the page hook recording Meet's `getDisplayMedia`
+  call**, not by a click appearing to work. A wrong selector is reported as an
+  error, with every real label on the page logged, rather than silently
+  leaving the captions invisible for the whole meeting.
 
 ---
 
