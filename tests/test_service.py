@@ -327,3 +327,36 @@ class TestPastRuns:
     def test_a_missing_output_directory_is_not_an_error(self, service_config) -> None:
         manager = JobManager(service_config)
         assert load_past_runs(manager, service_config.output_dir / "nope") == 0
+
+
+class TestStopFeedback:
+    """Stopping is not instant, so the UI must not look dead while it works.
+
+    Measured on a live call: ~11s from the stop request to analysis.md being
+    written - the bot has to notice, leave, flush transcription and summarise.
+    """
+
+    def test_stop_marks_the_job_immediately(self, service_config, monkeypatch) -> None:
+        """The status flips on the request, not when the run finishes."""
+        started, _ = _stub_runner(monkeypatch, block=True)
+
+        async def scenario() -> None:
+            manager = JobManager(service_config)
+            job = manager.start(MEET_URL)
+            await asyncio.wait_for(started.wait(), timeout=2)
+            await manager.stop(job.id)
+            # Observable straight away, before the run has unwound.
+            assert job.status is JobStatus.STOPPING
+            assert not job.status.is_terminal
+            await asyncio.wait_for(job._task, timeout=3)
+
+        asyncio.run(scenario())
+
+    def test_the_ui_acknowledges_the_click_before_the_next_poll(self) -> None:
+        """The button disables itself rather than waiting 2s to re-render."""
+        from meetbot.service.app import UI_PATH
+
+        ui = UI_PATH.read_text(encoding="utf-8")
+        assert "const stopping = new Set()" in ui
+        assert "button.disabled = true" in ui
+        assert "stopping.delete(job.id)" in ui, "stopped jobs must clear the flag"
