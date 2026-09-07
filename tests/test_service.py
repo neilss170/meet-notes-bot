@@ -360,3 +360,48 @@ class TestStopFeedback:
         assert "const stopping = new Set()" in ui
         assert "button.disabled = true" in ui
         assert "stopping.delete(job.id)" in ui, "stopped jobs must clear the flag"
+
+
+class TestUiRendering:
+    """Bugs reported from real use of the UI, kept fixed.
+
+    All three shared one root cause: the meetings list was rebuilt with
+    innerHTML on every 2-second poll.
+    """
+
+    @staticmethod
+    def _ui() -> str:
+        from meetbot.service.app import UI_PATH
+
+        return UI_PATH.read_text(encoding="utf-8")
+
+    def test_the_list_is_not_rebuilt_when_nothing_changed(self) -> None:
+        """Rebuilding on a timer threw away the reader's scroll position."""
+        ui = self._ui()
+        assert "lastSignature" in ui
+        assert "signature === lastSignature" in ui
+
+    def test_scroll_position_is_restored_across_a_rebuild(self) -> None:
+        ui = self._ui()
+        assert "window.scrollY" in ui
+        assert "window.scrollTo" in ui
+        assert "scrollTop" in ui
+
+    def test_the_open_artifact_is_held_as_state_not_refetched(self) -> None:
+        """Re-fetching on each render raced the poll loop.
+
+        A slower earlier fetch could land after a newer one and paint the
+        previous document, which is why Transcript and AI notes appeared to
+        show the same content.
+        """
+        ui = self._ui()
+        assert "let open = null" in ui
+        assert "open.jobId === jobId && open.name === name" in ui
+
+    def test_artifacts_render_as_structure_rather_than_preformatted_text(
+        self,
+    ) -> None:
+        ui = self._ui()
+        assert "function renderMarkdown" in ui
+        for token in ("md-h", "md-list", "md-task", "md-turn"):
+            assert token in ui, token

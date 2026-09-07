@@ -79,6 +79,41 @@
     padding: 13px; overflow-x: auto; font-size: 13px; white-space: pre-wrap;
     max-height: 420px; overflow-y: auto; margin: 11px 0 0;
   }
+  button.ghost.on { border-color: var(--accent); color: var(--accent); }
+  /* Rendered artifact: structured, not a monospace wall. */
+  .doc {
+    margin-top: 12px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--code-bg); overflow: hidden;
+  }
+  .doc-head {
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted);
+    padding: 9px 14px; border-bottom: 1px solid var(--line);
+  }
+  /* The scroll container. Its scrollTop is restored across re-renders. */
+  .doc-body { padding: 4px 16px 14px; max-height: 460px; overflow-y: auto; }
+  .md-h { font-size: 14px; margin: 15px 0 7px; letter-spacing: -0.01em; }
+  .md-h:first-child { margin-top: 10px; }
+  .md-p { margin: 7px 0; font-size: 14px; line-height: 1.6; }
+  .md-list { margin: 7px 0; padding-left: 20px; }
+  .md-list li { margin: 5px 0; font-size: 14px; line-height: 1.55; }
+  .md-task { list-style: none; margin-left: -20px; display: flex; gap: 9px; align-items: flex-start; }
+  .md-task .box {
+    flex: 0 0 15px; height: 15px; margin-top: 3px; border-radius: 3px;
+    border: 1.5px solid var(--muted); font-size: 11px; line-height: 13px;
+    text-align: center; color: var(--ok);
+  }
+  .md-task.done .box { border-color: var(--ok); }
+  .md-turn { margin: 15px 0 2px; display: flex; gap: 9px; align-items: baseline; }
+  .md-time {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px; color: var(--muted);
+  }
+  .md-who { font-weight: 700; color: var(--accent); font-size: 13.5px; }
+  .md-turn + .md-p { margin-top: 2px; }
+  .doc-body code {
+    background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12.5px;
+  }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
          display: inline-block; animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
@@ -116,8 +151,25 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const opened = new Set();     // jobs whose artifacts the user expanded
 let busy = false;
+
+// Jobs the user has asked to stop. Stopping is not instant - the bot has to
+// notice, leave the call, flush transcription and write the summary, which
+// measured ~11s - so the click must acknowledge itself immediately rather
+// than waiting for the next poll. Without this the button looks dead and
+// people click it again.
+const stopping = new Set();
+
+// The artifact currently on screen, with its text cached. Held as state
+// rather than re-fetched on every render: re-fetching raced with the poll
+// loop and could paint the PREVIOUS artifact over the one just clicked,
+// which is why Transcript and AI notes appeared to show the same thing.
+let open = null;   // { jobId, name, text, error }
+
+// Signature of the last render. The list is only rebuilt when something
+// actually changed; rebuilding it on a timer threw away scroll position
+// every 2 seconds, which is what made scrolling feel stuck.
+let lastSignature = "";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -130,12 +182,58 @@ const mmss = (s) => {
 const when = (epoch) => {
   if (!epoch) return "";
   const d = new Date(epoch * 1000);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  return sameDay
+  return d.toDateString() === new Date().toDateString()
     ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : d.toLocaleDateString([], { day: "numeric", month: "short" });
 };
+
+/* Just enough Markdown for what the bot actually writes: headings, bullets,
+   task-list items, bold, and the "[00:01:33] Speaker" blocks in a
+   transcript. A real parser would be a dependency; this covers the output
+   we produce and makes it read as structure rather than a monospace wall. */
+function renderMarkdown(text) {
+  const out = [];
+  let inList = false;
+  const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+  const inline = (s) => esc(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/`(.+?)`/g, "<code>$1</code>");
+
+  for (const raw of String(text).split("\n")) {
+    const line = raw.trimEnd();
+    if (!line.trim() || line.trim() === "---") { closeList(); continue; }
+
+    let m;
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+      closeList();
+      const level = Math.min(m[1].length + 1, 4);
+      out.push(`<h${level} class="md-h">${inline(m[2])}</h${level}>`);
+    } else if ((m = line.match(/^\s*-\s+\[( |x)\]\s+(.*)$/i))) {
+      if (!inList) { out.push('<ul class="md-list">'); inList = true; }
+      const done = m[1].toLowerCase() === "x";
+      out.push(
+        `<li class="md-task${done ? " done" : ""}">` +
+        `<span class="box">${done ? "&#10003;" : ""}</span>` +
+        `<span>${inline(m[2])}</span></li>`
+      );
+    } else if ((m = line.match(/^\s*[-*]\s+(.*)$/))) {
+      if (!inList) { out.push('<ul class="md-list">'); inList = true; }
+      out.push(`<li>${inline(m[1])}</li>`);
+    } else if ((m = line.match(/^\*\*\[([\d:]+)\]\s+(.*?)\*\*$/))) {
+      // Transcript speaker block: "**[00:01:33] Neil Sharma**"
+      closeList();
+      out.push(
+        `<div class="md-turn"><span class="md-time">${esc(m[1])}</span>` +
+        `<span class="md-who">${esc(m[2])}</span></div>`
+      );
+    } else {
+      closeList();
+      out.push(`<p class="md-p">${inline(line.trim())}</p>`);
+    }
+  }
+  closeList();
+  return out.join("");
+}
 
 async function api(path, options) {
   const response = await fetch(path, {
@@ -172,20 +270,13 @@ async function send() {
       }),
     });
     $("url").value = "";
-    await refresh();
+    await refresh(true);
   } catch (err) {
     showError(err.message);
   } finally {
     busy = false; $("send").disabled = false; $("send").textContent = "Send bot";
   }
 }
-
-// Jobs the user has asked to stop. Stopping is not instant - the bot has to
-// notice, leave the call, flush transcription and write the summary, which
-// took ~11s in practice - so the click has to acknowledge itself immediately
-// rather than waiting for the next 2s poll. Without this the button looks
-// dead and people click it again.
-const stopping = new Set();
 
 async function stop(id) {
   if (stopping.has(id)) return;
@@ -198,21 +289,37 @@ async function stop(id) {
     stopping.delete(id);
     showError(err.message);
   }
-  await refresh();
+  await refresh(true);
 }
 
-async function toggle(id, name) {
-  const key = `${id}:${name}`;
-  const box = $(`art-${id}`);
-  if (opened.has(key)) { opened.delete(key); box.innerHTML = ""; return; }
-  opened.clear(); opened.add(key);
-  box.innerHTML = `<div class="empty">Loading…</div>`;
-  try {
-    const text = await api(`/api/meetings/${id}/artifact/${name}`);
-    box.innerHTML = `<pre>${esc(text)}</pre>`;
-  } catch (err) {
-    box.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+async function toggle(jobId, name) {
+  if (open && open.jobId === jobId && open.name === name) {
+    open = null;
+    await refresh(true);
+    return;
   }
+  open = { jobId, name, text: null, error: null };
+  await refresh(true);                       // paint the loading state first
+  try {
+    const text = await api(`/api/meetings/${jobId}/artifact/${name}`);
+    // Guard against a slower earlier click landing after this one and
+    // painting the wrong document.
+    if (open && open.jobId === jobId && open.name === name) open.text = text;
+  } catch (err) {
+    if (open && open.jobId === jobId && open.name === name) open.error = err.message;
+  }
+  await refresh(true);
+}
+
+function artifactPanel(job) {
+  if (!open || open.jobId !== job.id) return "";
+  if (open.error) return `<div class="err">${esc(open.error)}</div>`;
+  if (open.text === null) return `<div class="empty">Loading…</div>`;
+  const label = open.name === "analysis.md" ? "AI notes" : "Transcript";
+  return `<div class="doc" id="doc-${job.id}">
+      <div class="doc-head">${label}</div>
+      <div class="doc-body">${renderMarkdown(open.text)}</div>
+    </div>`;
 }
 
 function renderJob(job, detail) {
@@ -222,6 +329,7 @@ function renderJob(job, detail) {
   ).join("");
   const speakers = (detail?.speakers || []).length;
   const count = detail?.utterance_count ?? job.utterance_count ?? 0;
+  const isOpen = (n) => open && open.jobId === job.id && open.name === n;
 
   return `
   <div class="job">
@@ -233,8 +341,8 @@ function renderJob(job, detail) {
       ${live ? (stopping.has(job.id)
           ? `<button class="small danger" disabled>Stopping…</button>`
           : `<button class="small danger" data-stop="${job.id}">Stop &amp; summarise</button>`) : ""}
-      ${job.has_transcript ? `<button class="small ghost" data-art="${job.id}" data-name="transcript.md">Transcript</button>` : ""}
-      ${job.has_summary ? `<button class="small ghost" data-art="${job.id}" data-name="analysis.md">AI notes</button>` : ""}
+      ${job.has_transcript ? `<button class="small ghost${isOpen("transcript.md") ? " on" : ""}" data-art="${job.id}" data-name="transcript.md">Transcript</button>` : ""}
+      ${job.has_summary ? `<button class="small ghost${isOpen("analysis.md") ? " on" : ""}" data-art="${job.id}" data-name="analysis.md">AI notes</button>` : ""}
     </div>
     <div class="meta">
       ${when(job.created_at)} · ${mmss(job.elapsed_s)} · ${count} utterance${count === 1 ? "" : "s"}${speakers ? ` · ${speakers} speaker${speakers === 1 ? "" : "s"}` : ""}
@@ -244,11 +352,11 @@ function renderJob(job, detail) {
         : ""}
     ${(job.errors || []).map((e) => `<div class="err">${esc(e)}</div>`).join("")}
     ${live && lines ? `<div class="live" id="live-${job.id}">${lines}</div>` : ""}
-    <div id="art-${job.id}"></div>
+    ${artifactPanel(job)}
   </div>`;
 }
 
-async function refresh() {
+async function refresh(force) {
   let data;
   try { data = await api("/api/meetings"); }
   catch (_) { return; }   // server restarting: keep the last view rather than blanking it
@@ -256,8 +364,13 @@ async function refresh() {
   $("active").textContent = data.active
     ? `${data.active} bot${data.active === 1 ? "" : "s"} in a call` : "";
 
+  for (const job of data.meetings) {
+    if (["finished", "failed"].includes(job.status)) stopping.delete(job.id);
+  }
+
   if (!data.meetings.length) {
     $("jobs").innerHTML = `<div class="empty">Nothing yet. Send the bot to a meeting above.</div>`;
+    lastSignature = "";
     return;
   }
 
@@ -267,19 +380,28 @@ async function refresh() {
     try { return await api(`/api/meetings/${job.id}`); } catch (_) { return null; }
   }));
 
-  for (const job of data.meetings) {
-    if (["finished", "failed"].includes(job.status)) stopping.delete(job.id);
-  }
+  const signature = JSON.stringify([
+    data.meetings.map((j, i) => [j.id, j.status, j.has_transcript, j.has_summary,
+                                 Math.round(j.elapsed_s), details[i]?.utterance_count ?? 0]),
+    open && [open.jobId, open.name, open.text === null, open.error],
+    [...stopping],
+  ]);
+  // Nothing changed: keep the DOM, and with it the reader's scroll position.
+  if (!force && signature === lastSignature) return;
+  lastSignature = signature;
 
-  const openKey = [...opened][0];
+  const body = open
+    ? document.querySelector(`#doc-${open.jobId} .doc-body`) : null;
+  const scrollTop = body ? body.scrollTop : 0;
+  const pageScroll = window.scrollY;
+
   $("jobs").innerHTML = data.meetings.map((job, i) => renderJob(job, details[i])).join("");
 
-  // Re-open whatever the user was reading, since the list was re-rendered.
-  if (openKey) {
-    const [id, name] = openKey.split(":");
-    opened.delete(openKey);
-    if (data.meetings.some((j) => j.id === id)) await toggle(id, name);
+  if (open) {
+    const restored = document.querySelector(`#doc-${open.jobId} .doc-body`);
+    if (restored && scrollTop) restored.scrollTop = scrollTop;
   }
+  if (pageScroll) window.scrollTo({ top: pageScroll });
 }
 
 document.addEventListener("click", (event) => {
@@ -299,8 +421,8 @@ $("url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !busy) se
     $("opt-anon").checked = config.anonymise_analysis;
     $("hint").textContent = `joins as “${config.bot_name}”`;
   } catch (_) {}
-  await refresh();
-  setInterval(refresh, 2000);
+  await refresh(true);
+  setInterval(() => refresh(false), 2000);
 })();
 </script>
 </body>
