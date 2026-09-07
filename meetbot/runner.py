@@ -161,6 +161,7 @@ async def run_meeting(
     install_signal_handlers: bool = True,
     on_stop: Callable[[Callable[[], None]], None] | None = None,
     on_output_dir: Callable[[Path], None] | None = None,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
     reconfigure_logging: bool = True,
 ) -> MeetingRun:
     """Join the configured meeting and run the full pipeline.
@@ -175,6 +176,10 @@ async def run_meeting(
         on_stop: Called once with a zero-argument callable that stops this
             meeting. Lets a caller that is not driving the process (a service
             handling an HTTP "stop" request) cancel this specific run.
+        on_event: Called with each lifecycle event (``kind``, details) as it
+            happens, alongside the transcript store's own record of it. Lets
+            a caller follow state changes - admission in particular - without
+            polling the store.
         on_output_dir: Called with this run's artifact directory as soon as
             it exists, before the browser starts. Lets a service follow the
             run live by reading the transcript store, which is append-only
@@ -204,9 +209,16 @@ async def run_meeting(
     store = TranscriptStore(transcript_path)
     store.write_meta(MeetingMeta(meet_url=config.meet_url, bot_name=config.bot_name))
 
-    session = MeetSession(
-        config, on_event=lambda kind, details: store.append_event(kind, **details)
-    )
+    def _emit(kind: str, details: dict[str, Any]) -> None:
+        store.append_event(kind, **details)
+        if on_event is not None:
+            # A watching caller must never be able to break the meeting.
+            try:
+                on_event(kind, details)
+            except Exception:  # noqa: BLE001
+                logger.debug("on_event listener failed for %r", kind, exc_info=True)
+
+    session = MeetSession(config, on_event=_emit)
 
     async def on_utterance(utterance: Utterance) -> None:
         if not config.live_captions_overlay:

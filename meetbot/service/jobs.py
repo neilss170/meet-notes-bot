@@ -272,6 +272,17 @@ class JobManager:
 
     # -- internals ---------------------------------------------------------
 
+    @staticmethod
+    def _on_event(job: MeetingJob, kind: str) -> None:
+        """Advance the job's status as the meeting reaches each stage.
+
+        Without this a job read "joining" for its entire duration, because
+        IN_CALL was never set - so a bot that had been in the call for
+        minutes still looked like it was stuck knocking.
+        """
+        if kind == "joined" and job.status is JobStatus.JOINING:
+            job.status = JobStatus.IN_CALL
+
     async def _run(self, job: MeetingJob, config: Config) -> None:
         """Drive one meeting to completion, recording the outcome on the job."""
         try:
@@ -282,6 +293,7 @@ class JobManager:
                 install_signal_handlers=False,
                 on_stop=lambda stop: setattr(job, "_stop", stop),
                 on_output_dir=lambda path: setattr(job, "output_dir", path),
+                on_event=lambda kind, _details: self._on_event(job, kind),
                 # One log file per run would fight over the root logger; the
                 # service keeps its own configuration.
                 reconfigure_logging=False,
@@ -306,7 +318,10 @@ class JobManager:
             job.errors.append(f"{type(exc).__name__}: {exc}")
         finally:
             job.finished_at = time.time()
-            if job.status is JobStatus.JOINING or job.status is JobStatus.STOPPING:
+            if not job.status.is_terminal:
+                # Reached only when the run neither succeeded nor raised,
+                # which should not happen; failing loudly beats a job that
+                # sits in a live state forever.
                 job.status = JobStatus.FAILED
 
 
