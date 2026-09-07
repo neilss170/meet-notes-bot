@@ -158,8 +158,11 @@ class Config:
     #: own camera on. Off by default: unlike everything else in this
     #: package, this changes what OTHER people in the call see, not just
     #: what the operator records - it deserves an explicit, deliberate
-    #: opt-in. The one Meet-DOM-dependent step (clicking "Present now") is
-    #: the least-tested selector in the project; see the UNVERIFIED note on
+    #: opt-in. There is no host-only variant: a screen-share is seen by
+    #: everyone in the call, so if the transcript should stay private, leave
+    #: this off and read it in the web UI instead.
+    #: The one Meet-DOM-dependent step (clicking "Present now") is the
+    #: least-tested selector in the project; see the note on
     #: PRESENT_NOW_BUTTON in selectors.py.
     live_captions_overlay: bool = False
     #: Turn Meet's own live captions on (for this browser only) and use the
@@ -201,6 +204,15 @@ class Config:
     deepgram_api_key: str = ""
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
     deepgram_language: str = "en-US"
+    #: Silence (ms) that ends an utterance. This is an accuracy control, not
+    #: just a latency one: at 300 ms - shorter than an ordinary pause for
+    #: breath - sentences were cut in half, which reads badly and denies the
+    #: model the context it uses to choose words and place punctuation.
+    #: Lower it for snappier live captions, raise it for cleaner text.
+    deepgram_endpointing_ms: int = 800
+    #: Ceiling (ms) on how long one utterance may run without a pause, so an
+    #: unbroken stretch of speech is still split into readable turns.
+    deepgram_utterance_end_ms: int = 1000
 
     # --- Analysis ---------------------------------------------------------
     analysis_enabled: bool = True
@@ -374,6 +386,8 @@ def load_config(
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
+        deepgram_endpointing_ms=_env_int(env, "DEEPGRAM_ENDPOINTING_MS", 800),
+        deepgram_utterance_end_ms=_env_int(env, "DEEPGRAM_UTTERANCE_END_MS", 1000),
         analysis_enabled=_env_bool(env, "ANALYSIS_ENABLED", True),
         llm_provider=provider,
         llm_model=_env_str(env, "LLM_MODEL", ""),

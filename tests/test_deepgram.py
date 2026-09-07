@@ -241,3 +241,44 @@ async def test_probe_reports_an_unreachable_host(monkeypatch) -> None:
 
     with pytest.raises(deepgram.DeepgramError, match="Could not reach Deepgram"):
         await deepgram.probe_credentials("k", model="nova-3", language="en-US")
+
+
+class TestTranscriptionQuality:
+    """Settings that decide how readable the transcript is.
+
+    Endpointing was 300ms - shorter than an ordinary pause for breath - so
+    utterances were cut mid-sentence. That reads badly and also costs
+    accuracy, because the model loses the surrounding context it uses to
+    choose words and place punctuation.
+    """
+
+    @staticmethod
+    def _params(**kwargs):
+        from urllib.parse import parse_qsl, urlparse
+
+        from meetbot.capture.deepgram import build_stream_url
+
+        defaults = dict(model="nova-3", language="en-US", sample_rate=16000, diarize=True)
+        defaults.update(kwargs)
+        return dict(parse_qsl(urlparse(build_stream_url(**defaults)).query))
+
+    def test_punctuation_and_formatting_are_requested(self) -> None:
+        params = self._params()
+        assert params["punctuate"] == "true"
+        assert params["smart_format"] == "true"
+
+    def test_endpointing_survives_an_ordinary_pause(self) -> None:
+        params = self._params()
+        assert int(params["endpointing"]) >= 500, (
+            "too short: sentences get cut in half mid-phrase"
+        )
+
+    def test_an_utterance_ceiling_is_set(self) -> None:
+        """Continuous speech must still break into readable turns."""
+        params = self._params()
+        assert int(params["utterance_end_ms"]) > 0
+
+    def test_the_tuning_is_overridable(self) -> None:
+        params = self._params(endpointing_ms=1500, utterance_end_ms=2000)
+        assert params["endpointing"] == "1500"
+        assert params["utterance_end_ms"] == "2000"
