@@ -70,6 +70,11 @@ _POLL_INTERVAL_S = 5.0
 #: list of candidates and a slow probe multiplies across every fallback.
 _PROBE_TIMEOUT_MS = 1500
 
+#: How long a single candidate is given inside one polling round. Short
+#: enough that an absent selector does not eat the whole budget, long enough
+#: that a match still lands on the first round in practice.
+_PROBE_SLICE_MS = 250.0
+
 #: How long to wait for Meet to actually call getDisplayMedia after the share
 #: controls have been clicked, before giving up and reporting the overlay as
 #: not started.
@@ -77,6 +82,10 @@ _OVERLAY_SHARE_TIMEOUT_S = 6.0
 #: Short first wait: if Meet skips its own source menu the request lands
 #: almost immediately, and we should not click a menu that is not there.
 _OVERLAY_MENU_PROBE_S = 1.0
+
+#: The guest-name field only exists on an anonymous join. A signed-in browser
+#: never shows one, so this is a short bet, not a long wait.
+_NAME_FIELD_TIMEOUT_MS = 4000
 
 #: Captions can take a moment to appear in the controls after admission, so
 #: the toggle is retried rather than attempted once.
@@ -125,25 +134,47 @@ async def first_visible(
 ) -> Locator | None:
     """Return the first visible locator among ``candidates``, or ``None``.
 
-    Selector lists in :mod:`meetbot.selectors` are ordered most- to
-    least-reliable; this walks them in order and returns the first match that
-    is actually visible. Missing selectors are an expected outcome, not an
-    error - Meet's DOM differs by meeting type, account state and rollout.
+    ``timeout_ms`` is the budget for the whole search, not for each candidate.
+    That distinction is worth stating because getting it wrong is expensive:
+    waiting the full timeout on every candidate in turn made a signed-in join
+    spend 40 seconds looking for a guest-name field that could never appear
+    (4 candidates x 10s), and gave the join button a 75-second worst case.
+    Measured end to end, a join took ~52 seconds before the bot even knocked.
+
+    Candidates are polled in rounds, in order, with a short slice each, so the
+    preference ordering in :mod:`meetbot.selectors` still decides who wins
+    while a genuinely absent element costs the budget once rather than once
+    per candidate. Missing selectors are an expected outcome, not an error -
+    Meet's DOM differs by meeting type, account state and rollout.
     """
-    for selector in candidates:
-        try:
-            locator = page.locator(selector).first
-            await locator.wait_for(state="visible", timeout=timeout_ms)
-            logger.debug("Matched selector %r", selector)
-            return locator
-        except PlaywrightTimeoutError:
-            continue
-        except PlaywrightError as exc:
-            # A malformed or unsupported selector should be loud - it is a bug
-            # in selectors.py, not a transient page state.
-            logger.warning("Selector %r could not be evaluated: %s", selector, exc)
-            continue
-    return None
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    broken: set[str] = set()
+    while True:
+        for selector in candidates:
+            if selector in broken:
+                continue
+            remaining_ms = (deadline - time.monotonic()) * 1000.0
+            if remaining_ms <= 0:
+                return None
+            try:
+                locator = page.locator(selector).first
+                await locator.wait_for(
+                    state="visible",
+                    timeout=max(50.0, min(_PROBE_SLICE_MS, remaining_ms)),
+                )
+                logger.debug("Matched selector %r", selector)
+                return locator
+            except PlaywrightTimeoutError:
+                continue
+            except PlaywrightError as exc:
+                # A malformed or unsupported selector should be loud - it is a
+                # bug in selectors.py, not a transient page state. Recorded so
+                # it is reported once rather than every round.
+                logger.warning("Selector %r could not be evaluated: %s", selector, exc)
+                broken.add(selector)
+                continue
+        if time.monotonic() >= deadline:
+            return None
 
 
 async def any_visible(
@@ -479,7 +510,7 @@ class MeetSession:
         under a name that does not announce recording.
         """
         name_input = await first_visible(
-            self.page, selectors.NAME_INPUT, timeout_ms=10_000
+            self.page, selectors.NAME_INPUT, timeout_ms=_NAME_FIELD_TIMEOUT_MS
         )
         if name_input is None:
             logger.warning(
