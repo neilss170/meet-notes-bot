@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>meetbot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2328; --muted: #656d76;
+    --line: #d8dee4; --accent: #1a73e8; --ok: #1a7f37; --bad: #cf222e;
+    --warn: #9a6700; --code-bg: #f6f8fa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e;
+      --line: #30363d; --accent: #58a6ff; --ok: #3fb950; --bad: #f85149;
+      --warn: #d29922; --code-bg: #0d1117;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 22px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 18px; margin-bottom: 18px;
+  }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  input[type=text] {
+    width: 100%; padding: 10px 12px; font-size: 15px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+    font-family: inherit;
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0 16px; }
+  .opt { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+  button {
+    font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 7px;
+    border: 1px solid transparent; cursor: pointer; background: var(--accent); color: #fff;
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--ink); border-color: var(--line); }
+  button.danger { background: transparent; color: var(--bad); border-color: var(--line); }
+  button.small { padding: 5px 11px; font-size: 12.5px; font-weight: 500; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .err {
+    color: var(--bad); font-size: 13px; margin-top: 10px;
+    border-left: 3px solid var(--bad); padding-left: 10px;
+  }
+  .job { border-top: 1px solid var(--line); padding: 15px 0; }
+  .job:first-of-type { border-top: 0; padding-top: 4px; }
+  .job-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13.5px; }
+  .badge {
+    font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 20px;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .b-in_call { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .b-joining, .b-starting, .b-stopping {
+    background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn);
+  }
+  .b-finished { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+  .b-failed { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
+  .meta { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+  .live {
+    margin-top: 11px; background: var(--code-bg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 11px 13px; max-height: 220px; overflow-y: auto;
+    font-size: 13.5px;
+  }
+  .line { margin-bottom: 5px; }
+  .who { font-weight: 600; color: var(--accent); }
+  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 13px; overflow-x: auto; font-size: 13px; white-space: pre-wrap;
+    max-height: 420px; overflow-y: auto; margin: 11px 0 0;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+         display: inline-block; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>meetbot</h1>
+  <div class="sub">Send a note-taking bot into a Google Meet call.</div>
+
+  <div class="panel">
+    <label for="url">Meeting link or code</label>
+    <input type="text" id="url" placeholder="https://meet.google.com/abc-defg-hij" autocomplete="off">
+    <div class="opts">
+      <label class="opt"><input type="checkbox" id="opt-names"> Real speaker names</label>
+      <label class="opt"><input type="checkbox" id="opt-overlay"> Show captions in the call</label>
+      <label class="opt"><input type="checkbox" id="opt-anon"> Anonymise before AI summary</label>
+    </div>
+    <div class="row">
+      <button id="send">Send bot</button>
+      <span class="meta" id="hint"></span>
+    </div>
+    <div class="err" id="error" hidden></div>
+  </div>
+
+  <div class="panel">
+    <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+      <strong style="font-size: 14px;">Meetings</strong>
+      <span class="meta" id="active"></span>
+    </div>
+    <div id="jobs"><div class="empty">Nothing yet. Send the bot to a meeting above.</div></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const opened = new Set();     // jobs whose artifacts the user expanded
+let busy = false;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const mmss = (s) => {
+  s = Math.max(0, Math.round(s || 0));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+
+const when = (epoch) => {
+  if (!epoch) return "";
+  const d = new Date(epoch * 1000);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : d.toLocaleDateString([], { day: "numeric", month: "short" });
+};
+
+async function api(path, options) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json" }, ...options,
+  });
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try { detail = (await response.json()).detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return response.headers.get("content-type")?.includes("json")
+    ? response.json() : response.text();
+}
+
+function showError(message) {
+  const box = $("error");
+  box.textContent = message;
+  box.hidden = !message;
+}
+
+async function send() {
+  const url = $("url").value.trim();
+  if (!url) { showError("Paste a meeting link first."); return; }
+  showError("");
+  busy = true; $("send").disabled = true; $("send").textContent = "Sending…";
+  try {
+    await api("/api/meetings", {
+      method: "POST",
+      body: JSON.stringify({
+        meet_url: url,
+        speaker_names_from_captions: $("opt-names").checked,
+        live_captions_overlay: $("opt-overlay").checked,
+        anonymise_analysis: $("opt-anon").checked,
+      }),
+    });
+    $("url").value = "";
+    await refresh();
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    busy = false; $("send").disabled = false; $("send").textContent = "Send bot";
+  }
+}
+
+async function stop(id) {
+  try { await api(`/api/meetings/${id}/stop`, { method: "POST" }); await refresh(); }
+  catch (err) { showError(err.message); }
+}
+
+async function toggle(id, name) {
+  const key = `${id}:${name}`;
+  const box = $(`art-${id}`);
+  if (opened.has(key)) { opened.delete(key); box.innerHTML = ""; return; }
+  opened.clear(); opened.add(key);
+  box.innerHTML = `<div class="empty">Loading…</div>`;
+  try {
+    const text = await api(`/api/meetings/${id}/artifact/${name}`);
+    box.innerHTML = `<pre>${esc(text)}</pre>`;
+  } catch (err) {
+    box.innerHTML = `<div class="err">${esc(err.message)}</div>`;
+  }
+}
+
+function renderJob(job, detail) {
+  const live = !["finished", "failed"].includes(job.status);
+  const lines = (detail?.transcript || []).map(
+    (u) => `<div class="line"><span class="who">${esc(u.speaker)}</span> ${esc(u.text)}</div>`
+  ).join("");
+  const speakers = (detail?.speakers || []).length;
+  const count = detail?.utterance_count ?? job.utterance_count ?? 0;
+
+  return `
+  <div class="job">
+    <div class="job-head">
+      ${live ? '<span class="dot"></span>' : ""}
+      <span class="badge b-${job.status}">${job.status.replace("_", " ")}</span>
+      <span class="code">${esc(job.meet_url)}</span>
+      <span style="flex:1"></span>
+      ${live ? `<button class="small danger" data-stop="${job.id}">Stop &amp; summarise</button>` : ""}
+      ${job.has_transcript ? `<button class="small ghost" data-art="${job.id}" data-name="transcript.md">Transcript</button>` : ""}
+      ${job.has_summary ? `<button class="small ghost" data-art="${job.id}" data-name="analysis.md">AI notes</button>` : ""}
+    </div>
+    <div class="meta">
+      ${when(job.created_at)} · ${mmss(job.elapsed_s)} · ${count} utterance${count === 1 ? "" : "s"}${speakers ? ` · ${speakers} speaker${speakers === 1 ? "" : "s"}` : ""}
+    </div>
+    ${(job.errors || []).map((e) => `<div class="err">${esc(e)}</div>`).join("")}
+    ${live && lines ? `<div class="live" id="live-${job.id}">${lines}</div>` : ""}
+    <div id="art-${job.id}"></div>
+  </div>`;
+}
+
+async function refresh() {
+  let data;
+  try { data = await api("/api/meetings"); }
+  catch (_) { return; }   // server restarting: keep the last view rather than blanking it
+
+  $("active").textContent = data.active
+    ? `${data.active} bot${data.active === 1 ? "" : "s"} in a call` : "";
+
+  if (!data.meetings.length) {
+    $("jobs").innerHTML = `<div class="empty">Nothing yet. Send the bot to a meeting above.</div>`;
+    return;
+  }
+
+  // Only running meetings need their transcript polled.
+  const details = await Promise.all(data.meetings.map(async (job) => {
+    if (["finished", "failed"].includes(job.status)) return null;
+    try { return await api(`/api/meetings/${job.id}`); } catch (_) { return null; }
+  }));
+
+  const openKey = [...opened][0];
+  $("jobs").innerHTML = data.meetings.map((job, i) => renderJob(job, details[i])).join("");
+
+  // Re-open whatever the user was reading, since the list was re-rendered.
+  if (openKey) {
+    const [id, name] = openKey.split(":");
+    opened.delete(openKey);
+    if (data.meetings.some((j) => j.id === id)) await toggle(id, name);
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const stopId = event.target.closest("[data-stop]")?.dataset.stop;
+  if (stopId) { stop(stopId); return; }
+  const art = event.target.closest("[data-art]");
+  if (art) toggle(art.dataset.art, art.dataset.name);
+});
+$("send").addEventListener("click", send);
+$("url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !busy) send(); });
+
+(async function init() {
+  try {
+    const config = await api("/api/config");
+    $("opt-names").checked = config.speaker_names_from_captions;
+    $("opt-overlay").checked = config.live_captions_overlay;
+    $("opt-anon").checked = config.anonymise_analysis;
+    $("hint").textContent = `joins as “${config.bot_name}”`;
+  } catch (_) {}
+  await refresh();
+  setInterval(refresh, 2000);
+})();
+</script>
+</body>
+</html>

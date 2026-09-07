@@ -43,12 +43,17 @@ WebSocket to the Python bridge.
 
 ```
 meetbot/
-  cli.py              # argparse entrypoint: run / analyze / format / check
+  cli.py              # argparse entrypoint: run / serve / analyze / format / check
   runner.py           # end-to-end orchestration and failure containment
   join.py             # Playwright guest-join flow and meeting lifecycle
   selectors.py        # ALL Google Meet DOM selectors live here
   config.py           # env/.env loading, validation, disclosure enforcement
+  captions.py         # speaker names from Meet's caption panel
   logging_setup.py    # console + per-run file logging
+  service/
+    app.py            # FastAPI endpoints + the web UI
+    jobs.py           # concurrent meeting jobs: start, follow, stop
+    ui.html           # the single-page control surface
   capture/
     inject.js         # browser-side WebRTC audio hook
     bridge.py         # loopback WebSocket server, channel routing, timeline
@@ -111,6 +116,43 @@ The bot joins, waits to be admitted if the meeting requires approval, and
 records until the meeting ends, it is removed, it is left alone for
 `ALONE_TIMEOUT_S`, or `MAX_MEETING_DURATION_S` is hit. `Ctrl+C` shuts it down
 cleanly — the transcript is flushed and the analysis still runs.
+
+### Without a terminal: the web UI
+
+Running a command per meeting does not scale past demoing it yourself. `serve`
+starts a small local service instead — paste a link, click a button:
+
+```bash
+python -m meetbot serve --open
+```
+
+That opens `http://127.0.0.1:8080`, where you can send the bot into a call,
+watch the transcript build up live, stop it early, and read the notes from any
+past meeting. The bot still runs on this machine; the UI is just the control
+surface.
+
+It binds to **loopback only**, and you should leave it there: the service has
+no authentication and can join meetings and read transcripts. `--host` exists
+for putting your own auth in front of it, and warns when you use it.
+
+Things it handles that the one-shot CLI never had to:
+
+- **Several meetings at once.** Each job gets its own audio-bridge port; a
+  fixed one fails on the second simultaneous meeting.
+- **Stopping a specific bot** from the UI, rather than Ctrl+C stopping whatever
+  the process happens to be doing.
+- **Surviving a restart.** Past runs are read back from `recordings/`, so
+  restarting the server does not appear to erase history.
+- **One bad meeting not killing the server.** A crashed run marks its own job
+  failed and leaves the others alone.
+
+| Endpoint | |
+|---|---|
+| `GET /api/meetings` | List every meeting, live and past |
+| `POST /api/meetings` | `{"meet_url": "..."}` — send the bot |
+| `GET /api/meetings/{id}` | Status plus live transcript |
+| `POST /api/meetings/{id}/stop` | Leave the call and write the summary |
+| `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, … |
 
 ### Output
 

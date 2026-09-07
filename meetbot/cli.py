@@ -211,6 +211,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output file (default: write to stdout).",
     )
 
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the local web UI for sending the bot to meetings.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    serve_parser.add_argument(
+        "--port", type=int, default=8080, help="Port to listen on."
+    )
+    serve_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Address to bind. Loopback by default and you should leave it "
+            "there: the service has no authentication and can join meetings "
+            "and read their transcripts."
+        ),
+    )
+    serve_parser.add_argument(
+        "--open",
+        dest="open_browser",
+        action="store_true",
+        help="Open the UI in your browser once the server is up.",
+    )
+    _add_llm_flags(serve_parser)
+
     check_parser = subparsers.add_parser(
         "check",
         help="Validate configuration, credentials and the browser; join nothing.",
@@ -426,6 +451,58 @@ def cmd_format(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Handle ``serve``: run the local web UI until interrupted."""
+    try:
+        import uvicorn
+    except ImportError:
+        logger.error(
+            "The web UI needs uvicorn and fastapi: pip install fastapi uvicorn"
+        )
+        return EXIT_CONFIG_ERROR
+
+    from meetbot.service.app import create_app
+
+    config = _config_from_args(args)
+    try:
+        # No meeting URL yet - the whole point is that one arrives later, per
+        # request - so only the settings a server needs are checked here.
+        config.validate(require_meeting=False)
+    except ConfigError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            "Binding to %s exposes an unauthenticated service that can join "
+            "meetings and read transcripts. Use 127.0.0.1 unless you have "
+            "put your own authentication in front of it.",
+            args.host,
+        )
+
+    url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}"
+    logger.info("meetbot is at %s", url)
+    logger.info("Recordings: %s", config.output_dir)
+
+    if getattr(args, "open_browser", False):
+        import threading
+        import webbrowser
+
+        # Deferred: opening the browser before uvicorn is listening shows an
+        # error page the user then has to reload.
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(
+        create_app(config),
+        host=args.host,
+        port=args.port,
+        log_level=(args.log_level or "info").lower(),
+        # uvicorn otherwise replaces the handlers configure_logging installed.
+        log_config=None,
+    )
+    return EXIT_OK
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Handle ``check``: validate config and confirm Playwright is usable."""
     config = _config_from_args(args)
@@ -529,6 +606,7 @@ def main(argv: list[str] | None = None) -> int:
         "analyze": cmd_analyze,
         "format": cmd_format,
         "check": cmd_check,
+        "serve": cmd_serve,
     }
     handler = handlers.get(args.command)
     if handler is None:  # pragma: no cover - argparse enforces the choices
