@@ -232,6 +232,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds to wait for you to finish signing in.",
     )
 
+    users_parser = subparsers.add_parser(
+        "users",
+        help="Manage web-UI accounts (add, list, passwd, delete).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    users_parser.add_argument(
+        "action", choices=("list", "add", "passwd", "delete")
+    )
+    users_parser.add_argument(
+        "username", nargs="?", help="Account to act on (not needed for 'list')."
+    )
+    users_parser.add_argument(
+        "--role",
+        choices=("admin", "member"),
+        default="member",
+        help="Role for a new account.",
+    )
+
     serve_parser = subparsers.add_parser(
         "serve",
         help="Run the local web UI for sending the bot to meetings.",
@@ -557,7 +575,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         import uvicorn
     except ImportError:
         logger.error(
-            "The web UI needs uvicorn and fastapi: pip install fastapi uvicorn"
+            "The web UI needs: pip install fastapi uvicorn python-multipart"
         )
         return EXIT_CONFIG_ERROR
 
@@ -574,9 +592,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         logger.warning(
-            "Binding to %s exposes an unauthenticated service that can join "
-            "meetings and read transcripts. Use 127.0.0.1 unless you have "
-            "put your own authentication in front of it.",
+            "Binding to %s serves meetbot to the network. Accounts are "
+            "required, but sessions travel as cookies: put TLS in front of "
+            "it, or passwords and session tokens cross the wire in clear.",
             args.host,
         )
 
@@ -694,6 +712,57 @@ def cmd_check(args: argparse.Namespace) -> int:
     return EXIT_OK if ok else EXIT_CONFIG_ERROR
 
 
+def cmd_users(args: argparse.Namespace) -> int:
+    """Handle ``users``: account management from the terminal.
+
+    The admin panel in the web UI covers day-to-day work. This exists for the
+    case the UI cannot help with: nobody can sign in, because the only admin
+    password was lost. Without it a forgotten password would mean deleting
+    the account database and starting over.
+    """
+    import getpass
+
+    from meetbot.service.auth import AuthError, Role, UserStore
+
+    config = _config_from_args(args)
+    store = UserStore(Path(config.service_state_dir).expanduser() / "users.json")
+
+    if args.action == "list":
+        if not len(store):
+            logger.info("No accounts yet. 'meetbot serve' creates a first admin.")
+        for user in store.list():
+            logger.info("%-20s %s", user.username, user.role.value)
+        return EXIT_OK
+
+    if not args.username:
+        logger.error("%s needs a username", args.action)
+        return EXIT_CONFIG_ERROR
+
+    try:
+        if args.action == "delete":
+            store.delete(args.username)
+            logger.info("Deleted %s", args.username)
+            return EXIT_OK
+
+        # Prompted rather than passed as an argument: a password on the
+        # command line lands in shell history and in the process list.
+        password = getpass.getpass(f"Password for {args.username}: ")
+        if password != getpass.getpass("Repeat: "):
+            logger.error("Passwords did not match")
+            return EXIT_CONFIG_ERROR
+
+        if args.action == "add":
+            store.add(args.username, password, Role(args.role))
+            logger.info("Created %s (%s)", args.username, args.role)
+        else:
+            store.set_password(args.username, password)
+            logger.info("Password updated for %s", args.username)
+    except AuthError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint. Returns the process exit code."""
     parser = build_parser()
@@ -708,6 +777,7 @@ def main(argv: list[str] | None = None) -> int:
         "check": cmd_check,
         "serve": cmd_serve,
         "login": cmd_login,
+        "users": cmd_users,
     }
     handler = handlers.get(args.command)
     if handler is None:  # pragma: no cover - argparse enforces the choices

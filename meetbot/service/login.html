@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · meetbot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2328; --muted: #656d76;
+    --line: #d8dee4; --accent: #1a73e8; --bad: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e;
+      --line: #30363d; --accent: #58a6ff; --bad: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 30px 28px; width: 100%; max-width: 380px;
+  }
+  h1 { font-size: 21px; margin: 0 0 3px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; }
+  label {
+    display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px;
+  }
+  input {
+    width: 100%; padding: 10px 12px; font-size: 15px; font-family: inherit;
+    color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 7px; margin-bottom: 15px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button {
+    width: 100%; font: inherit; font-weight: 600; padding: 11px; margin-top: 3px;
+    border: 1px solid transparent; border-radius: 7px; cursor: pointer;
+    background: var(--accent); color: #fff;
+  }
+  .err {
+    color: var(--bad); font-size: 13px; margin-bottom: 15px;
+    border-left: 3px solid var(--bad); padding-left: 10px;
+  }
+  .note {
+    color: var(--muted); font-size: 12px; margin: 20px 0 0;
+    border-top: 1px solid var(--line); padding-top: 14px;
+  }
+</style>
+</head>
+<body>
+  <form class="card" method="post" action="/login">
+    <h1>meetbot</h1>
+    <div class="sub">Sign in to send the bot to a meeting.</div>
+
+    <!--ERROR-->
+
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username"
+           autocapitalize="none" spellcheck="false" autofocus required>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="current-password" required>
+
+    <button type="submit">Sign in</button>
+
+    <p class="note">
+      No account? Ask an admin to create one. On a brand-new server, a
+      first admin is generated and printed once in the startup log.
+    </p>
+  </form>
+</body>
+</html>

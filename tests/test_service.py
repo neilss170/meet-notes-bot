@@ -17,12 +17,14 @@ from meetbot.config import Config
 from meetbot.runner import MeetingRun
 from meetbot.service import jobs as jobs_module
 from meetbot.service.app import create_app
+from meetbot.service.auth import SESSION_COOKIE, Role, issue_session
 from meetbot.service.jobs import JobManager, JobStatus, free_port, load_past_runs
 
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
 MEET_URL = "https://meet.google.com/abc-defg-hij"
+ADMIN_PASSWORD = "a-long-enough-password"
 
 
 @pytest.fixture
@@ -32,6 +34,9 @@ def service_config(tmp_path: Path) -> Config:
         output_dir=tmp_path / "recordings",
         deepgram_api_key="dg",
         anthropic_api_key="sk",
+        # Per-test, or the suite would read and write the real ~/.meetbot -
+        # and bootstrap an admin into the developer's own account database.
+        service_state_dir=tmp_path / "state",
     )
 
 
@@ -234,16 +239,35 @@ class TestProgress:
 
 class TestHttpApi:
     @pytest.fixture
-    def client(self, service_config, monkeypatch):
+    def anonymous(self, service_config, monkeypatch):
+        """A client with no session, for the guards."""
         _stub_runner(monkeypatch, utterances=2)
         service_config.output_dir.mkdir(parents=True, exist_ok=True)
         with TestClient(create_app(service_config)) as client:
             yield client
 
+    @pytest.fixture
+    def client(self, anonymous):
+        """Signed in as an admin - the state most of these tests assume."""
+        anonymous.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        response = anonymous.post(
+            "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+        )
+        assert response.status_code == 200, "sign-in failed"
+        return anonymous
+
+    @pytest.fixture
+    def member(self, client):
+        """A second, non-admin client against the same running app."""
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        return other
+
     def test_serves_the_ui(self, client) -> None:
         response = client.get("/")
         assert response.status_code == 200
-        assert "meetbot" in response.text
+        assert "Send a note-taking bot" in response.text
 
     def test_config_endpoint_exposes_no_secrets(self, client) -> None:
         payload = client.get("/api/config").json()
@@ -447,3 +471,280 @@ class TestMarkdownRendering:
         ui = self._ui()
         assert "md-rule" in ui
         assert "md-note" in ui
+
+
+class _SignedIn:
+    """The shared test client, acting as one signed-in user."""
+
+    def __init__(self, client, token: str) -> None:
+        self._client = client
+        self._token = token
+
+    def request(self, method: str, path: str, **kwargs):
+        self._client.cookies.clear()
+        self._client.cookies.set(SESSION_COOKIE, self._token)
+        return self._client.request(method, path, **kwargs)
+
+    def get(self, path: str, **kwargs):
+        return self.request("GET", path, **kwargs)
+
+    def post(self, path: str, **kwargs):
+        return self.request("POST", path, **kwargs)
+
+    def delete(self, path: str, **kwargs):
+        return self.request("DELETE", path, **kwargs)
+
+
+class TestAccessControl:
+    """Who can reach what.
+
+    The service joins meetings and serves transcripts of them, so these are
+    the tests that decide whether it is safe to put on a network at all.
+    Most of them assert a refusal.
+    """
+
+    @pytest.fixture
+    def anonymous(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch, utterances=2)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            yield client
+
+    @staticmethod
+    def _sign_in(client, username, role=Role.MEMBER):
+        """Create an account, sign it in, and return a view acting as it.
+
+        Returns a wrapper rather than a second TestClient: each TestClient
+        runs its own event loop, and tearing the outer one down while a
+        meeting task lives on another raises "Event loop is closed".
+        """
+        client.app.state.users.add(username, ADMIN_PASSWORD, role)
+        response = client.post(
+            "/login",
+            data={"username": username, "password": ADMIN_PASSWORD},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303, f"could not sign in as {username}"
+        token = response.cookies[SESSION_COOKIE]
+        client.cookies.clear()   # the base client stays anonymous
+        return _SignedIn(client, token)
+
+    # -- signed out --------------------------------------------------------
+
+    def test_the_page_redirects_to_the_login_form(self, anonymous) -> None:
+        response = anonymous.get("/", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/login"
+
+    def test_the_login_form_is_reachable_signed_out(self, anonymous) -> None:
+        assert anonymous.get("/login").status_code == 200
+
+    @pytest.mark.parametrize(
+        "method, path",
+        [
+            ("get", "/api/me"),
+            ("get", "/api/config"),
+            ("get", "/api/meetings"),
+            ("post", "/api/meetings"),
+            ("get", "/api/meetings/anything"),
+            ("post", "/api/meetings/anything/stop"),
+            ("get", "/api/meetings/anything/artifact/transcript.md"),
+            ("get", "/api/users"),
+            ("post", "/api/users"),
+        ],
+    )
+    def test_every_api_route_refuses_a_stranger(
+        self, anonymous, method: str, path: str
+    ) -> None:
+        response = anonymous.request(method, path, json={})
+        assert response.status_code == 401, f"{method.upper()} {path} was not guarded"
+
+    def test_a_wrong_password_sets_no_session(self, anonymous) -> None:
+        anonymous.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        response = anonymous.post(
+            "/login", data={"username": "neil", "password": "wrong"}
+        )
+        assert response.status_code == 401
+        assert SESSION_COOKIE not in response.cookies
+        assert anonymous.get("/api/me").status_code == 401
+
+    def test_the_login_form_does_not_reveal_who_exists(self, anonymous) -> None:
+        """The same answer for a wrong password and a missing account."""
+        anonymous.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        wrong = anonymous.post("/login", data={"username": "neil", "password": "no"})
+        missing = anonymous.post("/login", data={"username": "ghost", "password": "no"})
+        assert wrong.status_code == missing.status_code == 401
+        assert wrong.text == missing.text
+
+    def test_a_forged_cookie_is_not_a_session(self, anonymous) -> None:
+        anonymous.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        anonymous.cookies.set(SESSION_COOKIE, "bXkuYWRtaW4.99999999999.deadbeef")
+        assert anonymous.get("/api/me").status_code == 401
+
+    def test_a_session_signed_with_another_key_is_refused(self, anonymous) -> None:
+        anonymous.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        anonymous.cookies.set(SESSION_COOKIE, issue_session("neil", b"x" * 48))
+        assert anonymous.get("/api/me").status_code == 401
+
+    # -- signed in ---------------------------------------------------------
+
+    def test_signing_in_then_out(self, anonymous) -> None:
+        anonymous.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        anonymous.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+        assert anonymous.get("/api/me").json()["username"] == "neil"
+        anonymous.post("/logout")
+        assert anonymous.get("/api/me").status_code == 401
+
+    def test_deleting_an_account_ends_its_session_at_once(self, anonymous) -> None:
+        """A revoked account must not keep working until its cookie expires."""
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        victim = self._sign_in(anonymous, "priya", Role.MEMBER)
+        assert victim.get("/api/me").status_code == 200
+        assert admin.delete("/api/users/priya").status_code == 200
+        assert victim.get("/api/me").status_code == 401
+
+    def test_demoting_an_admin_takes_effect_at_once(self, anonymous) -> None:
+        self._sign_in(anonymous, "neil", Role.ADMIN)
+        other = self._sign_in(anonymous, "priya", Role.ADMIN)
+        assert other.get("/api/users").status_code == 200
+        anonymous.app.state.users.set_role("priya", Role.MEMBER)
+        assert other.get("/api/users").status_code == 403
+
+    # -- one member must not see another one's meetings --------------------
+
+    def test_a_member_sees_only_their_own_meetings(self, anonymous) -> None:
+        neil = self._sign_in(anonymous, "neil", Role.MEMBER)
+        priya = self._sign_in(anonymous, "priya", Role.MEMBER)
+        job_id = neil.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+
+        listed = neil.get("/api/meetings").json()["meetings"]
+        assert [m["id"] for m in listed] == [job_id]
+        assert priya.get("/api/meetings").json()["meetings"] == []
+
+    def test_another_members_meeting_is_404_not_403(self, anonymous) -> None:
+        """403 would confirm the id exists, which is itself a leak."""
+        neil = self._sign_in(anonymous, "neil", Role.MEMBER)
+        priya = self._sign_in(anonymous, "priya", Role.MEMBER)
+        job_id = neil.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+
+        assert priya.get(f"/api/meetings/{job_id}").status_code == 404
+        assert priya.post(f"/api/meetings/{job_id}/stop").status_code == 404
+        artifact = priya.get(f"/api/meetings/{job_id}/artifact/transcript.md")
+        assert artifact.status_code == 404
+
+    def test_an_admin_sees_every_meeting(self, anonymous) -> None:
+        member = self._sign_in(anonymous, "priya", Role.MEMBER)
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        job_id = member.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+
+        listed = admin.get("/api/meetings").json()["meetings"]
+        assert any(m["id"] == job_id for m in listed)
+        assert admin.get(f"/api/meetings/{job_id}").status_code == 200
+
+    def test_a_started_meeting_records_who_sent_it(self, anonymous) -> None:
+        neil = self._sign_in(anonymous, "neil", Role.MEMBER)
+        created = neil.post("/api/meetings", json={"meet_url": MEET_URL})
+        assert created.json()["owner"] == "neil"
+
+    # -- account management is admin-only ----------------------------------
+
+    @pytest.mark.parametrize(
+        "method, path",
+        [
+            ("get", "/api/users"),
+            ("post", "/api/users"),
+            ("post", "/api/users/someone/password"),
+            ("delete", "/api/users/someone"),
+        ],
+    )
+    def test_members_cannot_manage_accounts(
+        self, anonymous, method: str, path: str
+    ) -> None:
+        member = self._sign_in(anonymous, "priya", Role.MEMBER)
+        response = member.request(method, path, json={"password": ADMIN_PASSWORD})
+        assert response.status_code == 403
+
+    def test_an_admin_can_add_and_remove_accounts(self, anonymous) -> None:
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        created = admin.post(
+            "/api/users",
+            json={"username": "amit", "password": ADMIN_PASSWORD, "role": "member"},
+        )
+        assert created.status_code == 201
+        assert created.json()["role"] == "member"
+        assert "password" not in created.text
+
+        names = {u["username"] for u in admin.get("/api/users").json()["users"]}
+        # "admin" is the account the service bootstraps on an empty database.
+        assert {"neil", "amit"} <= names
+        assert admin.delete("/api/users/amit").status_code == 200
+
+    def test_a_weak_password_is_refused_with_a_reason(self, anonymous) -> None:
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        response = admin.post(
+            "/api/users", json={"username": "amit", "password": "short"}
+        )
+        assert response.status_code == 400
+        assert "8 characters" in response.json()["detail"]
+
+    def test_an_admin_cannot_delete_themselves(self, anonymous) -> None:
+        """Removing the account mid-request can strand the last admin."""
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        response = admin.delete("/api/users/neil")
+        assert response.status_code == 400
+        assert "your own account" in response.json()["detail"]
+
+    def test_the_last_admin_cannot_be_removed(self, anonymous) -> None:
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        # Clear the bootstrapped admin so neil really is the last one, then
+        # add a member - which must not count towards keeping a way in.
+        assert admin.delete("/api/users/admin").status_code == 200
+        anonymous.app.state.users.add("amit", ADMIN_PASSWORD, Role.MEMBER)
+        assert admin.delete("/api/users/neil").status_code == 400
+
+    def test_a_reset_password_works_immediately(self, anonymous) -> None:
+        admin = self._sign_in(anonymous, "neil", Role.ADMIN)
+        anonymous.app.state.users.add("amit", ADMIN_PASSWORD, Role.MEMBER)
+        reset = admin.post(
+            "/api/users/amit/password", json={"password": "a-fresh-password"}
+        )
+        assert reset.status_code == 200
+
+        fresh = TestClient(anonymous.app)
+        good = fresh.post(
+            "/login", data={"username": "amit", "password": "a-fresh-password"}
+        )
+        assert good.status_code == 200
+        stale = fresh.post(
+            "/login", data={"username": "amit", "password": ADMIN_PASSWORD}
+        )
+        assert stale.status_code == 401
+
+
+class TestSessionCookie:
+    """The cookie itself, since it is the whole credential once issued."""
+
+    @pytest.fixture
+    def app_client(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            yield client
+
+    def test_is_httponly_and_samesite(self, app_client) -> None:
+        """HttpOnly stops XSS lifting it; SameSite is the CSRF cover."""
+        response = app_client.post(
+            "/login",
+            data={"username": "neil", "password": ADMIN_PASSWORD},
+            follow_redirects=False,
+        )
+        header = response.headers["set-cookie"].lower()
+        assert "httponly" in header
+        assert "samesite=lax" in header
+
+    def test_logout_expires_the_cookie(self, app_client) -> None:
+        app_client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+        response = app_client.post("/logout", follow_redirects=False)
+        assert SESSION_COOKIE in response.headers["set-cookie"]
+        assert app_client.get("/api/me").status_code == 401
