@@ -180,9 +180,25 @@ async function send() {
   }
 }
 
+// Jobs the user has asked to stop. Stopping is not instant - the bot has to
+// notice, leave the call, flush transcription and write the summary, which
+// took ~11s in practice - so the click has to acknowledge itself immediately
+// rather than waiting for the next 2s poll. Without this the button looks
+// dead and people click it again.
+const stopping = new Set();
+
 async function stop(id) {
-  try { await api(`/api/meetings/${id}/stop`, { method: "POST" }); await refresh(); }
-  catch (err) { showError(err.message); }
+  if (stopping.has(id)) return;
+  stopping.add(id);
+  const button = document.querySelector(`[data-stop="${id}"]`);
+  if (button) { button.disabled = true; button.textContent = "Stopping…"; }
+  try {
+    await api(`/api/meetings/${id}/stop`, { method: "POST" });
+  } catch (err) {
+    stopping.delete(id);
+    showError(err.message);
+  }
+  await refresh();
 }
 
 async function toggle(id, name) {
@@ -214,13 +230,18 @@ function renderJob(job, detail) {
       <span class="badge b-${job.status}">${job.status.replace("_", " ")}</span>
       <span class="code">${esc(job.meet_url)}</span>
       <span style="flex:1"></span>
-      ${live ? `<button class="small danger" data-stop="${job.id}">Stop &amp; summarise</button>` : ""}
+      ${live ? (stopping.has(job.id)
+          ? `<button class="small danger" disabled>Stopping…</button>`
+          : `<button class="small danger" data-stop="${job.id}">Stop &amp; summarise</button>`) : ""}
       ${job.has_transcript ? `<button class="small ghost" data-art="${job.id}" data-name="transcript.md">Transcript</button>` : ""}
       ${job.has_summary ? `<button class="small ghost" data-art="${job.id}" data-name="analysis.md">AI notes</button>` : ""}
     </div>
     <div class="meta">
       ${when(job.created_at)} · ${mmss(job.elapsed_s)} · ${count} utterance${count === 1 ? "" : "s"}${speakers ? ` · ${speakers} speaker${speakers === 1 ? "" : "s"}` : ""}
     </div>
+    ${stopping.has(job.id) && live
+        ? `<div class="meta">Leaving the call, then writing the transcript and AI notes — usually about 10 seconds.</div>`
+        : ""}
     ${(job.errors || []).map((e) => `<div class="err">${esc(e)}</div>`).join("")}
     ${live && lines ? `<div class="live" id="live-${job.id}">${lines}</div>` : ""}
     <div id="art-${job.id}"></div>
@@ -245,6 +266,10 @@ async function refresh() {
     if (["finished", "failed"].includes(job.status)) return null;
     try { return await api(`/api/meetings/${job.id}`); } catch (_) { return null; }
   }));
+
+  for (const job of data.meetings) {
+    if (["finished", "failed"].includes(job.status)) stopping.delete(job.id);
+  }
 
   const openKey = [...opened][0];
   $("jobs").innerHTML = data.meetings.map((job, i) => renderJob(job, details[i])).join("");

@@ -930,12 +930,31 @@ class MeetSession:
         if leave_button is None:
             logger.debug("No leave button available; the call is already over")
             return
-        try:
-            await leave_button.click(timeout=3000)
-            logger.info("Left the call")
+        # Escalating fallbacks, because failing to leave is not cosmetic: the
+        # bot stays visible in someone else's meeting until they remove it.
+        # Observed live - the button resolves but a normal click times out,
+        # because while presenting, Meet floats a bar and tooltips over the
+        # call controls and Playwright waits forever for the element to stop
+        # being obscured. force= skips that actionability wait; the DOM click
+        # is a last resort that cannot be intercepted at all.
+        attempts = (
+            ("click", lambda: leave_button.click(timeout=3000)),
+            ("force click", lambda: leave_button.click(timeout=3000, force=True)),
+            ("dom click", lambda: leave_button.evaluate("el => el.click()")),
+        )
+        for label, attempt in attempts:
+            try:
+                await attempt()
+            except PlaywrightError as exc:
+                logger.debug("Leave via %s failed: %s", label, exc)
+                continue
+            logger.info("Left the call (%s)", label)
             self._emit("left_call")
-        except PlaywrightError as exc:
-            logger.warning("Could not click leave: %s", exc)
+            return
+        logger.warning(
+            "Could not click leave; closing the browser instead. The bot may "
+            "linger in the participant list for a moment."
+        )
 
     async def read_participant_names(self) -> list[str]:
         """Real display names in the call, excluding the bot itself.
