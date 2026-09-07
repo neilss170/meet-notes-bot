@@ -417,6 +417,7 @@
     lines: [], // { speaker, text }
     maxLines: 6,
     renderTimer: null,
+    paintCount: 0,
 
     ensureCanvas() {
       if (this.canvas) {
@@ -509,6 +510,7 @@
         ctx.font = "26px Arial, sans-serif";
         ctx.fillText("Waiting for speech...", 40, 130);
       }
+      this.paintCount += 1;
     },
 
     /** Repaint on a timer so the capture stream keeps producing frames. */
@@ -555,10 +557,58 @@
   let overlayShared = false;
 
   if (navigator.mediaDevices) {
-    navigator.mediaDevices.getDisplayMedia = async () => {
-      log("info", "getDisplayMedia intercepted; sharing the caption canvas");
+    navigator.mediaDevices.getDisplayMedia = async (constraints) => {
+      log("info", "getDisplayMedia intercepted; sharing the caption canvas", {
+        constraints: (() => {
+          try {
+            return JSON.stringify(constraints || {});
+          } catch (err) {
+            return "unserialisable";
+          }
+        })(),
+      });
       overlayShared = true;
-      return captionOverlay.captureStream();
+      const stream = captionOverlay.captureStream();
+      const [track] = stream.getVideoTracks();
+      if (track) {
+        // A canvas track does not look like a screen capture: no
+        // displaySurface, an empty label, and a contentHint of "". Meet
+        // inspects a presented track, so the differences are papered over
+        // here rather than hoping it does not look.
+        try {
+          track.contentHint = "text";
+        } catch (err) {
+          /* read-only in some builds; not fatal */
+        }
+        const nativeSettings = track.getSettings.bind(track);
+        track.getSettings = () =>
+          Object.assign({ displaySurface: "browser", cursor: "never" }, nativeSettings());
+        try {
+          Object.defineProperty(track, "label", {
+            value: "meetbot:live-transcript",
+            configurable: true,
+          });
+        } catch (err) {
+          /* label is read-only in some builds; not fatal */
+        }
+        // Whether Meet keeps or discards the track is the answer to "the
+        // share started but nothing appeared", so say so plainly.
+        track.addEventListener("ended", () =>
+          log("warn", "caption overlay track ENDED - Meet dropped the share"),
+        );
+        track.addEventListener("mute", () =>
+          log("warn", "caption overlay track muted"),
+        );
+        setTimeout(() => {
+          log("info", "caption overlay track status", {
+            readyState: track.readyState,
+            muted: track.muted,
+            enabled: track.enabled,
+            frames: captionOverlay.paintCount,
+          });
+        }, 5000);
+      }
+      return stream;
     };
   } else {
     // Only happens on an insecure origin; Meet is https so this is a
@@ -633,6 +683,7 @@
       return {
         connected: transport.connected,
         overlayShared,
+        overlayPaints: captionOverlay.paintCount,
         pending: transport.pending.length,
         channels: Array.from(capture.channels.entries()).map(([id, info]) => ({
           id,
