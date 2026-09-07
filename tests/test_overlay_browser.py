@@ -194,3 +194,74 @@ async def test_render_loop_stops_when_sharing_stops(overlay):
     settled = await overlay.frames()
     await overlay.page.wait_for_timeout(1500)
     assert await overlay.frames() == settled, "frames still arriving after share ended"
+
+
+# --------------------------------------------------------------------------- #
+# Caption extraction
+# --------------------------------------------------------------------------- #
+
+#: A caption panel shaped the way Meet renders one: a labelled region whose
+#: children each pair a speaker name with the text recognised so far. The
+#: extractor reads rendered text rather than class names precisely so that it
+#: survives Google's obfuscated-build churn, which is what this exercises.
+_CAPTION_DOM = """
+<div role="region" aria-label="Captions">
+  <div><div class="zs7s8d jxFHg">Neil Sharma</div><div>Morning everyone, thanks for joining.</div></div>
+  <div><div class="zs7s8d jxFHg">Priya Menon</div><div>I finished the pipeline yesterday.</div></div>
+</div>
+"""
+
+
+async def test_caption_extractor_reads_names_and_text(browser_page):
+    """The one piece of caption scraping that depends on Meet's real DOM."""
+    from meetbot import selectors
+
+    await browser_page.set_content(_CAPTION_DOM)
+    entries = await browser_page.eval_on_selector_all(
+        selectors.CAPTION_REGION[0], selectors.CAPTION_ENTRY_EXTRACTOR
+    )
+    assert [e["name"] for e in entries] == ["Neil Sharma", "Priya Menon"]
+    assert entries[0]["text"].startswith("Morning everyone")
+    assert entries[1]["text"].startswith("I finished the pipeline")
+
+
+async def test_caption_extractor_survives_an_empty_panel(browser_page):
+    """A panel with no captions yet must yield nothing, not a stray entry."""
+    from meetbot import selectors
+
+    await browser_page.set_content(
+        '<div role="region" aria-label="Captions"></div>'
+    )
+    entries = await browser_page.eval_on_selector_all(
+        selectors.CAPTION_REGION[0], selectors.CAPTION_ENTRY_EXTRACTOR
+    )
+    assert entries == []
+
+
+async def test_caption_extraction_feeds_attribution_end_to_end(browser_page):
+    """Scraped DOM -> CaptionWatcher -> a real name for a timed utterance."""
+    from meetbot import selectors
+    from meetbot.captions import CaptionWatcher
+
+    watcher = CaptionWatcher()
+    await browser_page.set_content(_CAPTION_DOM)
+    for now in (1.0, 2.0):
+        entries = await browser_page.eval_on_selector_all(
+            selectors.CAPTION_REGION[0], selectors.CAPTION_ENTRY_EXTRACTOR
+        )
+        watcher.poll([(e["name"], e["text"]) for e in entries], now)
+
+    # Priya's caption then grows, which is how Meet marks her as talking now.
+    await browser_page.set_content(
+        _CAPTION_DOM.replace(
+            "I finished the pipeline yesterday.",
+            "I finished the pipeline yesterday and it runs end to end.",
+        )
+    )
+    entries = await browser_page.eval_on_selector_all(
+        selectors.CAPTION_REGION[0], selectors.CAPTION_ENTRY_EXTRACTOR
+    )
+    watcher.poll([(e["name"], e["text"]) for e in entries], 6.0)
+
+    assert watcher.resolve(0.5, 2.0) == "Neil Sharma"
+    assert watcher.resolve(5.0, 6.0) == "Priya Menon"

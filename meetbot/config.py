@@ -162,6 +162,27 @@ class Config:
     #: the least-tested selector in the project; see the UNVERIFIED note on
     #: PRESENT_NOW_BUTTON in selectors.py.
     live_captions_overlay: bool = False
+    #: Turn Meet's own live captions on (for this browser only) and use the
+    #: speaker name Meet attaches to each caption entry to label utterances,
+    #: instead of Deepgram's generic "Speaker 0" / "Speaker 1".
+    #:
+    #: This is the only way to get real names: nothing in the page links an
+    #: audio track to a participant, but Meet does the attribution
+    #: server-side and renders the result. Only the name and the timing are
+    #: used - the caption text itself is discarded, because Deepgram's
+    #: transcription is more accurate and Meet rewrites captions in place.
+    #:
+    #: Enabling captions is a per-viewer setting: it does not turn on
+    #: captions, transcription or recording for anyone else in the call.
+    #: Degrades silently to generic labels if captions are unavailable.
+    speaker_names_from_captions: bool = True
+    #: Replace real participant names with stable pseudonyms ("Speaker A")
+    #: in the transcript text sent to the LLM. The local transcript keeps the
+    #: real names; only the third-party request is anonymised. Off by
+    #: default - the names are usually the point of the summary - but a
+    #: one-flag control for meetings where personal names should not leave
+    #: the machine.
+    anonymise_analysis: bool = False
 
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
@@ -328,6 +349,10 @@ def load_config(
         sample_rate=_env_int(env, "SAMPLE_RATE", 16_000),
         per_participant_audio=_env_bool(env, "PER_PARTICIPANT_AUDIO", False),
         live_captions_overlay=_env_bool(env, "LIVE_CAPTIONS_OVERLAY", False),
+        speaker_names_from_captions=_env_bool(
+            env, "SPEAKER_NAMES_FROM_CAPTIONS", True
+        ),
+        anonymise_analysis=_env_bool(env, "ANONYMISE_ANALYSIS", False),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),

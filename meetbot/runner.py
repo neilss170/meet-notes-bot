@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import re
 import signal
@@ -28,6 +29,7 @@ from meetbot.analysis.summarize import (
     render_analysis_markdown,
 )
 from meetbot.capture.bridge import AudioBridge
+from meetbot.captions import CaptionWatcher, anonymise
 from meetbot.config import Config
 from meetbot.join import EndReason, JoinError, MeetSession, MeetingState
 from meetbot.logging_setup import configure_logging
@@ -40,6 +42,11 @@ from meetbot.transcript.store import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How often to read Meet's caption panel. Fast enough that a short utterance
+#: is not missed between polls, slow enough to stay cheap - the DOM read is
+#: one page call and the watcher ignores entries that have not changed.
+_CAPTION_POLL_S = 1.0
 
 #: Warn if no audio has reached the bridge after this many seconds in-call.
 _SILENT_CAPTURE_WARNING_S = 60.0
@@ -117,6 +124,37 @@ def _restore_signal_handlers(restore: list[Any]) -> None:
                 signal.signal(sig, previous)
 
 
+async def _poll_captions(
+    session: MeetSession, bridge: AudioBridge, watcher: CaptionWatcher
+) -> None:
+    """Feed Meet's caption panel into ``watcher`` for as long as the call runs.
+
+    Timestamps come from :meth:`AudioBridge.meeting_elapsed` so observations
+    share a clock with ``Utterance.start``; anything else makes the overlap
+    matching meaningless.
+
+    Errors are swallowed deliberately. Speaker naming is an enhancement over
+    "Speaker 0", so a caption panel that closes, breaks, or never appears must
+    degrade the labels rather than end the meeting.
+    """
+    named: set[str] = set()
+    while True:
+        try:
+            await asyncio.sleep(_CAPTION_POLL_S)
+            entries = await session.read_caption_entries()
+            if not entries:
+                continue
+            watcher.poll(entries, bridge.meeting_elapsed())
+            fresh = watcher.timeline.speakers - named
+            if fresh:
+                named.update(fresh)
+                logger.info("Captions identified speaker(s): %s", ", ".join(sorted(fresh)))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - never let naming kill the run
+            logger.debug("Caption poll failed", exc_info=True)
+
+
 async def run_meeting(config: Config) -> MeetingRun:
     """Join the configured meeting and run the full pipeline.
 
@@ -158,6 +196,7 @@ async def run_meeting(config: Config) -> MeetingRun:
         on_utterance=on_utterance if config.live_captions_overlay else None,
     )
     stop_handlers: list[Any] = []
+    caption_task: asyncio.Task[None] | None = None
 
     try:
         try:
@@ -193,6 +232,20 @@ async def run_meeting(config: Config) -> MeetingRun:
                     ", ".join(unique),
                 )
 
+        if config.speaker_names_from_captions:
+            if await session.enable_captions():
+                watcher = CaptionWatcher()
+                bridge.speaker_resolver = watcher.resolve
+                caption_task = asyncio.create_task(
+                    _poll_captions(session, bridge, watcher)
+                )
+                store.append_event("caption_speaker_names_enabled")
+            else:
+                run.errors.append(
+                    "Could not turn on Meet's live captions; speakers stay "
+                    "generic (Speaker 0 / Speaker 1)"
+                )
+
         if config.live_captions_overlay:
             if await session.start_caption_overlay():
                 store.append_event("caption_overlay_started")
@@ -216,8 +269,13 @@ async def run_meeting(config: Config) -> MeetingRun:
         with contextlib.suppress(Exception):
             store.append_event("run_failed", error=repr(exc))
     finally:
-        # Shut down in dependency order: stop the browser producing audio,
-        # then flush Deepgram, then close the transcript.
+        # Shut down in dependency order: stop the caption poller (it reads
+        # the page), then the browser producing audio, then flush Deepgram,
+        # then close the transcript.
+        if caption_task is not None:
+            caption_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await caption_task
         if stop_handlers:
             _restore_signal_handlers(stop_handlers)
         with contextlib.suppress(Exception):
@@ -372,10 +430,36 @@ async def _maybe_analyse(config: Config, run: MeetingRun) -> None:
         run.errors.append(f"Could not write analysis.md: {exc}")
 
 
+def _anonymised(utterances: list[Any]) -> list[Any]:
+    """Copy ``utterances`` with real speaker names replaced by pseudonyms.
+
+    Used when ``--anonymise-analysis`` is set, so personal names never reach
+    the LLM provider while who-said-what structure - and therefore the
+    usefulness of the summary - is preserved. The mapping lives only in this
+    call; the transcript written to disk keeps the real names.
+    """
+    mapping: dict[str, str] = {}
+    swapped = [
+        dataclasses.replace(u, speaker=anonymise(u.speaker, mapping))
+        for u in utterances
+    ]
+    if mapping:
+        # Logged locally so the operator can decode the summary; this never
+        # leaves the machine.
+        logger.info(
+            "Anonymising %d speaker(s) before the LLM call: %s",
+            len(mapping),
+            ", ".join(f"{real} -> {alias}" for real, alias in mapping.items()),
+        )
+    return swapped
+
+
 def _analyse_sync(
     config: Config, utterances: list[Any], duration: str
 ) -> MeetingAnalysis:
     """Blocking analysis call, run in a worker thread."""
+    if config.anonymise_analysis:
+        utterances = _anonymised(utterances)
     client = build_client(
         config.llm_provider,
         config.llm_api_key,

@@ -319,3 +319,68 @@ async def test_frames_after_stop_do_not_open_new_channels(store, stub_deepgram) 
     bridge._handle_audio_frame(pcm_frame(MIXED_CHANNEL, [1, 2]))
 
     assert not stub_deepgram.instances
+
+
+async def test_caption_names_replace_diarization_labels(store, stub_deepgram) -> None:
+    """A resolved caption name wins over Deepgram's generic speaker index."""
+    bridge = make_bridge(store)
+    bridge._started_at = bridge_module.time.monotonic() - 30.0
+    bridge._handle_audio_frame(pcm_frame(MIXED_CHANNEL, [1, 2]))
+    bridge.speaker_resolver = lambda start, end: "Neil Sharma"
+
+    bridge._record_segment(
+        MIXED_CHANNEL,
+        TranscriptSegment(speaker="Speaker 1", text="hello", start=2.0, end=3.5),
+    )
+    await bridge.stop()
+    store.close()
+
+    assert read_utterances(store.path)[0].speaker == "Neil Sharma"
+
+
+async def test_unresolved_captions_leave_the_generic_label(store, stub_deepgram) -> None:
+    """No caption match must degrade to Speaker N, not to a blank or a guess."""
+    bridge = make_bridge(store)
+    bridge._started_at = bridge_module.time.monotonic() - 30.0
+    bridge._handle_audio_frame(pcm_frame(MIXED_CHANNEL, [1, 2]))
+    bridge.speaker_resolver = lambda start, end: None
+
+    bridge._record_segment(
+        MIXED_CHANNEL,
+        TranscriptSegment(speaker="Speaker 1", text="hello", start=2.0, end=3.5),
+    )
+    await bridge.stop()
+    store.close()
+
+    assert read_utterances(store.path)[0].speaker == "Speaker 1"
+
+
+async def test_a_failing_resolver_never_stops_capture(store, stub_deepgram) -> None:
+    """Speaker naming is an enhancement; it must not cost us the utterance."""
+    bridge = make_bridge(store)
+    bridge._started_at = bridge_module.time.monotonic() - 30.0
+    bridge._handle_audio_frame(pcm_frame(MIXED_CHANNEL, [1, 2]))
+
+    def boom(start: float, end: float) -> str:
+        raise RuntimeError("caption panel exploded")
+
+    bridge.speaker_resolver = boom
+    bridge._record_segment(
+        MIXED_CHANNEL,
+        TranscriptSegment(speaker="Speaker 1", text="hello", start=2.0, end=3.5),
+    )
+    await bridge.stop()
+    store.close()
+
+    utterances = read_utterances(store.path)
+    assert len(utterances) == 1
+    assert utterances[0].speaker == "Speaker 1"
+    assert utterances[0].text == "hello"
+
+
+async def test_meeting_elapsed_shares_the_utterance_clock(store, stub_deepgram) -> None:
+    """The resolver's clock and Utterance.start must be the same timeline."""
+    bridge = make_bridge(store)
+    assert bridge.meeting_elapsed() == 0.0  # not started yet
+    bridge._started_at = bridge_module.time.monotonic() - 12.0
+    assert bridge.meeting_elapsed() == pytest.approx(12.0, abs=0.5)

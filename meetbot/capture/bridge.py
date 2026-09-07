@@ -120,6 +120,22 @@ class AudioBridge:
         #: the runner once the roster is read and shows exactly one other
         #: person. ``None`` leaves the generic "participant-N" labels.
         self.sole_participant_name: str | None = None
+        #: Optional ``(start, end) -> name | None`` lookup, set by the runner
+        #: when caption-based speaker attribution is enabled. Returning
+        #: ``None`` leaves whatever label diarization produced, so a missing
+        #: or unmatched caption degrades to "Speaker 0" instead of guessing.
+        self.speaker_resolver: Callable[[float, float], str | None] | None = None
+
+    def meeting_elapsed(self) -> float:
+        """Seconds since capture started - the clock ``Utterance.start`` uses.
+
+        Anything feeding :attr:`speaker_resolver` must timestamp its
+        observations with this, or the overlap arithmetic compares two
+        unrelated clocks.
+        """
+        if self._started_at is None:
+            return 0.0
+        return time.monotonic() - self._started_at
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -428,11 +444,26 @@ class AudioBridge:
             # Per-participant capture: the channel label *is* the speaker.
             speaker = state.label
 
+        start = round(state.meeting_time(segment.start), 3)
+        end = round(state.meeting_time(segment.end), 3)
+
+        # Meet's own captions carry the speaker names that the audio path
+        # cannot see. When the timeline can name whoever was talking across
+        # this window, that real name beats a diarization index.
+        if self.speaker_resolver is not None:
+            try:
+                resolved = self.speaker_resolver(start, end)
+            except Exception:  # noqa: BLE001 - attribution must never stop capture
+                logger.exception("Speaker resolver failed; keeping %r", speaker)
+            else:
+                if resolved:
+                    speaker = resolved
+
         utterance = Utterance(
             speaker=speaker,
             text=segment.text,
-            start=round(state.meeting_time(segment.start), 3),
-            end=round(state.meeting_time(segment.end), 3),
+            start=start,
+            end=end,
             channel=state.label,
             confidence=segment.confidence,
         )
