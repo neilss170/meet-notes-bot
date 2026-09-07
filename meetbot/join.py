@@ -34,6 +34,7 @@ from playwright.async_api import (
 from meetbot import selectors
 from meetbot.capture import load_inject_script
 from meetbot.config import Config, validate_meet_url
+from meetbot.profile import clone_profile, discard_profile
 
 logger = logging.getLogger(__name__)
 browser_logger = logging.getLogger("meetbot.browser")
@@ -215,6 +216,8 @@ class MeetSession:
         self._page: Page | None = None
         self._stop_requested = asyncio.Event()
         self._joined_at: float | None = None
+        #: Private copy of the signed-in profile, removed in close().
+        self._profile_clone: Path | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -272,11 +275,18 @@ class MeetSession:
             #
             # launch_persistent_context owns both the browser and the context,
             # so there is no separate browser object to track here.
-            profile = self._config.chrome_profile_dir.expanduser()
-            profile.mkdir(parents=True, exist_ok=True)
-            logger.info("Using the signed-in Chromium profile at %s", profile)
+            master = self._config.chrome_profile_dir.expanduser()
+            master.mkdir(parents=True, exist_ok=True)
+            # Chromium cannot share one profile directory between two live
+            # browsers, and gives the second a blank one rather than an
+            # error - so a second concurrent meeting would join signed-out.
+            # Each run works on its own copy; see meetbot.profile.
+            self._profile_clone = await asyncio.to_thread(clone_profile, master)
+            logger.info(
+                "Using a private copy of the signed-in Chromium profile at %s", master
+            )
             self._context = await self._playwright.chromium.launch_persistent_context(
-                str(profile), **launch_kwargs, **context_kwargs
+                str(self._profile_clone), **launch_kwargs, **context_kwargs
             )
             self._browser = None
         else:
@@ -379,6 +389,9 @@ class MeetSession:
         self._context = None
         self._browser = None
         self._playwright = None
+        # After the browser has released it, not before.
+        discard_profile(self._profile_clone)
+        self._profile_clone = None
         logger.info("Browser closed")
 
     def request_stop(self) -> None:
