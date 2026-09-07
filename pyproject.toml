@@ -18,7 +18,8 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.40"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+serve = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
 
 [project.scripts]
 meetbot = "meetbot.cli:main"
@@ -29,6 +30,9 @@ include = ["meetbot*"]
 [tool.setuptools.package-data]
 # inject.js must ship with the package - the join flow reads it at runtime.
 "meetbot.capture" = ["*.js"]
+# The service reads its pages from disk at request time, so they have to be
+# installed alongside the code rather than only existing in a checkout.
+"meetbot.service" = ["*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

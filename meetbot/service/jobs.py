@@ -80,6 +80,9 @@ class MeetingJob:
 
     id: str
     meet_url: str
+    #: Username that sent the bot. Empty for runs recovered from disk, which
+    #: predate accounts - those are shown to admins only.
+    owner: str = ""
     status: JobStatus = JobStatus.STARTING
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
@@ -166,6 +169,7 @@ class MeetingJob:
         payload: dict[str, Any] = {
             "id": self.id,
             "meet_url": self.meet_url,
+            "owner": self.owner,
             "status": self.status.value,
             "created_at": self.created_at,
             "finished_at": self.finished_at,
@@ -205,17 +209,31 @@ class JobManager:
     def get(self, job_id: str) -> MeetingJob | None:
         return self._jobs.get(job_id)
 
+    def visible_to(self, username: str, is_admin: bool) -> list[MeetingJob]:
+        """Jobs ``username`` may see: their own, or everything for an admin.
+
+        Transcripts are the sensitive part of this service, so the default is
+        that a meeting belongs to whoever sent the bot. Runs restored from
+        disk have no owner and are therefore admin-only rather than public.
+        """
+        if is_admin:
+            return self.list()
+        return [job for job in self.list() if job.owner == username]
+
     @property
     def active_count(self) -> int:
         return sum(1 for job in self._jobs.values() if not job.status.is_terminal)
 
     # -- commands ----------------------------------------------------------
 
-    def start(self, meet_url: str, **overrides: Any) -> MeetingJob:
+    def start(
+        self, meet_url: str, *, owner: str = "", **overrides: Any
+    ) -> MeetingJob:
         """Send the bot to ``meet_url``.
 
         Args:
             meet_url: The meeting to join.
+            owner: Username of whoever asked for it, for per-user visibility.
             **overrides: Any :class:`Config` field to override for this job.
 
         Returns:
@@ -235,7 +253,7 @@ class JobManager:
             bridge_port=free_port(),
             **overrides,
         )
-        job = MeetingJob(id=uuid.uuid4().hex[:12], meet_url=meet_url)
+        job = MeetingJob(id=uuid.uuid4().hex[:12], meet_url=meet_url, owner=owner)
         self._jobs[job.id] = job
         job._task = asyncio.create_task(self._run(job, config))
         logger.info("Job %s: sending the bot to %s", job.id, meet_url)

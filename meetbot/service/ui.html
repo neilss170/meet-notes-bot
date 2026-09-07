@@ -117,6 +117,31 @@
   .doc-body code {
     background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12.5px;
   }
+  .topbar {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+  }
+  .whoami { color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 9px; }
+  .role {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .05em;
+    text-transform: uppercase; padding: 2px 7px; border-radius: 20px;
+    background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+  }
+  .users { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .users th {
+    text-align: left; font-size: 11.5px; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--muted); font-weight: 700;
+    padding: 0 10px 8px 0; border-bottom: 1px solid var(--line);
+  }
+  .users td { padding: 9px 10px 9px 0; border-bottom: 1px solid var(--line); }
+  .users tr:last-child td { border-bottom: 0; }
+  .users td:last-child, .users th:last-child { text-align: right; padding-right: 0; }
+  .newuser { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 14px; }
+  .newuser input, .newuser select {
+    padding: 8px 10px; font-size: 14px; font-family: inherit; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 7px;
+  }
+  .newuser input { flex: 1 1 140px; min-width: 0; }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
          display: inline-block; animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
@@ -124,8 +149,18 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>meetbot</h1>
-  <div class="sub">Send a note-taking bot into a Google Meet call.</div>
+  <div class="topbar">
+    <div>
+      <h1>meetbot</h1>
+      <div class="sub">Send a note-taking bot into a Google Meet call.</div>
+    </div>
+    <div class="whoami">
+      <span id="me"></span>
+      <form method="post" action="/logout" style="display:inline">
+        <button class="small ghost" type="submit">Sign out</button>
+      </form>
+    </div>
+  </div>
 
   <div class="panel">
     <label for="url">Meeting link or code</label>
@@ -155,6 +190,24 @@
       <span class="meta" id="active"></span>
     </div>
     <div id="jobs"><div class="empty">Nothing yet. Send the bot to a meeting above.</div></div>
+  </div>
+
+  <div class="panel" id="admin" hidden>
+    <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+      <strong style="font-size: 14px;">Accounts</strong>
+      <span class="meta">Admins see every meeting. Members see only their own.</span>
+    </div>
+    <div id="users"></div>
+    <div class="newuser">
+      <input id="nu-name" placeholder="username" autocapitalize="none" spellcheck="false">
+      <input id="nu-pass" type="password" placeholder="password (min 8)">
+      <select id="nu-role">
+        <option value="member">Member</option>
+        <option value="admin">Admin</option>
+      </select>
+      <button class="small" id="nu-add">Add user</button>
+    </div>
+    <div class="err" id="admin-error" hidden></div>
   </div>
 </div>
 
@@ -259,6 +312,12 @@ async function api(path, options) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" }, ...options,
   });
+  if (response.status === 401) {
+    // The session expired or was revoked mid-poll. Reloading lands on the
+    // login form rather than leaving a page that quietly stops updating.
+    window.location = "/login";
+    throw new Error("Signed out");
+  }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
     try { detail = (await response.json()).detail || detail; } catch (_) {}
@@ -424,16 +483,101 @@ async function refresh(force) {
   if (pageScroll) window.scrollTo({ top: pageScroll });
 }
 
+/* ---- accounts ---------------------------------------------------------- */
+
+let me = null;
+
+function showAdminError(message) {
+  const box = $("admin-error");
+  box.textContent = message;
+  box.hidden = !message;
+}
+
+async function loadUsers() {
+  let data;
+  try { data = await api("/api/users"); }
+  catch (err) { showAdminError(err.message); return; }
+
+  $("users").innerHTML = `
+    <table class="users">
+      <thead><tr><th>User</th><th>Role</th><th>Added</th><th></th></tr></thead>
+      <tbody>${data.users.map((u) => `
+        <tr>
+          <td><strong>${esc(u.username)}</strong>${u.username === me.username ? " (you)" : ""}</td>
+          <td><span class="role">${esc(u.role)}</span></td>
+          <td class="meta">${when(u.created_at)}</td>
+          <td>
+            <button class="small ghost" data-pw="${esc(u.username)}">Reset password</button>
+            ${u.username === me.username ? ""
+              : `<button class="small danger" data-del="${esc(u.username)}">Remove</button>`}
+          </td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+}
+
+async function addUser() {
+  const username = $("nu-name").value.trim();
+  const password = $("nu-pass").value;
+  if (!username || !password) { showAdminError("Username and password are both required."); return; }
+  showAdminError("");
+  try {
+    await api("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, role: $("nu-role").value }),
+    });
+    $("nu-name").value = ""; $("nu-pass").value = "";
+    await loadUsers();
+  } catch (err) { showAdminError(err.message); }
+}
+
+async function resetPassword(username) {
+  const password = prompt(`New password for ${username} (at least 8 characters):`);
+  if (!password) return;
+  showAdminError("");
+  try {
+    await api(`/api/users/${encodeURIComponent(username)}/password`,
+              { method: "POST", body: JSON.stringify({ password }) });
+    showAdminError("");
+  } catch (err) { showAdminError(err.message); }
+}
+
+async function removeUser(username) {
+  if (!confirm(`Remove ${username}? Their meetings stay on disk.`)) return;
+  showAdminError("");
+  try {
+    await api(`/api/users/${encodeURIComponent(username)}`, { method: "DELETE" });
+    await loadUsers();
+  } catch (err) { showAdminError(err.message); }
+}
+
 document.addEventListener("click", (event) => {
   const stopId = event.target.closest("[data-stop]")?.dataset.stop;
   if (stopId) { stop(stopId); return; }
   const art = event.target.closest("[data-art]");
-  if (art) toggle(art.dataset.art, art.dataset.name);
+  if (art) { toggle(art.dataset.art, art.dataset.name); return; }
+  const pw = event.target.closest("[data-pw]")?.dataset.pw;
+  if (pw) { resetPassword(pw); return; }
+  const del = event.target.closest("[data-del]")?.dataset.del;
+  if (del) removeUser(del);
 });
 $("send").addEventListener("click", send);
 $("url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !busy) send(); });
 
 (async function init() {
+  // Who is signed in decides what the page even shows, so this comes first;
+  // a 401 here redirects to the login form and nothing else runs.
+  try {
+    me = await api("/api/me");
+    $("me").innerHTML =
+      `${esc(me.username)} <span class="role">${esc(me.role)}</span>`;
+    if (me.role === "admin") {
+      $("admin").hidden = false;
+      $("nu-add").addEventListener("click", addUser);
+      await loadUsers();
+    }
+  } catch (_) { return; }
+
   try {
     const config = await api("/api/config");
     $("opt-names").checked = config.speaker_names_from_captions;

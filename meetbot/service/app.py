@@ -1,9 +1,18 @@
 """HTTP API and web UI for sending the bot to meetings.
 
-Bound to loopback only, deliberately. This service can join meetings and read
-their transcripts; it has no authentication, so it must not be reachable from
-the network. ``--host`` exists but warns loudly, and the UI it serves is a
-single page with no external requests.
+Every route requires a signed-in account. That is not decoration: this
+service joins meetings and serves transcripts of them, so an unauthenticated
+instance reachable from the network hands both to anyone who finds the port.
+
+Two roles, defined in :mod:`meetbot.service.auth`. A member sends the bot and
+sees the meetings they started; an admin sees every meeting and manages
+accounts. Ownership is per meeting rather than per transcript directory,
+which is why runs recorded before accounts existed are visible to admins
+only - guessing who they belonged to would be worse than showing nobody.
+
+Binding to a non-loopback address is now supportable, but stays a deliberate
+act: ``--host`` still warns, because sessions travel as cookies and only TLS
+in front of the service keeps them off the wire.
 """
 
 from __future__ import annotations
@@ -13,16 +22,29 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from meetbot.config import Config, ConfigError
-from meetbot.service.jobs import JobManager, load_past_runs
+from meetbot.service.auth import (
+    SESSION_COOKIE,
+    SESSION_TTL_S,
+    AuthError,
+    Role,
+    User,
+    UserStore,
+    bootstrap_admin,
+    issue_session,
+    load_or_create_secret,
+    read_session,
+)
+from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
 
 logger = logging.getLogger(__name__)
 
 UI_PATH = Path(__file__).parent / "ui.html"
+LOGIN_PATH = Path(__file__).parent / "login.html"
 
 #: Artifacts a client may fetch, mapped to their media type. An allow-list,
 #: not a path parameter joined onto a directory: the artifact name comes from
@@ -46,12 +68,40 @@ class StartRequest(BaseModel):
     anonymise_analysis: bool | None = None
 
 
+class CreateUserRequest(BaseModel):
+    """Admin request to add an account."""
+
+    username: str
+    password: str
+    role: Role = Role.MEMBER
+
+
+class PasswordRequest(BaseModel):
+    """Admin request to set someone's password."""
+
+    password: str
+
+
 def create_app(config: Config) -> FastAPI:
     """Build the service around a validated base configuration."""
     manager = JobManager(config)
+    state_dir = Path(config.service_state_dir).expanduser()
+    users = UserStore(state_dir / "users.json")
+    secret = load_or_create_secret(state_dir / "session.key")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        created = bootstrap_admin(users)
+        if created:
+            name, password = created
+            # Shown once, and only here. Storing it anywhere to display later
+            # would defeat hashing the password in the first place.
+            logger.warning("=" * 62)
+            logger.warning("No accounts existed, so an admin was created:")
+            logger.warning("    username: %s", name)
+            logger.warning("    password: %s", password)
+            logger.warning("Sign in and change it. This is shown only once.")
+            logger.warning("=" * 62)
         restored = load_past_runs(manager, config.output_dir)
         if restored:
             logger.info("Loaded %d past meeting(s) from %s", restored, config.output_dir)
@@ -64,12 +114,101 @@ def create_app(config: Config) -> FastAPI:
 
     app = FastAPI(title="meetbot", lifespan=lifespan)
 
+    # -- authentication ----------------------------------------------------
+
+    def _user_of(request: Request) -> User | None:
+        """The signed-in user, or ``None``. Never raises."""
+        token = request.cookies.get(SESSION_COOKIE)
+        if not token:
+            return None
+        username = read_session(token, secret)
+        if username is None:
+            return None
+        # Re-read the account each request: a deleted or demoted user must
+        # lose access immediately, not when their cookie happens to expire.
+        return users.get(username)
+
+    async def current_user(request: Request) -> User:
+        user = _user_of(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Sign in to continue")
+        return user
+
+    async def admin_only(request: Request) -> User:
+        user = await current_user(request)
+        if not user.is_admin:
+            raise HTTPException(status_code=403, detail="Admins only")
+        return user
+
+    def _visible_job(job_id: str, user: User) -> MeetingJob:
+        """A meeting this user may see, or a 404.
+
+        Deliberately 404 rather than 403 for someone else's meeting: a
+        distinct "forbidden" would confirm that a given id exists.
+        """
+        job = manager.get(job_id)
+        if job is None or (not user.is_admin and job.owner != user.username):
+            raise HTTPException(status_code=404, detail="No such meeting")
+        return job
+
+    @app.get("/login", response_class=HTMLResponse)
+    async def login_page(request: Request) -> Any:
+        if _user_of(request) is not None:
+            return RedirectResponse("/", status_code=303)
+        return HTMLResponse(LOGIN_PATH.read_text(encoding="utf-8"))
+
+    @app.post("/login")
+    async def login(
+        request: Request,
+        response: Response,
+        username: str = Form(...),
+        password: str = Form(...),
+    ) -> Any:
+        user = users.authenticate(username, password)
+        if user is None:
+            # One message for every failure - wrong name, wrong password,
+            # locked out - so the form cannot be used to enumerate accounts.
+            return HTMLResponse(
+                LOGIN_PATH.read_text(encoding="utf-8").replace(
+                    "<!--ERROR-->",
+                    '<div class="err">Incorrect username or password.</div>',
+                ),
+                status_code=401,
+            )
+        redirect = RedirectResponse("/", status_code=303)
+        redirect.set_cookie(
+            SESSION_COOKIE,
+            issue_session(user.username, secret),
+            max_age=int(SESSION_TTL_S),
+            httponly=True,          # unreadable to script, so XSS cannot lift it
+            samesite="lax",         # not sent on cross-site POSTs: CSRF cover
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        logger.info("%s signed in", user.username)
+        return redirect
+
+    @app.post("/logout")
+    async def logout() -> Any:
+        redirect = RedirectResponse("/login", status_code=303)
+        redirect.delete_cookie(SESSION_COOKIE, path="/")
+        return redirect
+
     @app.get("/", response_class=HTMLResponse)
-    async def index() -> str:
-        return UI_PATH.read_text(encoding="utf-8")
+    async def index(request: Request) -> Any:
+        # A browser asking for a page wants the login form, not a 401 body.
+        if _user_of(request) is None:
+            return RedirectResponse("/login", status_code=303)
+        return HTMLResponse(UI_PATH.read_text(encoding="utf-8"))
+
+    @app.get("/api/me")
+    async def whoami(user: User = Depends(current_user)) -> dict[str, Any]:
+        return user.to_dict()
+
+    # -- meetings ----------------------------------------------------------
 
     @app.get("/api/config")
-    async def get_config() -> dict[str, Any]:
+    async def get_config(_: User = Depends(current_user)) -> dict[str, Any]:
         """Defaults the UI shows, so it does not hard-code them."""
         return {
             "bot_name": config.bot_name,
@@ -82,56 +221,108 @@ def create_app(config: Config) -> FastAPI:
         }
 
     @app.get("/api/meetings")
-    async def list_meetings() -> dict[str, Any]:
+    async def list_meetings(user: User = Depends(current_user)) -> dict[str, Any]:
+        mine = manager.visible_to(user.username, user.is_admin)
         return {
-            "active": manager.active_count,
+            "active": sum(1 for job in mine if not job.status.is_terminal),
             # Progress means reading a file per job; the list view only needs
             # counts, so the detail endpoint does that work instead.
-            "meetings": [job.to_dict(include_progress=False) for job in manager.list()],
+            "meetings": [job.to_dict(include_progress=False) for job in mine],
         }
 
     @app.post("/api/meetings", status_code=201)
-    async def start_meeting(request: StartRequest) -> dict[str, Any]:
+    async def start_meeting(
+        request: StartRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
         overrides = {
             key: value
             for key, value in request.model_dump(exclude={"meet_url"}).items()
             if value is not None
         }
         try:
-            job = manager.start(request.meet_url, **overrides)
+            job = manager.start(request.meet_url, owner=user.username, **overrides)
         except (ValueError, ConfigError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return job.to_dict()
 
     @app.get("/api/meetings/{job_id}")
-    async def get_meeting(job_id: str) -> dict[str, Any]:
-        job = manager.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="No such meeting")
-        return job.to_dict()
+    async def get_meeting(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        return _visible_job(job_id, user).to_dict()
 
     @app.post("/api/meetings/{job_id}/stop")
-    async def stop_meeting(job_id: str) -> dict[str, Any]:
-        job = manager.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="No such meeting")
+    async def stop_meeting(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        job = _visible_job(job_id, user)
         stopped = await manager.stop(job_id)
         return {"stopped": stopped, **job.to_dict(include_progress=False)}
 
     @app.get("/api/meetings/{job_id}/artifact/{name}", response_class=PlainTextResponse)
-    async def get_artifact(job_id: str, name: str) -> str:
+    async def get_artifact(
+        job_id: str, name: str, user: User = Depends(current_user)
+    ) -> str:
         if name not in ARTIFACTS:
             raise HTTPException(status_code=404, detail="Unknown artifact")
-        job = manager.get(job_id)
-        if job is None:
-            raise HTTPException(status_code=404, detail="No such meeting")
+        job = _visible_job(job_id, user)
         path = job.artifact(name)
         if path is None:
             raise HTTPException(status_code=404, detail=f"{name} has not been written")
         return path.read_text(encoding="utf-8", errors="replace")
 
+    # -- accounts (admin) --------------------------------------------------
+
+    @app.get("/api/users")
+    async def list_users(_: User = Depends(admin_only)) -> dict[str, Any]:
+        return {"users": [user.to_dict() for user in users.list()]}
+
+    @app.post("/api/users", status_code=201)
+    async def create_user(
+        request: CreateUserRequest, _: User = Depends(admin_only)
+    ) -> dict[str, Any]:
+        try:
+            return users.add(
+                request.username, request.password, request.role
+            ).to_dict()
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/users/{username}/password")
+    async def set_user_password(
+        username: str, request: PasswordRequest, _: User = Depends(admin_only)
+    ) -> dict[str, Any]:
+        try:
+            users.set_password(username, request.password)
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"username": username.lower(), "updated": True}
+
+    @app.delete("/api/users/{username}")
+    async def delete_user(
+        username: str, admin: User = Depends(admin_only)
+    ) -> dict[str, Any]:
+        if username.strip().lower() == admin.username:
+            # Removing the account you are using logs you out mid-request and
+            # can strand the last admin; make it someone else's job.
+            raise HTTPException(
+                status_code=400, detail="You cannot delete your own account"
+            )
+        try:
+            users.delete(username)
+        except AuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"username": username.lower(), "deleted": True}
+
     app.state.manager = manager
+    app.state.users = users
     return app
 
 
-__all__ = ["ARTIFACTS", "StartRequest", "create_app"]
+__all__ = [
+    "ARTIFACTS",
+    "CreateUserRequest",
+    "PasswordRequest",
+    "StartRequest",
+    "create_app",
+]

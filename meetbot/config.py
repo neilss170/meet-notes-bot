@@ -200,6 +200,11 @@ class Config:
     #: password: keep it out of version control and off shared machines.
     chrome_profile_dir: Path | None = None
 
+    #: Where the web service keeps its account database and session-signing
+    #: key. Outside the repository by default: it holds password hashes and
+    #: a key that mints valid sessions.
+    service_state_dir: Path = Path("~/.meetbot")
+
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
@@ -233,6 +238,9 @@ class Config:
         # same guarantees.
         object.__setattr__(self, "bot_name", ensure_disclosure(self.bot_name))
         object.__setattr__(self, "output_dir", Path(self.output_dir))
+        object.__setattr__(
+            self, "service_state_dir", Path(self.service_state_dir).expanduser()
+        )
         if not self.llm_model:
             object.__setattr__(self, "llm_model", self.default_llm_model)
 
@@ -383,6 +391,9 @@ def load_config(
             if env.get("CHROME_PROFILE_DIR")
             else None
         ),
+        service_state_dir=Path(
+            _env_str(env, "SERVICE_STATE_DIR", "~/.meetbot")
+        ).expanduser(),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
