@@ -398,11 +398,25 @@
    * is needed ever, not one per caption line.
    * ------------------------------------------------------------------ */
 
+  // A canvas capture stream only emits a frame when the canvas is actually
+  // painted - it does NOT resample a static canvas at the requested rate.
+  // Verified in Chromium: calling captureStream() and then never drawing
+  // again yields ZERO frames and a consumer's play() never resolves, so the
+  // shared tile stays black. Painting on a timer at the capture rate is what
+  // keeps frames flowing between utterances; repainting identical pixels
+  // still counts as a paint, so the text does not need to change.
+  const OVERLAY_FPS = 2;
+  const OVERLAY_FRAME_INTERVAL_MS = 500;
+  const LINE_HEIGHT = 40;
+  // 130px top margin + 14 * 40px keeps the last line clear of the 720px floor.
+  const VISIBLE_LINES = 14;
+
   const captionOverlay = {
     canvas: null,
     ctx: null,
     lines: [], // { speaker, text }
     maxLines: 6,
+    renderTimer: null,
 
     ensureCanvas() {
       if (this.canvas) {
@@ -450,6 +464,9 @@
     },
 
     render() {
+      if (!this.canvas || !this.ctx) {
+        return;
+      }
       const ctx = this.ctx;
       const w = this.canvas.width;
       const h = this.canvas.height;
@@ -474,20 +491,44 @@
           wrapped.push(line);
         }
       }
-      const visible = wrapped.slice(-12);
+      // Anchored below the header and growing downwards, so a short
+      // transcript reads as a transcript that has just started rather than
+      // as a mostly-empty screen with two stranded lines at the bottom.
+      const visible = wrapped.slice(-VISIBLE_LINES);
 
       ctx.font = "30px Arial, sans-serif";
       ctx.fillStyle = "#e8eaed";
-      let y = h - 40 - (visible.length - 1) * 40;
+      let y = 130;
       for (const line of visible) {
         ctx.fillText(line, 40, y);
-        y += 40;
+        y += LINE_HEIGHT;
       }
 
       if (this.lines.length === 0) {
         ctx.fillStyle = "#9aa0a6";
         ctx.font = "26px Arial, sans-serif";
-        ctx.fillText("Waiting for speech...", 40, h - 40);
+        ctx.fillText("Waiting for speech...", 40, 130);
+      }
+    },
+
+    /** Repaint on a timer so the capture stream keeps producing frames. */
+    startRenderLoop() {
+      if (this.renderTimer !== null) {
+        return;
+      }
+      this.renderTimer = setInterval(() => {
+        try {
+          this.render();
+        } catch (err) {
+          log("warn", "caption render failed", { error: String(err) });
+        }
+      }, OVERLAY_FRAME_INTERVAL_MS);
+    },
+
+    stopRenderLoop() {
+      if (this.renderTimer !== null) {
+        clearInterval(this.renderTimer);
+        this.renderTimer = null;
       }
     },
 
@@ -495,15 +536,34 @@
       const canvas = this.ensureCanvas();
       // 2 fps is plenty for text that changes on the order of seconds, and
       // keeps the encoded video cheap.
-      return canvas.captureStream(2);
+      const stream = canvas.captureStream(OVERLAY_FPS);
+      // Must start AFTER captureStream(): the loop's paints are what the
+      // stream turns into frames. Without it the stream stalls at zero.
+      this.startRenderLoop();
+      const [track] = stream.getVideoTracks();
+      if (track) {
+        track.addEventListener("ended", () => this.stopRenderLoop());
+      }
+      return stream;
     },
   };
+
+  // Set the moment Meet actually asks for a display stream. The Python side
+  // polls this to tell "the share really started" apart from "we clicked a
+  // button that looked right", which is the difference between captions being
+  // visible in the call and silently not.
+  let overlayShared = false;
 
   if (navigator.mediaDevices) {
     navigator.mediaDevices.getDisplayMedia = async () => {
       log("info", "getDisplayMedia intercepted; sharing the caption canvas");
+      overlayShared = true;
       return captionOverlay.captureStream();
     };
+  } else {
+    // Only happens on an insecure origin; Meet is https so this is a
+    // configuration problem, not an expected path.
+    log("error", "navigator.mediaDevices missing; caption overlay unavailable");
   }
 
   /* ------------------------------------------------------------------ *
@@ -564,10 +624,15 @@
       }
       transport.send({ type: "channel", id: channelId, label });
     },
+    /** Whether Meet has actually requested (and been given) the overlay. */
+    overlayShared() {
+      return overlayShared;
+    },
     /** Snapshot of capture state, for health checks and diagnostics. */
     stats() {
       return {
         connected: transport.connected,
+        overlayShared,
         pending: transport.pending.length,
         channels: Array.from(capture.channels.entries()).map(([id, info]) => ({
           id,
@@ -578,6 +643,7 @@
     },
     /** Flush and close the bridge socket ahead of browser shutdown. */
     stop() {
+      captionOverlay.stopRenderLoop();
       transport.close();
       if (capture.context) {
         capture.context.close().catch(() => undefined);

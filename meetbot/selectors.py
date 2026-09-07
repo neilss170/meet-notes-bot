@@ -157,13 +157,26 @@ PRESENT_NOW_BUTTON: Final[list[str]] = [
     'button[aria-label^="Present" i]',
 ]
 
-#: UNVERIFIED. The "A tab" / "Entire screen" / "A window" choice Meet shows
-#: after "Present now" - only relevant if `getDisplayMedia` is NOT patched
-#: (i.e. a fallback path); when it is patched, this dialog never appears
-#: because our stream is returned before Meet's real picker would show.
+#: The "Your entire screen" / "A window" / "A tab" menu Meet opens *before*
+#: it calls ``getDisplayMedia``. Patching ``getDisplayMedia`` suppresses the
+#: browser's own source picker, but NOT this menu - it is Meet's own UI, so
+#: it still has to be clicked through.
+#:
+#: Which entry gets clicked does not matter: every one of them ends in the
+#: same ``getDisplayMedia`` call, which we answer with the caption canvas
+#: regardless of what was asked for. So this list is deliberately broad -
+#: first match wins, and any match is as good as any other.
 PRESENT_SOURCE_TAB: Final[list[str]] = [
+    '[role="menuitem"]:has-text("A tab")',
+    '[role="menuitem"]:has-text("A window")',
+    '[role="menuitem"]:has-text("Your entire screen")',
+    '[role="menuitem"]:has-text("Entire screen")',
     'button:has-text("A tab")',
-    '[aria-label*="tab" i][role="button"]',
+    'button:has-text("A window")',
+    'button:has-text("Your entire screen")',
+    '[aria-label*="entire screen" i][role="button"]',
+    '[aria-label*="a tab" i][role="button"]',
+    '[aria-label*="window" i][role="menuitem"]',
 ]
 
 #: Generic (not Meet-specific) query used only to *diagnose* a failed

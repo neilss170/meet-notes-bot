@@ -283,6 +283,33 @@ class OpenAIClient:
         return content
 
 
+def probe_llm(client: LLMClient) -> str:
+    """Confirm the LLM credentials, model id and endpoint actually work.
+
+    The summary is produced *after* the meeting ends, so a bad key or a
+    retired model id would otherwise surface at the worst possible moment -
+    with the recording already over. One trivial completion up front turns
+    that into a startup error.
+
+    ``max_tokens`` is deliberately generous rather than minimal: reasoning
+    models (Groq's ``openai/gpt-oss-120b`` among them) spend tokens on
+    internal reasoning before emitting any content, and a tight budget makes
+    them return an empty string - which would look exactly like a failure.
+
+    Returns:
+        A short human-readable detail string for logging.
+
+    Raises:
+        LLMError: If the key, model, or endpoint is unusable.
+    """
+    reply = client.complete_text(
+        system="You are a connectivity check. Reply with the single word OK.",
+        user="Reply with OK.",
+        max_tokens=256,
+    )
+    return f"key accepted, {getattr(client, 'model', '?')} replied {reply.strip()[:20]!r}"
+
+
 def build_client(
     provider: str, api_key: str, model: str, base_url: str = ""
 ) -> LLMClient:

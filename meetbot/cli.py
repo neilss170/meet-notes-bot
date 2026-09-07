@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from meetbot import __version__
-from meetbot.analysis.llm import LLMError, build_client
+from meetbot.analysis.llm import LLMError, build_client, probe_llm
 from meetbot.analysis.summarize import (
     AnalysisError,
     analyze_transcript,
@@ -440,6 +440,35 @@ def cmd_check(args: argparse.Namespace) -> int:
             logger.info("Deepgram OK (%s)", detail)
         except DeepgramError as exc:
             logger.error("Deepgram check failed: %s", exc)
+            ok = False
+
+    # The summary happens after the meeting ends, so an unusable LLM key or a
+    # retired model id would otherwise only surface once the call is over and
+    # the material is gone. Check it up front like the Deepgram key.
+    if not config.analysis_enabled:
+        logger.info("LLM              : skipped (analysis disabled)")
+    elif not config.llm_api_key:
+        logger.error(
+            "No API key for LLM_PROVIDER=%s - the meeting summary cannot be "
+            "generated",
+            config.llm_provider,
+        )
+        ok = False
+    elif args.offline:
+        logger.info("LLM              : skipped (--offline)")
+    else:
+        try:
+            detail = probe_llm(
+                build_client(
+                    config.llm_provider,
+                    config.llm_api_key,
+                    config.llm_model,
+                    config.llm_base_url,
+                )
+            )
+            logger.info("LLM OK (%s)", detail)
+        except LLMError as exc:
+            logger.error("LLM check failed: %s", exc)
             ok = False
 
     try:
