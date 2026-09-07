@@ -24,7 +24,7 @@ from meetbot.config import (
 @pytest.mark.parametrize(
     "name",
     [
-        "Meeting Notes Bot (Recording)",
+        "Scribe (Recording)",
         "Acme Transcription Service",
         "Team Notetaker",
         "recording assistant",
@@ -34,7 +34,12 @@ def test_names_that_already_disclose_are_untouched(name: str) -> None:
     assert ensure_disclosure(name) == " ".join(name.split())
 
 
-@pytest.mark.parametrize("name", ["Helper", "Alex", "Assistant", ""])
+@pytest.mark.parametrize(
+    "name",
+    # "Scribe" reads like a note-taker but says nothing about recording, so
+    # it must still pick up the suffix.
+    ["Helper", "Alex", "Assistant", "Scribe", ""],
+)
 def test_names_without_disclosure_get_a_suffix(name: str) -> None:
     result = ensure_disclosure(name)
     assert "record" in result.lower()

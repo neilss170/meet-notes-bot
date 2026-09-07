@@ -31,7 +31,7 @@ def config(tmp_path: Path) -> Config:
     """A valid config that points every path at a temp directory."""
     return Config(
         meet_url="https://meet.google.com/abc-defg-hij",
-        bot_name="Meeting Notes Bot (Recording)",
+        bot_name="Scribe (Recording)",
         output_dir=tmp_path / "out",
         deepgram_api_key="dg-test-key",
         anthropic_api_key="sk-ant-test",
