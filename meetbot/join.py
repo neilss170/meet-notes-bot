@@ -224,14 +224,38 @@ class MeetSession:
         }
         if self._config.browser_channel:
             launch_kwargs["channel"] = self._config.browser_channel
-        self._browser = await self._playwright.chromium.launch(**launch_kwargs)
 
-        self._context = await self._browser.new_context(
-            permissions=["microphone", "camera"],
-            viewport={"width": 1280, "height": 800},
-            locale="en-US",
-            timezone_id="UTC",
-        )
+        context_kwargs: dict[str, Any] = {
+            "permissions": ["microphone", "camera"],
+            "viewport": {"width": 1280, "height": 800},
+            "locale": "en-US",
+            "timezone_id": "UTC",
+        }
+
+        if self._config.chrome_profile_dir is not None:
+            # A persistent profile keeps a signed-in Google session between
+            # runs. Meet increasingly refuses anonymous guests outright -
+            # replacing the pre-join screen with "You can't join this video
+            # call", without ever asking the host - and no selector can work
+            # around that. Signing in is the fix.
+            #
+            # launch_persistent_context owns both the browser and the context,
+            # so there is no separate browser object to track here.
+            profile = self._config.chrome_profile_dir.expanduser()
+            profile.mkdir(parents=True, exist_ok=True)
+            logger.info("Using the signed-in Chromium profile at %s", profile)
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                str(profile), **launch_kwargs, **context_kwargs
+            )
+            self._browser = None
+        else:
+            logger.info(
+                "No CHROME_PROFILE_DIR set: joining as an anonymous guest. "
+                "Meetings that do not admit anonymous guests will refuse this "
+                "bot outright - run 'python -m meetbot login' to sign in."
+            )
+            self._browser = await self._playwright.chromium.launch(**launch_kwargs)
+            self._context = await self._browser.new_context(**context_kwargs)
         # Grant explicitly for the Meet origin too: Chromium's fake-UI flag
         # covers the prompt, but Meet also queries the Permissions API.
         with contextlib.suppress(PlaywrightError):
@@ -357,11 +381,36 @@ class MeetSession:
                 self._joined_at = time.monotonic()
                 self._emit("joined", method="direct")
                 return JoinOutcome.ADMITTED
+            # A missing join button usually is not a broken selector: far more
+            # often Meet has refused this bot outright and replaced the
+            # pre-join screen with a rejection page, which HAS no join button
+            # to find. Reporting a DOM change there sends the operator off to
+            # fix selectors that are fine, so the terminal states are checked
+            # first and named for what they actually are.
+            if await any_visible(page, selectors.JOIN_DENIED_MARKERS):
+                raise JoinError(
+                    JoinOutcome.DENIED,
+                    "Meet refused the join outright ('You can't join this video "
+                    "call'). This is not a selector problem: the meeting is not "
+                    "accepting this participant. Usually the meeting does not "
+                    "allow anonymous guests - it was created by a Workspace or "
+                    "school account that blocks them, or it requires everyone "
+                    "to be signed in. Try a meeting started from a personal "
+                    "Google account, or sign the bot's browser in.",
+                )
+            if await any_visible(page, selectors.MEETING_ENDED_MARKERS):
+                raise JoinError(
+                    JoinOutcome.MEETING_ENDED,
+                    "The meeting had already ended (or the code is no longer "
+                    "active) before the bot could join.",
+                )
+            await self._log_labelled_controls("JOIN_BUTTON")
             raise JoinError(
                 JoinOutcome.TIMED_OUT,
-                "Could not find a join button on the pre-join screen. Meet's DOM "
-                "has probably changed - update selectors.JOIN_BUTTON (run with "
-                "--no-headless to inspect).",
+                "Could not find a join button on the pre-join screen, and the "
+                "page is not showing a refusal or ended-meeting notice either. "
+                "Meet's DOM may have changed - update selectors.JOIN_BUTTON "
+                "(run with --no-headless to inspect).",
             )
 
         label = (await join_button.inner_text()).strip() or "<unlabelled>"

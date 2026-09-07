@@ -18,8 +18,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
+import time
+
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -209,6 +212,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Output file (default: write to stdout).",
+    )
+
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Sign the bot's browser into a Google account (one time).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    login_parser.add_argument(
+        "--profile-dir",
+        type=Path,
+        default=None,
+        help="Where to keep the signed-in profile (default: CHROME_PROFILE_DIR).",
+    )
+    login_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for you to finish signing in.",
     )
 
     serve_parser = subparsers.add_parser(
@@ -451,6 +472,85 @@ def cmd_format(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_login(args: argparse.Namespace) -> int:
+    """Handle ``login``: open a real browser so a human can sign in once.
+
+    Deliberately manual. Google actively blocks scripted logins, and storing
+    a password to type in would be both fragile and a much worse thing to
+    keep on disk than a session cookie. So the browser is opened visibly, the
+    person signs in themselves, and the resulting session is what persists.
+    """
+    config = _config_from_args(args)
+    profile = args.profile_dir or config.chrome_profile_dir
+    if profile is None:
+        profile = Path.home() / ".meetbot" / "chrome-profile"
+        logger.info("No CHROME_PROFILE_DIR set; using %s", profile)
+    profile = Path(profile).expanduser()
+    profile.mkdir(parents=True, exist_ok=True)
+
+    return asyncio.run(_login(profile, args.timeout))
+
+
+async def _login(profile: Path, timeout_s: int) -> int:
+    """Drive the interactive sign-in and report whether it stuck."""
+    from playwright.async_api import async_playwright
+
+    from meetbot.join import _CHROMIUM_ARGS
+
+    logger.info("Opening a browser window. Sign in to the Google account the")
+    logger.info("bot should join meetings as, then leave the window alone.")
+    logger.info("Profile: %s", profile)
+
+    async with async_playwright() as playwright:
+        context = await playwright.chromium.launch_persistent_context(
+            str(profile),
+            headless=False,  # the entire point: a human has to drive this
+            args=list(_CHROMIUM_ARGS),
+            viewport={"width": 1100, "height": 800},
+        )
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto("https://accounts.google.com/", wait_until="domcontentloaded")
+
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                if not context.pages:
+                    logger.warning("Browser closed before sign-in completed")
+                    return EXIT_CONFIG_ERROR
+                # Google sends a signed-in visitor on to myaccount.google.com;
+                # that redirect is the signal, rather than scraping the page.
+                if "myaccount.google.com" in page.url:
+                    logger.info("Signed in. Verifying against Meet...")
+                    await page.goto(
+                        "https://meet.google.com/", wait_until="domcontentloaded"
+                    )
+                    await page.wait_for_timeout(2500)
+                    body = await page.evaluate("() => document.body.innerText")
+                    if "Sign in" in body and "New meeting" not in body:
+                        logger.warning(
+                            "Signed in to Google, but Meet still shows a sign-in "
+                            "prompt. The session may not cover Meet."
+                        )
+                        return EXIT_CONFIG_ERROR
+                    logger.info("Meet recognises the session.")
+                    logger.info("")
+                    logger.info("Add this to your .env so runs use it:")
+                    logger.info("    CHROME_PROFILE_DIR=%s", profile)
+                    logger.info("")
+                    logger.info(
+                        "Treat that directory like a password - it holds live "
+                        "Google session cookies."
+                    )
+                    return EXIT_OK
+                await asyncio.sleep(2.0)
+
+            logger.error("Timed out after %ds waiting for sign-in", timeout_s)
+            return EXIT_CONFIG_ERROR
+        finally:
+            with contextlib.suppress(Exception):
+                await context.close()
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Handle ``serve``: run the local web UI until interrupted."""
     try:
@@ -607,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         "format": cmd_format,
         "check": cmd_check,
         "serve": cmd_serve,
+        "login": cmd_login,
     }
     handler = handlers.get(args.command)
     if handler is None:  # pragma: no cover - argparse enforces the choices
