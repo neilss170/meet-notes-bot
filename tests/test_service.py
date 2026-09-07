@@ -405,3 +405,45 @@ class TestUiRendering:
         assert "function renderMarkdown" in ui
         for token in ("md-h", "md-list", "md-task", "md-turn"):
             assert token in ui, token
+
+
+class TestMarkdownRendering:
+    """The renderer must cover what THIS project actually writes.
+
+    Both misses below were visible in the UI: analysis.md ends with an
+    italic "no action items" line and an italic generator footnote, and both
+    showed their raw underscores.
+    """
+
+    @staticmethod
+    def _ui() -> str:
+        from meetbot.service.app import UI_PATH
+
+        return UI_PATH.read_text(encoding="utf-8")
+
+    def test_italics_are_rendered(self) -> None:
+        ui = self._ui()
+        assert "<em>" in ui, "underscore italics were showing raw"
+
+    def test_bold_is_applied_before_italics(self) -> None:
+        """Otherwise the ** in **bold** is consumed as two italic markers."""
+        ui = self._ui()
+        bold = ui.index("<strong>$1</strong>")
+        italic = ui.index("<em>$2</em>")
+        assert bold < italic
+
+    def test_snake_case_is_protected_from_italics(self) -> None:
+        """file_name_like_this and openai/gpt-oss-120b must survive.
+
+        A naive /_(.+?)_/ turns any two underscores in a line into italics,
+        which mangles identifiers and model ids. The rule is guarded by
+        lookarounds on both sides.
+        """
+        ui = self._ui()
+        assert "(?!\s)" in ui, "no non-space guard on the italic rule"
+        assert "(?![\w_])" in ui, "no trailing word-character guard"
+
+    def test_a_horizontal_rule_separates_the_footnote(self) -> None:
+        ui = self._ui()
+        assert "md-rule" in ui
+        assert "md-note" in ui
