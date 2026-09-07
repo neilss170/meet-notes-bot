@@ -179,6 +179,66 @@ PRESENT_SOURCE_TAB: Final[list[str]] = [
     '[aria-label*="window" i][role="menuitem"]',
 ]
 
+#: The captions toggle. Meet's labels describe the *action*, so "Turn on
+#: captions" means captions are currently OFF - that is the one to click.
+#:
+#: Turning captions on is a per-viewer setting: it changes what this browser
+#: renders and does not enable captions, transcription or recording for
+#: anybody else in the call.
+CAPTIONS_TOGGLE_OFF: Final[list[str]] = [
+    '[aria-label="Turn on captions"]',
+    'button[aria-label*="Turn on captions" i]',
+    '[aria-label*="turn on captions" i][role="button"]',
+    'button[aria-label*="captions" i][aria-pressed="false"]',
+]
+
+#: Present once captions are running; used to confirm the toggle worked
+#: rather than assuming the click landed.
+CAPTIONS_TOGGLE_ON: Final[list[str]] = [
+    '[aria-label="Turn off captions"]',
+    'button[aria-label*="Turn off captions" i]',
+    'button[aria-label*="captions" i][aria-pressed="true"]',
+]
+
+#: The live-caption panel. Each entry pairs a speaker name with the text Meet
+#: has recognised so far; only the name and the time are used - see
+#: :mod:`meetbot.captions` for why the text is deliberately discarded.
+CAPTION_REGION: Final[list[str]] = [
+    'div[role="region"][aria-label*="Captions" i]',
+    'div[aria-label*="Captions" i]',
+    'div[jsname="dsyhDe"]',
+    'div[jsname="YSxPC"]',
+]
+
+#: Companion page function for :data:`CAPTION_REGION`: pulls one
+#: ``{name, text}`` per caption entry.
+#:
+#: Meet renders an entry as the speaker's name followed by the caption body,
+#: so the first line of ``innerText`` is the name - the same shape
+#: :data:`PARTICIPANT_LIST_ITEM` relies on. Reading it this way survives the
+#: class-name churn that breaks structural selectors, because it depends on
+#: the rendered text layout rather than on obfuscated build output.
+CAPTION_ENTRY_EXTRACTOR: Final[str] = (
+    "regions => {"
+    "  const out = [];"
+    "  for (const region of regions) {"
+    "    for (const node of region.children) {"
+    "      const raw = (node.innerText || '').trim();"
+    "      if (!raw) continue;"
+    # String.fromCharCode(10) rather than a newline escape: this JS lives in
+    # a Python string literal, and an escape here was already eaten once by
+    # the Python parser - producing a real line break inside a JS string and
+    # a SyntaxError at runtime. No escape sequences, no such bug.
+    "      const lines = raw.split(String.fromCharCode(10))"
+    "        .map(s => s.trim()).filter(Boolean);"
+    "      if (!lines.length) continue;"
+    "      out.push({ name: lines[0], text: lines.slice(1).join(' ') });"
+    "    }"
+    "  }"
+    "  return out;"
+    "}"
+)
+
 #: Generic (not Meet-specific) query used only to *diagnose* a failed
 #: selector match: every labeled control on the page, so the real available
 #: labels can be logged and used to fix the list above with real data
@@ -208,4 +268,7 @@ __all__ = [
     "PRESENT_NOW_BUTTON",
     "PRESENT_SOURCE_TAB",
     "ALL_LABELED_ELEMENTS",
+    "CAPTIONS_TOGGLE_OFF",
+    "CAPTIONS_TOGGLE_ON",
+    "CAPTION_REGION",
 ]

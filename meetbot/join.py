@@ -78,6 +78,10 @@ _OVERLAY_SHARE_TIMEOUT_S = 6.0
 #: almost immediately, and we should not click a menu that is not there.
 _OVERLAY_MENU_PROBE_S = 1.0
 
+#: Captions can take a moment to appear in the controls after admission, so
+#: the toggle is retried rather than attempted once.
+_CAPTION_TOGGLE_ATTEMPTS = 4
+
 
 class JoinOutcome(str, Enum):
     """Why :meth:`MeetSession.join` finished the way it did."""
@@ -723,6 +727,87 @@ class MeetSession:
         except PlaywrightError as exc:
             logger.warning("Could not start the caption overlay: %s", exc)
             return False
+
+    async def enable_captions(self) -> bool:
+        """Turn Meet's live captions on for this browser only.
+
+        Captions are what make real speaker names available at all: nothing
+        links an audio track to a participant, but Meet labels each caption
+        entry with the name its own server-side attribution produced.
+
+        This is a per-viewer setting. It changes what this browser renders
+        and does not turn on captions, transcription or recording for anyone
+        else in the call.
+
+        Returns:
+            Whether captions ended up on.
+        """
+        if self._page is None or self._page.is_closed():
+            return False
+        for attempt in range(1, _CAPTION_TOGGLE_ATTEMPTS + 1):
+            try:
+                if await any_visible(self._page, selectors.CAPTIONS_TOGGLE_ON):
+                    logger.info("Live captions are on")
+                    return True
+                toggle = await first_visible(
+                    self._page, selectors.CAPTIONS_TOGGLE_OFF, timeout_ms=2000
+                )
+                if toggle is None:
+                    logger.debug(
+                        "No captions control visible (attempt %d/%d)",
+                        attempt,
+                        _CAPTION_TOGGLE_ATTEMPTS,
+                    )
+                    await asyncio.sleep(0.5)
+                    continue
+                await toggle.click(timeout=3000)
+                await asyncio.sleep(0.6)
+            except PlaywrightError as exc:
+                logger.debug("Captions toggle attempt %d failed: %s", attempt, exc)
+                await asyncio.sleep(0.5)
+
+        # Checked once more rather than trusting the last click: the "on"
+        # marker appearing is the only real confirmation.
+        if await any_visible(self._page, selectors.CAPTIONS_TOGGLE_ON):
+            logger.info("Live captions are on")
+            return True
+        logger.warning(
+            "Could not turn on live captions; speaker names will stay generic. "
+            "Check selectors.CAPTIONS_TOGGLE_OFF."
+        )
+        await self._log_labelled_controls("CAPTIONS_TOGGLE_OFF")
+        return False
+
+    async def read_caption_entries(self) -> list[tuple[str, str]]:
+        """Visible ``(speaker, text)`` caption entries, most recent last.
+
+        The text is returned only so the caller can tell which entry Meet is
+        actively rewriting - a caption whose text changed between polls is
+        the speaker who is talking *now*, as opposed to one still on screen
+        from a moment ago. :class:`meetbot.captions.CaptionWatcher` does that
+        comparison; the words themselves are never transcribed from here.
+
+        Never raises - a caption panel that cannot be read is a missing
+        feature, not a failed run.
+        """
+        if self._page is None or self._page.is_closed():
+            return []
+        for selector in selectors.CAPTION_REGION:
+            try:
+                entries = await self._page.eval_on_selector_all(
+                    selector, selectors.CAPTION_ENTRY_EXTRACTOR
+                )
+            except PlaywrightError as exc:
+                logger.debug("Caption region %r unreadable: %s", selector, exc)
+                continue
+            pairs = [
+                (str(entry.get("name", "")), str(entry.get("text", "")))
+                for entry in entries or []
+                if isinstance(entry, dict)
+            ]
+            if pairs:
+                return pairs
+        return []
 
     async def _overlay_is_shared(self) -> bool:
         """Whether the page hook has handed Meet the caption stream."""

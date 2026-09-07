@@ -145,6 +145,8 @@ python -m meetbot check
 | `--no-headless` | **The** debugging tool. Watch the join flow and inspect the DOM when selectors break. |
 | `--per-participant` | One Deepgram stream per participant instead of diarizing a mixed stream — much better speaker separation, one connection per person. |
 | `--live-captions-overlay` | Show the running transcript **inside the call**, as a screen-share tile everyone can see. See below. |
+| `--no-speaker-names` | Don't turn on Meet's captions; leave speakers as `Speaker 0` / `Speaker 1`. |
+| `--anonymise-analysis` | Send `Speaker A` / `Speaker B` to the LLM instead of real names. The local transcript keeps them. |
 | `--no-analysis` | Transcript only; no LLM key needed. |
 | `--llm-provider openai` | Switch the analysis to GPT. |
 | `--admission-timeout 600` | Wait longer in the lobby. |
@@ -203,6 +205,20 @@ built so that it cannot run invisibly, and you should not try to make it.
   which makes the display name and your verbal disclosure more important, not
   less.
 
+**On speaker names and captions specifically:**
+
+- Turning Meet's live captions on is a **per-viewer setting**. It changes what
+  the bot's own browser renders; it does not enable captions, transcription or
+  recording for anybody else, and other participants see no change.
+- Naming speakers makes the transcript **personal data** in a way that
+  `Speaker 0` is not. That raises the stakes of where the notes are stored and
+  who can read them — say so when you announce the bot.
+- The transcript is sent to a third-party LLM to be summarised. Use
+  `--anonymise-analysis` to replace real names with `Speaker A` / `Speaker B`
+  in that request; the local transcript keeps the real names, so you lose
+  nothing locally. Consider it the default for anything sensitive.
+- `--no-speaker-names` disables caption reading entirely.
+
 **What we recommend operationally:**
 
 1. Announce the bot verbally at the start of the meeting, and say where the
@@ -243,25 +259,42 @@ watch where it stalls, inspect the element, and add a new candidate at the
 **front** of the relevant list in `selectors.py`. Leave the old ones — Google
 rolls changes out gradually and several variants are often live at once.
 
-### Speaker labels are generic by default
+### Speaker names come from Meet's captions
 
-In the default mixed-stream mode, Deepgram's diarization gives you
-`Speaker 0`, `Speaker 1`, … — not names. Diarization also drifts: the same
-person can get a new id after a long silence, and overlapping speech gets
-attributed unpredictably.
+Deepgram's diarization gives `Speaker 0`, `Speaker 1`, … — not names. Nothing
+in the page links a WebRTC audio track to a participant: Meet attaches remote
+`<audio>` elements directly to `<body>`, with no path to the tile showing whose
+audio it is. Roughly 135 lines of DOM heuristics were written to try, tested
+against a live call, and deleted — they returned things like "Sign in" and
+"11:32".
 
-`--per-participant` gives each remote audio track its own Deepgram stream
-(diarization off), which is far more reliable for *separation*. But the
-channel labels are still `participant-1`, `participant-2` — **mapping a WebRTC
-track back to a Meet display name is not implemented**, because Meet does not
-expose a stable track↔participant mapping to page scripts. `bridge.py` and
-`inject.js` both support relabelling a channel (`set_channel_label` /
-`window.__meetbot.labelChannel`), so the hook is there if someone wants to
-attempt roster correlation later.
+Meet's **caption panel** is a different surface. Google does speaker
+attribution server-side and renders the name next to each caption line, so the
+names the audio path cannot see are already in the DOM. That is where
+`--speaker-names` (on by default) gets them:
 
-In practice: the LLM analysis often infers real names from the conversation
-itself ("Thanks, Priya"), which is why the participant list is passed as
-prompt context.
+1. The bot turns Meet's live captions on **for its own browser only**.
+2. It polls the caption panel and records *who was speaking, and when*.
+3. Each Deepgram utterance is labelled with whoever the captions say was
+   talking across its time window.
+
+Only the name and the timing are used. **The caption text is discarded** — Meet
+rewrites a caption in place as its recogniser refines it, so reconstructing a
+transcript from that stream means fighting duplicates and truncations, and the
+result is still less accurate than Deepgram's. The words stay Deepgram's; only
+the name comes from captions.
+
+That in-place rewriting is also what makes the attribution work: an entry whose
+text *changed* between polls belongs to whoever is speaking now, while an
+unchanged entry is just history still on screen. Without that distinction a
+speaker who finished ten seconds ago would keep stealing the current utterance.
+
+When captions are unavailable, or nothing overlaps an utterance's window, the
+label falls back to `Speaker 0`. **A generic label is the correct answer when
+we do not know** — a wrong name is worse than no name, so attribution declines
+rather than guesses.
+
+Turn it off with `--no-speaker-names`.
 
 ### Headless mode caveats
 

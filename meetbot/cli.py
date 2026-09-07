@@ -141,8 +141,30 @@ def build_parser() -> argparse.ArgumentParser:
             "Share a live-caption canvas as a screen-share (via 'Present "
             "now') and update it as utterances are transcribed - visible to "
             "every participant including the host, without turning the "
-            "bot's own camera on. Use with --per-participant for real "
-            "speaker names instead of Speaker 0 / Speaker 1."
+            "bot's own camera on."
+        ),
+    )
+    run_parser.add_argument(
+        "--no-speaker-names",
+        dest="speaker_names_from_captions",
+        action="store_false",
+        default=None,
+        help=(
+            "Do not turn on Meet's live captions to recover real speaker "
+            "names; leave utterances labelled Speaker 0 / Speaker 1. "
+            "Captions are per-viewer and do not affect other participants."
+        ),
+    )
+    run_parser.add_argument(
+        "--anonymise-analysis",
+        "--anonymize-analysis",
+        dest="anonymise_analysis",
+        action="store_true",
+        default=None,
+        help=(
+            "Replace real names with 'Speaker A' / 'Speaker B' in the text "
+            "sent to the LLM. The local transcript keeps the real names; "
+            "only the third-party request is anonymised."
         ),
     )
     run_parser.add_argument(
@@ -232,6 +254,8 @@ def _config_from_args(args: argparse.Namespace) -> Config:
             "max_meeting_duration_s",
             "per_participant_audio",
             "live_captions_overlay",
+            "speaker_names_from_captions",
+            "anonymise_analysis",
             "analysis_enabled",
             "llm_provider",
             "llm_model",
