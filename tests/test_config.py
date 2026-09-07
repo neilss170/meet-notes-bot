@@ -234,3 +234,35 @@ def test_blank_env_values_fall_back_to_defaults() -> None:
     config = load_config(env={"BOT_DISPLAY_NAME": "   ", "BRIDGE_PORT": "  "})
     assert config.bot_name == DEFAULT_BOT_NAME
     assert config.bridge_port == 8765
+
+
+def test_chrome_profile_dir_defaults_to_none() -> None:
+    """Anonymous joining stays the default; signing in is opt-in."""
+    config = Config(meet_url="https://meet.google.com/abc-defg-hij")
+    assert config.chrome_profile_dir is None
+
+
+def test_chrome_profile_dir_loads_from_the_environment(tmp_path) -> None:
+    config = load_config(
+        env={
+            "MEET_URL": "https://meet.google.com/abc-defg-hij",
+            "DEEPGRAM_API_KEY": "dg",
+            "ANTHROPIC_API_KEY": "sk",
+            "CHROME_PROFILE_DIR": str(tmp_path / "profile"),
+        }
+    )
+    assert config.chrome_profile_dir == tmp_path / "profile"
+
+
+def test_the_signed_in_profile_is_gitignored() -> None:
+    """The profile holds live Google session cookies.
+
+    Committing it would hand over the bot's account, so the ignore rule is
+    part of the contract, not an editor convenience.
+    """
+    from pathlib import Path
+
+    ignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(
+        encoding="utf-8"
+    )
+    assert "chrome-profile/" in ignore

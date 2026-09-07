@@ -83,3 +83,15 @@ def test_no_meet_selectors_are_written_inline(module_path: Path) -> None:
         "Inline Meet selector(s) found outside selectors.py:\n  "
         + "\n  ".join(offenders)
     )
+
+
+def test_join_denied_markers_cover_the_anonymous_refusal() -> None:
+    """The page Meet shows when it will not let a guest even ask to join.
+
+    Observed live: the pre-join screen is replaced entirely by "You can't
+    join this video call", so there is no join button to find. Without this
+    marker the failure is misreported as a broken JOIN_BUTTON selector, which
+    sends you off to fix selectors that are fine.
+    """
+    joined = " ".join(selectors.JOIN_DENIED_MARKERS)
+    assert "can't join this video call" in joined

@@ -43,7 +43,7 @@ WebSocket to the Python bridge.
 
 ```
 meetbot/
-  cli.py              # argparse entrypoint: run / serve / analyze / format / check
+  cli.py              # argparse entrypoint: run / serve / login / analyze / format / check
   runner.py           # end-to-end orchestration and failure containment
   join.py             # Playwright guest-join flow and meeting lifecycle
   selectors.py        # ALL Google Meet DOM selectors live here
@@ -116,6 +116,46 @@ The bot joins, waits to be admitted if the meeting requires approval, and
 records until the meeting ends, it is removed, it is left alone for
 `ALONE_TIMEOUT_S`, or `MAX_MEETING_DURATION_S` is hit. `Ctrl+C` shuts it down
 cleanly — the transcript is flushed and the analysis still runs.
+
+### Signing the bot in (usually required)
+
+By default the bot joins as an anonymous guest. **Meet often refuses anonymous
+guests outright**: instead of the pre-join screen it shows
+
+> You can't join this video call
+> No one can join a meeting unless invited or admitted by the host
+
+and the host is never asked to admit anything — no knock, no prompt, nothing to
+approve. That page has no join button, which looks like a broken selector but
+is not: no selector can fix a refusal. Observed live on 2026-09-07 against
+meetings that the same code had joined successfully three days earlier, so
+treat anonymous joining as unreliable rather than broken-once.
+
+Sign in once:
+
+```bash
+python -m meetbot login
+```
+
+A real browser window opens. Sign in to the Google account the bot should join
+as, and leave the window alone — it detects the session and closes itself. Then
+put the printed path in `.env`:
+
+```
+CHROME_PROFILE_DIR=/home/you/.meetbot/chrome-profile
+```
+
+Every run after that reuses the session, and the bot appears as a named
+participant rather than an anonymous guest.
+
+**The sign-in is manual on purpose.** Google actively blocks scripted logins,
+and a stored password would be both fragile and a far worse thing to keep on
+disk than a session cookie.
+
+**That directory is a credential.** It holds live Google session cookies —
+anyone who copies it is signed in as that account. It is gitignored, and it
+should not go on a shared machine. Use a dedicated account for the bot rather
+than a personal one, and one with access only to what it needs.
 
 ### Without a terminal: the web UI
 

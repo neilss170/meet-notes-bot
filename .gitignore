@@ -25,3 +25,9 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Signed-in Chromium profile (python -m meetbot login). Holds live Google
+# session cookies - committing it would hand over the bot's account.
+chrome-profile/
+.meetbot/
+*.profile/

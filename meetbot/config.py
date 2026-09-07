@@ -183,6 +183,19 @@ class Config:
     #: one-flag control for meetings where personal names should not leave
     #: the machine.
     anonymise_analysis: bool = False
+    #: Directory holding a persistent Chromium profile. When set, the browser
+    #: reuses it instead of starting from a blank slate, so a Google account
+    #: signed in once with ``python -m meetbot login`` stays signed in.
+    #:
+    #: This is not a nicety. Meet increasingly refuses anonymous guests
+    #: outright - the pre-join screen is replaced by "You can't join this
+    #: video call" and the host is never even asked - which no selector can
+    #: work around. A signed-in profile is the only fix, and it also makes
+    #: the bot appear as a named participant rather than an anonymous guest.
+    #:
+    #: The directory holds live Google session cookies. Treat it like a
+    #: password: keep it out of version control and off shared machines.
+    chrome_profile_dir: Path | None = None
 
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
@@ -353,6 +366,11 @@ def load_config(
             env, "SPEAKER_NAMES_FROM_CAPTIONS", True
         ),
         anonymise_analysis=_env_bool(env, "ANONYMISE_ANALYSIS", False),
+        chrome_profile_dir=(
+            Path(env["CHROME_PROFILE_DIR"]).expanduser()
+            if env.get("CHROME_PROFILE_DIR")
+            else None
+        ),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
