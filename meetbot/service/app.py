@@ -112,7 +112,7 @@ def create_app(config: Config) -> FastAPI:
             logger.info("Stopping %d active meeting(s)", manager.active_count)
         await manager.shutdown()
 
-    app = FastAPI(title="meetbot", lifespan=lifespan)
+    app = FastAPI(title="Scribe", lifespan=lifespan)
 
     # -- authentication ----------------------------------------------------
 

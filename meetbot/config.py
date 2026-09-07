@@ -27,7 +27,7 @@ LLMProvider = Literal["anthropic", "openai"]
 
 #: Default display name. It deliberately announces the bot and that it is
 #: recording - see ``README.md`` -> "Consent and disclosure".
-DEFAULT_BOT_NAME: Final[str] = "Meeting Notes Bot (Recording)"
+DEFAULT_BOT_NAME: Final[str] = "Scribe (Recording)"
 
 DEFAULT_ANTHROPIC_MODEL: Final[str] = "claude-opus-5"
 DEFAULT_OPENAI_MODEL: Final[str] = "gpt-4o"
