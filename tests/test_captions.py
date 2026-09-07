@@ -77,6 +77,35 @@ class TestSpeakerTimeline:
         timeline.observe("Neil Sharma", 10.0)  # interval ends at 10.0
         assert timeline.resolve(9.9, 12.0) is None
 
+    def test_a_brief_overlap_does_not_win_a_long_utterance(self) -> None:
+        """Regression, found by an end-to-end run.
+
+        Priya's caption interval [7.5, 10.0] overlapped Neil's 5.4s utterance
+        [2.6, 8.0] by 0.5s - enough to clear the absolute floor, but only 9%
+        of what was said. The whole sentence was attributed to her, and the
+        conflicting evidence then blocked Neil from being identified at all.
+        An overlap must be a real share of the utterance, not a brush against
+        its edge.
+        """
+        timeline = SpeakerTimeline()
+        timeline.observe("Priya", 9.0)
+        timeline.observe("Priya", 10.0)
+        assert timeline.resolve(2.6, 8.0) is None
+
+    def test_a_well_covered_utterance_still_resolves(self) -> None:
+        """The guard must not reject ordinary, correct attributions."""
+        timeline = SpeakerTimeline()
+        for t in (8.0, 9.0, 10.0):
+            timeline.observe("Priya", t)
+        assert timeline.resolve(8.5, 10.0) == "Priya"
+
+    def test_coverage_scales_with_utterance_length(self) -> None:
+        """The same overlap passes on a short utterance and fails on a long one."""
+        timeline = SpeakerTimeline()
+        timeline.observe("Priya", 10.0)          # interval [8.5, 10.0]
+        assert timeline.resolve(9.0, 10.0) == "Priya"   # 1.0s of 1.0s
+        assert timeline.resolve(9.0, 30.0) is None      # 1.0s of 21.0s
+
     def test_a_single_sighting_still_resolves(self) -> None:
         """Regression: a lone observation must not be a zero-width interval.
 

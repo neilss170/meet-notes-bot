@@ -57,6 +57,13 @@ MAX_INTERVAL_GAP_S = 4.0
 #: it usually means the caption arrived for a neighbouring utterance.
 MIN_OVERLAP_S = 0.35
 
+#: The winner must also cover at least this fraction of the utterance. An
+#: absolute floor alone is not enough: a 0.5s brush against the end of a 5.4s
+#: utterance clears 0.35s while covering only 9% of what was said, and that
+#: was observed handing a whole sentence to the wrong person. Requiring a
+#: share of the utterance scales the test with its length.
+MIN_COVERAGE = 0.35
+
 #: Width given to a first sighting. A caption is noticed at a poll, but the
 #: speech that produced it happened at some point since the previous poll, so
 #: a single observation covers a window ending at "now" rather than a zero
@@ -126,6 +133,7 @@ class SpeakerTimeline:
     history_s: float = DEFAULT_HISTORY_S
     max_gap_s: float = MAX_INTERVAL_GAP_S
     min_overlap_s: float = MIN_OVERLAP_S
+    min_coverage: float = MIN_COVERAGE
     nominal_width_s: float = NOMINAL_WIDTH_S
     _intervals: list[_Interval] = field(default_factory=list)
     _last_seen: dict[str, float] = field(default_factory=dict)
@@ -184,6 +192,13 @@ class SpeakerTimeline:
             return None
         best, seconds = max(totals.items(), key=lambda item: item[1])
         if seconds < self.min_overlap_s:
+            return None
+        # An absolute floor says nothing about how much of the utterance the
+        # caption actually accounts for. Without this, a brief overlap at the
+        # edge of a long utterance wins it outright and hands the whole
+        # sentence to whoever spoke next.
+        duration = end - start
+        if duration > 0 and (seconds / duration) < self.min_coverage:
             return None
         return best
 
@@ -318,6 +333,7 @@ def anonymise(name: str, mapping: dict[str, str]) -> str:
 __all__ = [
     "DEFAULT_HISTORY_S",
     "MAX_INTERVAL_GAP_S",
+    "MIN_COVERAGE",
     "MIN_OVERLAP_S",
     "NOMINAL_WIDTH_S",
     "CaptionWatcher",

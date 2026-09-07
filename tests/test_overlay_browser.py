@@ -244,8 +244,18 @@ async def test_caption_extraction_feeds_attribution_end_to_end(browser_page):
     from meetbot.captions import CaptionWatcher
 
     watcher = CaptionWatcher()
-    await browser_page.set_content(_CAPTION_DOM)
-    for now in (1.0, 2.0):
+    # Meet rewrites a caption in place as its recogniser refines the phrase,
+    # so each poll sees longer text. Polling identical content would mean the
+    # speaker is only observed once, which is not what a live panel does.
+    growing = [
+        (1.0, "Morning everyone,"),
+        (2.0, "Morning everyone, thanks"),
+        (3.0, "Morning everyone, thanks for joining."),
+    ]
+    for now, text in growing:
+        await browser_page.set_content(
+            _CAPTION_DOM.replace("Morning everyone, thanks for joining.", text)
+        )
         entries = await browser_page.eval_on_selector_all(
             selectors.CAPTION_REGION[0], selectors.CAPTION_ENTRY_EXTRACTOR
         )
@@ -263,5 +273,5 @@ async def test_caption_extraction_feeds_attribution_end_to_end(browser_page):
     )
     watcher.poll([(e["name"], e["text"]) for e in entries], 6.0)
 
-    assert watcher.resolve(0.5, 2.0) == "Neil Sharma"
+    assert watcher.resolve(1.0, 3.0) == "Neil Sharma"
     assert watcher.resolve(5.0, 6.0) == "Priya Menon"
