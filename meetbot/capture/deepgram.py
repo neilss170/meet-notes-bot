@@ -87,6 +87,17 @@ def build_stream_url(
     fragments mid-sentence, which both reads badly and denies the model the
     surrounding context it uses to choose words and place punctuation.
     """
+    # Deepgram refuses utterance_end_ms unless interim results are on -
+    # INVALID_QUERY_PARAMETER, "Utterance End feature requires interim
+    # results" - and rejects the whole stream with HTTP 400. Every stream
+    # failed that way, so no audio was ever transcribed, while the meeting
+    # itself carried on looking healthy.
+    #
+    # Interim results cost nothing here: parse_transcript_payload discards
+    # any payload without is_final, so only finalised utterances are ever
+    # persisted. They are therefore turned on exactly when UtteranceEnd
+    # needs them, and left off otherwise.
+    wants_utterance_end = utterance_end_ms > 0
     params = {
         "encoding": encoding,
         "sample_rate": str(sample_rate),
@@ -97,14 +108,15 @@ def build_stream_url(
         # Sentence casing, punctuation, and formatting of numbers, dates and
         # times. Wants whole phrases to work on, hence the endpointing above.
         "smart_format": "true",
-        "interim_results": "false",
+        "interim_results": "true" if wants_utterance_end else "false",
         "diarize": "true" if diarize else "false",
         "endpointing": str(endpointing_ms),
+    }
+    if wants_utterance_end:
         # Deepgram closes an utterance after this much silence even when
         # endpointing has not fired, which keeps a long unbroken stretch of
         # speech from becoming one enormous block.
-        "utterance_end_ms": str(utterance_end_ms),
-    }
+        params["utterance_end_ms"] = str(utterance_end_ms)
     return f"{DEEPGRAM_WS_URL}?{urlencode(params)}"
 
 
