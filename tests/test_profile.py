@@ -21,6 +21,18 @@ from meetbot.profile import (
 )
 
 
+@pytest.fixture(autouse=True)
+def clones_land_in_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep test clones out of the real temp directory.
+
+    clone_profile defaults to the system temp, so an unparameterised call in
+    a test leaves a directory behind on the developer's machine.
+    """
+    holding = tmp_path / "_systemp"
+    holding.mkdir(exist_ok=True)
+    monkeypatch.setattr("meetbot.profile.tempfile.gettempdir", lambda: str(holding))
+
+
 @pytest.fixture
 def master(tmp_path: Path) -> Path:
     """A profile shaped like the real one: session state buried in cache."""
