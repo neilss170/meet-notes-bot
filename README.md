@@ -602,16 +602,32 @@ Deliberate design choices worth knowing:
 ## Development
 
 ```bash
-pip install -r requirements.txt
-python -m pytest              # 156 tests, no network, no browser
-python -m pytest -q --tb=short
+pip install -e ".[serve,dev]"
+playwright install chromium   # a few tests drive a real browser
+python -m pytest -q           # 453 tests, no network, no credentials
 ```
 
-The test suite covers the transcript store (durability, corrupt lines, schema
-evolution), the formatters, Deepgram result parsing, the bridge's frame
-decoding and timeline rebasing, config validation and disclosure enforcement,
-the analysis module (with mocked LLM clients), and the runner's failure
-containment. Deepgram and both LLM SDKs are mocked throughout.
+**No test touches the network or needs an API key.** Deepgram, both LLM SDKs
+and the browser's audio hook are stubbed, so the suite is the same on a
+laptop and on CI. That is deliberate: the readiness checks *do* open a real
+Deepgram stream and call the LLM, so they are turned off during tests
+(`preflight_on_start=False`) — a suite that depends on live credentials
+passes where the keys happen to work and fails everywhere else.
+
+A handful of tests launch real Chromium, because some of this cannot be
+faked: a canvas capture stream that emits no frames looks identical to a
+working one until a compositor runs, and Chromium's profile-locking
+behaviour is the reason per-run profile copies exist at all. They skip
+themselves when Chromium is absent.
+
+The suite covers the transcript store (durability, corrupt lines, schema
+evolution), the formatters, Deepgram result parsing and stream-URL
+construction, the bridge's frame decoding and timeline rebasing, caption
+based speaker attribution, config validation and disclosure enforcement, the
+analysis module, accounts and sessions, the readiness checks, and the
+runner's failure containment.
+
+CI runs the same command on Python 3.11 and 3.12 for every push.
 
 **Integration against a real Meet call is manual and out of scope for the
 automated tests.** To do it: start a Meet call, then

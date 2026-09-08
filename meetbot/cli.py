@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m meetbot",
         description=(
-            "Join a Google Meet call as a guest, transcribe it live, and "
+            "Join a Google Meet call, transcribe it live, and "
             "generate a post-meeting summary."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
