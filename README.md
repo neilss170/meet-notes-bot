@@ -1,10 +1,60 @@
-# meetbot — Google Meet transcription & meeting intelligence
+# Scribe — Google Meet transcription & meeting intelligence
 
-An in-house bot that joins a Google Meet call **as a guest**, captures the
-remote participants' audio, produces a live speaker-labeled transcript, and
-generates a post-meeting summary with key points, action items and sentiment.
+[![tests](https://github.com/neilsharma/meet-notes-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/neilsharma/meet-notes-bot/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-No Google account. No stored credentials. No OS-level virtual audio device.
+A bot that joins a Google Meet call, captures what the other participants say,
+produces a speaker-labelled transcript as the meeting happens, and writes up
+the summary, decisions, action items and tone once it ends.
+
+It runs entirely on your own machine. Audio goes to Deepgram for transcription
+and the finished transcript goes to one LLM call for the summary; nothing else
+leaves the host, and no OS-level virtual audio device is involved.
+
+**It needs a Google account of its own.** Meet increasingly refuses anonymous
+guests outright, so the bot signs in once (`meetbot login`) and reuses that
+browser profile. Treat that profile like a password — see
+[Secrets](#secrets).
+
+> The package, module and CLI are still named `meetbot`; only the product name
+> is Scribe. Renaming the module touches every import and is a separate job.
+
+---
+
+## Quickstart
+
+```bash
+# 1. Get the code
+git clone https://github.com/neilsharma/meet-notes-bot.git
+cd meet-notes-bot
+
+# 2. Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 3. Install
+pip install -r requirements.txt
+pip install -e ".[serve]"
+playwright install chromium
+
+# 4. Configure
+cp .env.example .env             # then add your Deepgram and LLM keys
+
+# 5. Sign the bot into Google (once)
+python -m meetbot login
+
+# 6. Confirm everything works before you need it to
+python -m meetbot check
+
+# 7. Start the web UI
+python -m meetbot serve --open
+```
+
+Step 6 is the one worth keeping. It opens a real Deepgram stream with *your*
+configured options, sends one trivial LLM completion, and checks the browser
+profile is still signed in — then prints `Ready to record.` or tells you
+exactly which command fixes what is broken.
 
 ---
 
@@ -43,17 +93,21 @@ WebSocket to the Python bridge.
 
 ```
 meetbot/
-  cli.py              # argparse entrypoint: run / serve / login / analyze / format / check
+  cli.py              # argparse entrypoint: run / serve / login / users / analyze / format / check
   runner.py           # end-to-end orchestration and failure containment
-  join.py             # Playwright guest-join flow and meeting lifecycle
+  join.py             # Playwright join flow and meeting lifecycle
   selectors.py        # ALL Google Meet DOM selectors live here
   config.py           # env/.env loading, validation, disclosure enforcement
   captions.py         # speaker names from Meet's caption panel
+  preflight.py        # what must be true before a meeting, shared by CLI + service
+  profile.py          # private per-run copies of the signed-in Chromium profile
   logging_setup.py    # console + per-run file logging
   service/
     app.py            # FastAPI endpoints + the web UI
+    auth.py           # accounts, scrypt passwords, signed session cookies
     jobs.py           # concurrent meeting jobs: start, follow, stop
     ui.html           # the single-page control surface
+    login.html        # the sign-in page
   capture/
     inject.js         # browser-side WebRTC audio hook
     bridge.py         # loopback WebSocket server, channel routing, timeline
@@ -71,20 +125,21 @@ tests/
 
 ## Setup
 
-Requires **Python 3.11+**.
-
-```bash
-git clone <this repo> && cd meet-notes-bot
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-playwright install chromium                          # one-time browser download
-
-cp .env.example .env                                 # then fill in your keys
-```
+Requires **Python 3.11+**. The commands are in [Quickstart](#quickstart) above.
 
 You need a [Deepgram](https://console.deepgram.com/) API key for
 transcription, plus an Anthropic **or** OpenAI key for the analysis step
-(`--no-analysis` skips it entirely and needs neither).
+(`--no-analysis` skips it entirely and needs neither). Deepgram's free tier
+covers roughly 400 hours of meetings, and Groq's is free outright, so a pilot
+costs nothing.
+
+Two settings are worth getting right before your first real meeting, because
+both meaningfully change how accurate the transcript is:
+
+| Setting | Why |
+|---|---|
+| `DEEPGRAM_LANGUAGE` | Use the variety actually being spoken — `en-IN`, `en-GB`, `en-US`. Transcribing Indian English as American English garbles it badly. |
+| `DEEPGRAM_KEYTERMS` | Comma-separated names and jargon. ASR fails hardest on exactly the words a summary needs most — people's names, product names — because they are rare in the language model. Put your team's names here. |
 
 Verify the install without joining anything:
 
@@ -92,17 +147,34 @@ Verify the install without joining anything:
 python -m meetbot check
 ```
 
-`check` makes two real (brief) API calls so credentials fail here rather than
-on a live call:
+`check` asks every question a live meeting would answer the hard way:
 
-- **Deepgram** — opens a streaming connection to confirm the key, model and
-  language are accepted.
-- **LLM** — sends one trivial completion to confirm the key, model id and
-  endpoint work. This matters because the summary is generated *after* the
-  meeting ends, so a dead key would otherwise only surface once the call is
-  over and the material is gone.
+| Check | Why it is worth the seconds |
+|---|---|
+| **Configuration** | Internally coherent — sample rate, provider, ports. |
+| **Deepgram** | Opens a stream with **your** configured options, not defaults. A generic probe once passed while every real stream was rejected, because the failure lived entirely in options it never sent. |
+| **AI notes** | One trivial completion. The summary runs *after* the meeting, so a dead key would otherwise surface when the material is already gone. |
+| **Google sign-in** | Whether the profile is still signed in. Google expires these on its own schedule, and an expired one is invisible until Meet turns the bot away with people already waiting. |
+| **Playwright** | Chromium is installed and launches. |
 
-Pass `--offline` to skip both and make no network calls.
+Each failure prints the command that fixes it, and `check` exits non-zero:
+
+```
+  OK    Configuration    valid
+  OK    Deepgram         accepts nova-3/en-IN, 11 key term(s)
+  OK    AI notes         key accepted, openai/gpt-oss-120b replied 'OK'
+  FAIL  Google sign-in   The profile is signed out; Meet will refuse the bot
+To fix Google sign-in: python -m meetbot login
+
+Not ready - fix the items above, then run check again.
+```
+
+The same checks run when the service starts and are shown in the web UI,
+which refuses to send the bot while something is broken. One module
+(`meetbot/preflight.py`) backs all three, so "check says it is fine" and "the
+bot will actually work" cannot drift apart.
+
+Pass `--offline` to skip everything that touches the network.
 
 ---
 
@@ -171,9 +243,42 @@ watch the transcript build up live, stop it early, and read the notes from any
 past meeting. The bot still runs on this machine; the UI is just the control
 surface.
 
-It binds to **loopback only**, and you should leave it there: the service has
-no authentication and can join meetings and read transcripts. `--host` exists
-for putting your own auth in front of it, and warns when you use it.
+#### Accounts
+
+Every route requires a signed-in account. On an empty database the service
+generates a first admin and prints the password **once**, in the startup log:
+
+```
+No accounts existed, so an admin was created:
+    username: admin
+    password: UKe_H9NryCfZb3cm
+Sign in and change it. This is shown only once.
+```
+
+Two roles. A **member** sends the bot and sees only the meetings they started;
+an **admin** sees every meeting and manages accounts from a panel in the UI.
+Meetings recorded before accounts existed have no owner and are visible to
+admins only — guessing who they belonged to would be worse than showing
+nobody.
+
+Passwords are hashed with scrypt. Sessions are HMAC-signed cookies, so
+restarting the service does not sign everyone out, and accounts are re-read
+per request, so deleting or demoting someone takes effect immediately rather
+than whenever their cookie lapses.
+
+If the only admin password is ever lost, the UI cannot help — `meetbot users`
+can:
+
+```bash
+python -m meetbot users list
+python -m meetbot users add priya --role member
+python -m meetbot users passwd admin
+python -m meetbot users delete priya
+```
+
+It binds to **loopback only** by default. `--host` serves it to the network
+and warns when you use it: accounts are required, but sessions travel as
+cookies, so put TLS in front of it or passwords cross the wire in clear.
 
 Things it handles that the one-shot CLI never had to:
 
@@ -193,6 +298,13 @@ Things it handles that the one-shot CLI never had to:
 | `GET /api/meetings/{id}` | Status plus live transcript |
 | `POST /api/meetings/{id}/stop` | Leave the call and write the summary |
 | `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, … |
+| `GET /api/health` | What is working, and the command that fixes what is not |
+| `POST /api/health/refresh` | Re-run the checks after fixing something |
+| `GET /api/users` | Admin only: list accounts |
+| `POST /login` / `POST /logout` | Session in, session out |
+
+All of them require a session; `POST /api/meetings` also returns **409** when
+the checks say the bot could not record the meeting anyway.
 
 ### Output
 
@@ -202,8 +314,41 @@ Each run creates `recordings/<UTC timestamp>-<meeting code>/`:
 |---|---|
 | `transcript.jsonl` | Source of truth. One JSON record per line, flushed as the meeting happens. |
 | `transcript.md` | Readable transcript, grouped into speaker turns. |
-| `analysis.md` | Summary, key points, action items, sentiment. |
+| `analysis.md` | Summary, key points, **decisions**, action items, sentiment. |
 | `meetbot.log` | Full DEBUG log for the run, including browser-side messages. |
+
+`analysis.md` looks like this:
+
+```markdown
+## Summary
+Neil opened the meeting to review the pipeline, budget and timeline. Priya
+reported the pipeline is running end to end...
+
+## Key Discussion Points
+- Pipeline is finished and running end-to-end
+- Cost is roughly 1200 rupees a month
+
+## Decisions
+- The pilot will run for three weeks, starting Monday
+
+## Action Items
+- [ ] **Priya Menon** - Send the cost breakdown _(due: Friday)_
+
+## Sentiment
+**Overall tone:** positive
+```
+
+**Decisions and action items are kept apart on purpose.** A decision is what
+the meeting settled; an action item is what somebody will now go and do. The
+model will happily list the same thing as both if you let it, which pads the
+notes and makes a meeting look more conclusive than it was — so the prompt
+forbids it, and an empty section says *"Nothing was decided in this meeting"*
+rather than inventing something.
+
+The same restraint applies throughout: the prompt is explicit that it must not
+invent owners, dates or numbers, and that an unassigned task stays unassigned.
+A note-taker that fabricates commitments is worse than none, because you stop
+being able to trust the parts it got right.
 
 ### Other subcommands
 

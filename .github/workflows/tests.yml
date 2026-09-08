@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e ".[serve,dev]"
+
+      # A handful of tests drive a real browser - the caption overlay produces
+      # a video stream, and no amount of mocking proves a canvas capture
+      # actually emits frames. They skip themselves when Chromium is absent,
+      # which would quietly hide the bugs they exist to catch.
+      - name: Install Chromium
+        run: playwright install --with-deps chromium
+
+      # No secrets are needed: every test that would talk to Deepgram, Groq or
+      # Google is either a pure unit test or stubbed. Anything that genuinely
+      # needs a live service is run by hand against real credentials.
+      - name: Run tests
+        run: pytest -q
