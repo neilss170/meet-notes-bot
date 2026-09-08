@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+from typing import Any
 import time
 
 from datetime import datetime, timezone
@@ -224,6 +225,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Where to keep the signed-in profile (default: CHROME_PROFILE_DIR).",
+    )
+    login_parser.add_argument(
+        "--channel",
+        default=None,
+        help="Browser to sign in through (chrome, msedge). Default: whichever "
+             "is installed, since Google often refuses bundled Chromium.",
     )
     login_parser.add_argument(
         "--timeout",
@@ -506,10 +513,33 @@ def cmd_login(args: argparse.Namespace) -> int:
     profile = Path(profile).expanduser()
     profile.mkdir(parents=True, exist_ok=True)
 
-    return asyncio.run(_login(profile, args.timeout))
+    return asyncio.run(
+        _login(profile, args.timeout, getattr(args, "channel", None))
+    )
 
 
-async def _login(profile: Path, timeout_s: int) -> int:
+async def _first_available_channel(playwright: Any) -> str | None:
+    """The first real browser Playwright can drive here, if any.
+
+    Decided by launching one rather than guessing at install paths, which
+    differ by platform, architecture and whether the install is per-user.
+    Costs about a second, once, during an interactive command.
+    """
+    for channel in ("chrome", "msedge"):
+        try:
+            browser = await playwright.chromium.launch(
+                channel=channel, headless=True
+            )
+        except Exception:  # noqa: BLE001 - absence is the expected outcome
+            continue
+        await browser.close()
+        return channel
+    return None
+
+
+async def _login(
+    profile: Path, timeout_s: int, channel_override: str | None = None
+) -> int:
     """Drive the interactive sign-in and report whether it stuck."""
     from playwright.async_api import async_playwright
 
@@ -520,11 +550,27 @@ async def _login(profile: Path, timeout_s: int) -> int:
     logger.info("Profile: %s", profile)
 
     async with async_playwright() as playwright:
+        launch: dict[str, Any] = {
+            "headless": False,  # the entire point: a human has to drive this
+            "args": list(_CHROMIUM_ARGS),
+            "viewport": {"width": 1100, "height": 800},
+        }
+        # Sign in through real Chrome when it is installed. Google refuses
+        # sign-in on browsers it considers insecure, and Playwright's bundled
+        # Chromium is regularly one of them - the window opens, the password
+        # is accepted, and the session never lands. Meetings can still run on
+        # bundled Chromium afterwards; only this step is fussy.
+        channel = channel_override or await _first_available_channel(playwright)
+        if channel:
+            launch["channel"] = channel
+            logger.info("Signing in through %s.", channel)
+        else:
+            logger.warning(
+                "No installed Chrome or Edge found; falling back to bundled "
+                "Chromium. Google may refuse to sign in to it."
+            )
         context = await playwright.chromium.launch_persistent_context(
-            str(profile),
-            headless=False,  # the entire point: a human has to drive this
-            args=list(_CHROMIUM_ARGS),
-            viewport={"width": 1100, "height": 800},
+            str(profile), **launch
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()
