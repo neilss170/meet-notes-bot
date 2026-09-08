@@ -1,6 +1,6 @@
 # Scribe — Google Meet transcription & meeting intelligence
 
-[![tests](https://github.com/neilsharma/meet-notes-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/neilsharma/meet-notes-bot/actions/workflows/tests.yml)
+[![tests](https://github.com/neilss170/meet-notes-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/neilss170/meet-notes-bot/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
@@ -26,7 +26,7 @@ browser profile. Treat that profile like a password — see
 
 ```bash
 # 1. Get the code
-git clone https://github.com/neilsharma/meet-notes-bot.git
+git clone https://github.com/neilss170/meet-notes-bot.git
 cd meet-notes-bot
 
 # 2. Create and activate a virtual environment
