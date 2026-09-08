@@ -51,6 +51,11 @@ logger = logging.getLogger(__name__)
 #: one page call and the watcher ignores entries that have not changed.
 _CAPTION_POLL_S = 1.0
 
+#: Ceilings on teardown. Generous enough for an ordinary close, short enough
+#: that a wedged one does not strand the run - see the note in run_meeting.
+_CLOSE_BROWSER_TIMEOUT_S = 30.0
+_CLOSE_BRIDGE_TIMEOUT_S = 30.0
+
 #: Warn if no audio has reached the bridge after this many seconds in-call.
 _SILENT_CAPTURE_WARNING_S = 60.0
 
@@ -321,10 +326,25 @@ async def run_meeting(
                 await caption_task
         if stop_handlers:
             _restore_signal_handlers(stop_handlers)
-        with contextlib.suppress(Exception):
-            await session.close()
-        with contextlib.suppress(Exception):
-            await bridge.stop()
+        # Every teardown step is bounded. A meeting that has already ended
+        # must always reach "finished": a run that hangs here leaves the job
+        # stuck in "stopping" with no way out but restarting the server, and
+        # it strands the artifacts this run was about to write.
+        for label, step, timeout in (
+            ("browser", session.close(), _CLOSE_BROWSER_TIMEOUT_S),
+            ("audio bridge", bridge.stop(), _CLOSE_BRIDGE_TIMEOUT_S),
+        ):
+            try:
+                await asyncio.wait_for(step, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Closing the %s took longer than %.0fs; carrying on so "
+                    "the transcript still gets written",
+                    label,
+                    timeout,
+                )
+            except Exception:  # noqa: BLE001 - teardown must not mask the run
+                logger.exception("Error closing the %s", label)
         # Recorded before the store closes, so the relabelling survives a
         # crash and so `analyze` on this transcript later sees it too.
         learned = bridge.speaker_registry.mapping()

@@ -15,6 +15,7 @@ audio channel - the mixed stream, or a single participant.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from dataclasses import dataclass
@@ -321,9 +322,36 @@ class DeepgramLiveClient:
                 )
 
     async def stop(self) -> None:
-        """Signal the run loop to flush and exit."""
+        """Signal the run loop to flush and exit. Never blocks.
+
+        The sentinel used to be enqueued with ``await``, which deadlocked a
+        real meeting. The queue is bounded, and it only ever fills when the
+        consumer has already died - a rejected stream, a fatal error - so
+        there was nobody left to make room. The bot had left the call, but
+        the run sat in "stopping" indefinitely.
+
+        A full queue therefore loses its oldest frame to make space. That
+        frame is worth far less than the guarantee that shutting down
+        finishes.
+        """
         self._stopping.set()
-        await self._queue.put(None)
+        try:
+            self._queue.put_nowait(None)
+            return
+        except asyncio.QueueFull:
+            pass
+        with contextlib.suppress(asyncio.QueueEmpty):
+            self._queue.get_nowait()
+        try:
+            self._queue.put_nowait(None)
+        except asyncio.QueueFull:
+            # Racing with a consumer that is draining anyway; _stopping is
+            # already set, which is what actually ends the loop.
+            logger.debug(
+                "Could not enqueue the stop sentinel for channel %s; the "
+                "stopping flag is set regardless",
+                self._channel_label,
+            )
 
     async def run(self) -> None:
         """Maintain the connection until :meth:`stop` is called.
