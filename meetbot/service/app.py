@@ -125,7 +125,8 @@ def create_app(config: Config) -> FastAPI:
         # Run the checks in the background: the sign-in check starts a
         # browser, and making startup wait for it would delay the UI by ten
         # seconds every time. The page polls /api/health for the answer.
-        app.state.preflight_task = asyncio.create_task(_refresh_health())
+        if config.preflight_on_start:
+            app.state.preflight_task = asyncio.create_task(_refresh_health())
         restored = load_past_runs(manager, config.output_dir)
         if restored:
             logger.info("Loaded %d past meeting(s) from %s", restored, config.output_dir)
