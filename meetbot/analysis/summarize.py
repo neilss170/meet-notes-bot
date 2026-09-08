@@ -48,7 +48,15 @@ _SYSTEM_PROMPT = (
     "'Speaker 0' - when a speaker's real name is used in conversation you may "
     "attribute to that name, but do not guess. If the transcript is too short "
     "or too garbled to support a conclusion, say so plainly rather than "
-    "padding."
+    "padding.\n\n"
+    "Keep decisions and action items apart. A decision is what the meeting "
+    "settled - a choice made, an approach agreed, an option ruled out. An "
+    "action item is what somebody will now go and do. Never record the same "
+    "thing as both: 'Priya will send the budget by Friday' is an action "
+    "item, and listing it again as a decision pads the notes and makes the "
+    "meeting look more conclusive than it was. Most meetings produce fewer "
+    "of both than they appear to - an empty list is a correct answer and far "
+    "more useful than an invented one."
 )
 
 _ANALYSIS_SCHEMA: dict[str, Any] = {
@@ -64,6 +72,18 @@ _ANALYSIS_SCHEMA: dict[str, Any] = {
         "key_points": {
             "type": "array",
             "description": "The main discussion points, most important first.",
+            "items": {"type": "string"},
+        },
+        "decisions": {
+            "type": "array",
+            "description": (
+                "Things the meeting settled: a choice made, an approach "
+                "agreed, a question closed. Record what was decided, not who "
+                "will do it - that is an action item. Where a decision "
+                "changed during the discussion, record only what it landed "
+                "on. Empty if the meeting decided nothing, which is common "
+                "and must not be padded."
+            ),
             "items": {"type": "string"},
         },
         "action_items": {
@@ -110,6 +130,7 @@ _ANALYSIS_SCHEMA: dict[str, Any] = {
     "required": [
         "summary",
         "key_points",
+        "decisions",
         "action_items",
         "sentiment",
         "sentiment_rationale",
@@ -143,6 +164,10 @@ class MeetingAnalysis:
 
     summary: str
     key_points: list[str] = field(default_factory=list)
+    #: What the meeting settled, as distinct from what it assigned. A
+    #: decision with no owner is still the most useful line in a set of
+    #: notes, and it had nowhere to go but buried in the summary prose.
+    decisions: list[str] = field(default_factory=list)
     action_items: list[ActionItem] = field(default_factory=list)
     sentiment: str = "neutral"
     sentiment_rationale: str = ""
@@ -194,6 +219,12 @@ def parse_analysis_payload(
         if (cleaned := _coerce_str(point))
     ]
 
+    decisions = [
+        cleaned
+        for decision in payload.get("decisions") or []
+        if (cleaned := _coerce_str(decision))
+    ]
+
     action_items: list[ActionItem] = []
     for raw in payload.get("action_items") or []:
         if isinstance(raw, str):
@@ -220,6 +251,7 @@ def parse_analysis_payload(
     return MeetingAnalysis(
         summary=summary,
         key_points=key_points,
+        decisions=decisions,
         action_items=action_items,
         sentiment=sentiment,
         sentiment_rationale=_coerce_str(payload.get("sentiment_rationale")),
@@ -408,6 +440,13 @@ def render_analysis_markdown(
         parts.extend(f"- {point}" for point in analysis.key_points)
     else:
         parts.append("_None identified._")
+    parts.append("")
+
+    parts.extend(["## Decisions", ""])
+    if analysis.decisions:
+        parts.extend(f"- {decision}" for decision in analysis.decisions)
+    else:
+        parts.append("_Nothing was decided in this meeting._")
     parts.append("")
 
     parts.extend(["## Action Items", ""])
