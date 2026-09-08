@@ -21,11 +21,19 @@ actually touched cookies. Measured, over three trials each:
 So the first browser here must navigate to an https origin that sends the
 cookie - which is exactly what joining Meet does, and nothing less will
 reproduce it.
+
+It is also platform-specific, which CI established rather than guesswork:
+the same test that fails reliably on Windows passes on the Linux runner,
+where the second context reads the session fine. The bug test is therefore
+pinned to Windows, where it was measured. The fix is not platform-specific
+and is asserted everywhere - the clone test states what we require, rather
+than what Chromium happens to do on one operating system.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from pathlib import Path
 
@@ -73,10 +81,28 @@ async def _join_a_meeting(context: BrowserContext) -> None:
     await (await context.new_page()).goto(_PAGE)
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason=(
+        "Chromium's profile locking is platform-specific. The signed-out "
+        "second browser was measured on Windows, where this project runs; on "
+        "the Linux runner the second context reads the session fine, so "
+        "asserting the bug there fails for a reason that says nothing about "
+        "the code. The fix is not Windows-specific and is covered everywhere "
+        "by the clone test below."
+    ),
+)
 async def test_a_second_meeting_on_the_same_profile_is_signed_out(
     tmp_path: Path,
 ) -> None:
-    """The bug. If this ever stops failing, the clone may be unnecessary."""
+    """The bug itself, pinned where it was actually observed.
+
+    A canary rather than a requirement: if this stops failing on Windows,
+    Chromium's behaviour has changed and per-run clones may no longer be
+    needed. It is not the test that protects the fix - that is the one below,
+    which asserts what we require rather than what Chromium happens to do,
+    and therefore runs everywhere.
+    """
     master = tmp_path / "master"
     async with async_playwright() as pw:
         await _sign_in(pw, master)
