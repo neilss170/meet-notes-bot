@@ -290,3 +290,87 @@ def test_anthropic_client_ignores_the_base_url(
 
     build_client("anthropic", "key", "claude-opus-5", "https://example.invalid")
     assert "base_url" not in seen
+
+
+class TestDecisions:
+    """What the meeting settled, kept apart from what it assigned.
+
+    Decisions previously had nowhere to go and ended up buried in the summary
+    prose - yet "we agreed three weeks, not two" is often the single most
+    useful line in a set of notes, and it frequently has no owner at all, so
+    it is not an action item either.
+    """
+
+    @staticmethod
+    def _analysis(**overrides):
+        payload = {
+            "summary": "The team reviewed the timeline.",
+            "key_points": ["Timeline discussed"],
+            "decisions": ["The pilot will run for three weeks, starting Monday"],
+            "action_items": [],
+            "sentiment": "positive",
+            "sentiment_rationale": "Constructive.",
+        }
+        payload.update(overrides)
+        return parse_analysis_payload(payload)
+
+    def test_decisions_are_parsed(self) -> None:
+        assert self._analysis().decisions == [
+            "The pilot will run for three weeks, starting Monday"
+        ]
+
+    def test_decisions_are_rendered_under_their_own_heading(self) -> None:
+        markdown = render_analysis_markdown(self._analysis())
+        assert "## Decisions" in markdown
+        assert "- The pilot will run for three weeks, starting Monday" in markdown
+
+    def test_decisions_come_before_action_items(self) -> None:
+        """What was settled reads first; what happens next follows from it."""
+        markdown = render_analysis_markdown(self._analysis())
+        assert markdown.index("## Decisions") < markdown.index("## Action Items")
+
+    def test_a_meeting_that_decided_nothing_says_so(self) -> None:
+        """Silence must not be dressed up as consensus."""
+        markdown = render_analysis_markdown(self._analysis(decisions=[]))
+        assert "_Nothing was decided in this meeting._" in markdown
+
+    def test_a_missing_field_is_not_an_error(self) -> None:
+        """An older model or a partial response must still produce notes."""
+        payload = {
+            "summary": "Something was discussed.",
+            "key_points": [],
+            "action_items": [],
+            "sentiment": "neutral",
+            "sentiment_rationale": "",
+        }
+        assert parse_analysis_payload(payload).decisions == []
+
+    @pytest.mark.parametrize("junk", [None, "", "   ", 42, {"a": 1}, []])
+    def test_unusable_entries_are_dropped(self, junk) -> None:
+        analysis = self._analysis(decisions=["A real decision", junk])
+        assert analysis.decisions == ["A real decision"]
+
+    def test_the_schema_requires_decisions(self) -> None:
+        """Structured output only guarantees a field the schema demands."""
+        from meetbot.analysis.summarize import _ANALYSIS_SCHEMA
+
+        assert "decisions" in _ANALYSIS_SCHEMA["properties"]
+        assert "decisions" in _ANALYSIS_SCHEMA["required"]
+
+    def test_the_prompt_forbids_restating_an_action_item(self) -> None:
+        """Observed against the real model.
+
+        Asked for decisions on a meeting that made none, it restated the
+        action item there instead - which pads the notes and makes the
+        meeting look more conclusive than it was.
+        """
+        from meetbot.analysis.summarize import _SYSTEM_PROMPT
+
+        prompt = _SYSTEM_PROMPT.lower()
+        assert "never record the same thing as both" in prompt
+        assert "empty list is a correct answer" in prompt
+
+    def test_serialises_for_the_transcript_store(self) -> None:
+        assert self._analysis().to_dict()["decisions"] == [
+            "The pilot will run for three weeks, starting Monday"
+        ]
