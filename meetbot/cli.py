@@ -668,94 +668,102 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_check(args: argparse.Namespace) -> int:
-    """Handle ``check``: validate config and confirm Playwright is usable."""
-    config = _config_from_args(args)
-    ok = True
+    """Handle ``check``: confirm everything a real run depends on.
 
-    try:
-        config.validate(require_meeting=bool(config.meet_url))
-        logger.info("Configuration looks valid")
-    except ConfigError as exc:
-        logger.error("%s", exc)
-        ok = False
+    Shares its checks with the service and the web UI - see
+    :mod:`meetbot.preflight` - so "check says it is fine" and "the bot will
+    actually work" cannot drift apart.
+    """
+    from meetbot.preflight import run_preflight
+
+    config = _config_from_args(args)
 
     logger.info("Bot display name : %r", config.bot_name)
     logger.info("Output directory : %s", config.output_dir)
-    logger.info("Deepgram model   : %s", config.deepgram_model)
+    logger.info("Deepgram model   : %s / %s", config.deepgram_model, config.deepgram_language)
     logger.info("LLM              : %s / %s", config.llm_provider, config.llm_model)
     logger.info("Audio bridge     : %s", config.bridge_url)
+    logger.info("")
 
-    # The Deepgram key is the one credential a run cannot start without, so
-    # check it here rather than leaving it to fail on a live call.
-    if not config.deepgram_api_key:
-        logger.error("DEEPGRAM_API_KEY is not set - transcription cannot start")
-        ok = False
-    elif args.offline:
-        logger.info("Deepgram         : skipped (--offline)")
-    else:
-        try:
-            detail = asyncio.run(
-                probe_credentials(
-                    config.deepgram_api_key,
-                    model=config.deepgram_model,
-                    language=config.deepgram_language,
-                    sample_rate=config.sample_rate,
-                )
-            )
-            logger.info("Deepgram OK (%s)", detail)
-        except DeepgramError as exc:
-            logger.error("Deepgram check failed: %s", exc)
-            ok = False
-
-    # The summary happens after the meeting ends, so an unusable LLM key or a
-    # retired model id would otherwise only surface once the call is over and
-    # the material is gone. Check it up front like the Deepgram key.
-    if not config.analysis_enabled:
-        logger.info("LLM              : skipped (analysis disabled)")
-    elif not config.llm_api_key:
-        logger.error(
-            "No API key for LLM_PROVIDER=%s - the meeting summary cannot be "
-            "generated",
-            config.llm_provider,
+    report = asyncio.run(
+        run_preflight(
+            config,
+            include_session=not args.offline,
+            offline=args.offline,
         )
-        ok = False
-    elif args.offline:
-        logger.info("LLM              : skipped (--offline)")
-    else:
-        try:
-            detail = probe_llm(
-                build_client(
-                    config.llm_provider,
-                    config.llm_api_key,
-                    config.llm_model,
-                    config.llm_base_url,
-                )
-            )
-            logger.info("LLM OK (%s)", detail)
-        except LLMError as exc:
-            logger.error("LLM check failed: %s", exc)
-            ok = False
+    )
+    report.log()
 
     try:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
-            version = browser.version
+            logger.info("  OK    %-16s %s", "Playwright", browser.version)
             browser.close()
-        logger.info("Playwright Chromium OK (%s)", version)
-    except ImportError:
-        logger.error("Playwright is not installed: pip install playwright")
-        ok = False
-    except Exception as exc:
-        logger.error(
-            "Could not launch Chromium (%s: %s). Run: playwright install chromium",
-            type(exc).__name__,
-            exc,
-        )
-        ok = False
+    except Exception as exc:  # noqa: BLE001
+        logger.error("  FAIL  %-16s %s", "Playwright", exc)
+        logger.warning("To fix Playwright: playwright install chromium")
+        return EXIT_CONFIG_ERROR
 
-    return EXIT_OK if ok else EXIT_CONFIG_ERROR
+    logger.info("")
+    if report.can_record:
+        logger.info("Ready to record.")
+        return EXIT_OK
+    logger.error("Not ready - fix the items above, then run check again.")
+    return EXIT_CONFIG_ERROR
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Handle ``serve``: run the local web UI until interrupted."""
+    try:
+        import uvicorn
+    except ImportError:
+        logger.error(
+            "The web UI needs: pip install fastapi uvicorn python-multipart"
+        )
+        return EXIT_CONFIG_ERROR
+
+    from meetbot.service.app import create_app
+
+    config = _config_from_args(args)
+    try:
+        # No meeting URL yet - the whole point is that one arrives later, per
+        # request - so only the settings a server needs are checked here.
+        config.validate(require_meeting=False)
+    except ConfigError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            "Binding to %s serves meetbot to the network. Accounts are "
+            "required, but sessions travel as cookies: put TLS in front of "
+            "it, or passwords and session tokens cross the wire in clear.",
+            args.host,
+        )
+
+    url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}"
+    logger.info("meetbot is at %s", url)
+    logger.info("Recordings: %s", config.output_dir)
+
+    if getattr(args, "open_browser", False):
+        import threading
+        import webbrowser
+
+        # Deferred: opening the browser before uvicorn is listening shows an
+        # error page the user then has to reload.
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(
+        create_app(config),
+        host=args.host,
+        port=args.port,
+        log_level=(args.log_level or "info").lower(),
+        # uvicorn otherwise replaces the handlers configure_logging installed.
+        log_config=None,
+    )
+    return EXIT_OK
 
 
 def cmd_users(args: argparse.Namespace) -> int:
