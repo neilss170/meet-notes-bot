@@ -215,6 +215,12 @@ class Config:
     #: model the context it uses to choose words and place punctuation.
     #: Lower it for snappier live captions, raise it for cleaner text.
     deepgram_endpointing_ms: int = 800
+    #: Words to bias transcription towards: participant names, product names,
+    #: team jargon. ASR gets these wrong most often - they are rare in the
+    #: language model and frequently not English words at all - so this is
+    #: the cheapest accuracy improvement available. nova-3 only.
+    deepgram_keyterms: tuple[str, ...] = ()
+
     #: Ceiling (ms) on how long one utterance may run without a pause, so an
     #: unbroken stretch of speech is still split into readable turns.
     deepgram_utterance_end_ms: int = 1000
@@ -399,6 +405,11 @@ def load_config(
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
         deepgram_endpointing_ms=_env_int(env, "DEEPGRAM_ENDPOINTING_MS", 800),
         deepgram_utterance_end_ms=_env_int(env, "DEEPGRAM_UTTERANCE_END_MS", 1000),
+        deepgram_keyterms=tuple(
+            term.strip()
+            for term in _env_str(env, "DEEPGRAM_KEYTERMS", "").split(",")
+            if term.strip()
+        ),
         analysis_enabled=_env_bool(env, "ANALYSIS_ENABLED", True),
         llm_provider=provider,
         llm_model=_env_str(env, "LLM_MODEL", ""),

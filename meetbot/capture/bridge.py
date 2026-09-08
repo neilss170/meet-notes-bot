@@ -380,6 +380,7 @@ class AudioBridge:
                 on_connect=on_connect,
                 endpointing_ms=self._config.deepgram_endpointing_ms,
                 utterance_end_ms=self._config.deepgram_utterance_end_ms,
+                keyterms=self._config.deepgram_keyterms,
             )
         except Exception:
             logger.exception("Could not create Deepgram client for channel %d", channel_id)

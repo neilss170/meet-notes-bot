@@ -19,7 +19,7 @@ import contextlib
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Final
+from typing import Any, Awaitable, Callable, Final, Sequence
 from urllib.parse import urlencode
 
 import websockets
@@ -76,6 +76,7 @@ def build_stream_url(
     channels: int = 1,
     endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
     utterance_end_ms: int = DEFAULT_UTTERANCE_END_MS,
+    keyterms: Sequence[str] = (),
 ) -> str:
     """Build the Deepgram streaming URL with our option set.
 
@@ -113,12 +114,22 @@ def build_stream_url(
         "diarize": "true" if diarize else "false",
         "endpointing": str(endpointing_ms),
     }
+    # Names and jargon are what ASR gets wrong most, because they are rare in
+    # the language model and often not English words at all. Boosting them
+    # costs nothing and is the cheapest accuracy win available.
+    #
+    # nova-3 spells this "keyterm"; nova-2's "keywords" is a different
+    # parameter and is rejected outright, so anything but nova-3 is left
+    # alone rather than sent an option it will refuse.
+    if keyterms and model.startswith("nova-3"):
+        params["keyterm"] = [term for term in keyterms if term.strip()]
     if wants_utterance_end:
         # Deepgram closes an utterance after this much silence even when
         # endpointing has not fired, which keeps a long unbroken stretch of
         # speech from becoming one enormous block.
         params["utterance_end_ms"] = str(utterance_end_ms)
-    return f"{DEEPGRAM_WS_URL}?{urlencode(params)}"
+    # doseq: keyterm repeats once per term rather than collapsing to a list.
+    return f"{DEEPGRAM_WS_URL}?{urlencode(params, doseq=True)}"
 
 
 def parse_results_message(
@@ -230,6 +241,7 @@ class DeepgramLiveClient:
         on_connect: Callable[[], None] | None = None,
         endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
         utterance_end_ms: int = DEFAULT_UTTERANCE_END_MS,
+        keyterms: Sequence[str] = (),
     ) -> None:
         """Create a client. Nothing connects until :meth:`run` is awaited.
 
@@ -266,6 +278,7 @@ class DeepgramLiveClient:
             diarize=diarize,
             endpointing_ms=endpointing_ms,
             utterance_end_ms=utterance_end_ms,
+            keyterms=keyterms,
         )
         self._default_speaker = default_speaker
         self._channel_label = channel_label
