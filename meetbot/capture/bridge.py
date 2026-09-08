@@ -15,6 +15,7 @@ Wire protocol (mirror of the comment at the top of ``inject.js``):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -175,7 +176,9 @@ class AudioBridge:
         self._stopping = True
 
         for state in list(self._channels.values()):
-            await state.client.stop()
+            # Bounded: shutting down must finish even if a client is wedged.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(state.client.stop(), timeout=5.0)
 
         tasks = [state.task for state in self._channels.values()]
         if tasks:
@@ -195,7 +198,13 @@ class AudioBridge:
 
         if self._server is not None:
             self._server.close()
-            await self._server.wait_closed()
+            # wait_closed() waits on every live connection. The browser is
+            # normally gone by now, but a half-closed socket must not hold
+            # the run open.
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Audio bridge server did not close within 10s")
             self._server = None
 
         self.stats.channels = len(self._channels)

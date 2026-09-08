@@ -6,6 +6,7 @@ manually against the live API.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import types
 from urllib.parse import parse_qs, urlparse
@@ -14,7 +15,11 @@ import pytest
 from websockets.exceptions import InvalidStatus
 
 from meetbot.capture import deepgram
-from meetbot.capture.deepgram import build_stream_url, parse_results_message
+from meetbot.capture.deepgram import (
+    DeepgramLiveClient,
+    build_stream_url,
+    parse_results_message,
+)
 
 
 def _results(words, *, is_final=True, transcript=None, confidence=0.9):
@@ -342,3 +347,66 @@ class TestUtteranceEndNeedsInterimResults:
         """Turning them on at the wire must not let them into the transcript."""
         payload = _results([{"word": "half", "start": 0.0, "end": 0.4}], is_final=False)
         assert parse_results_message(payload, default_speaker="Speaker 0") == []
+
+
+class TestStopNeverBlocks:
+    """Shutting down must finish even when nothing is draining the queue.
+
+    From a live meeting. Deepgram rejected the stream, so the channel task
+    died at the handshake - and then nothing consumed the audio queue while
+    the browser went on feeding it. By the time the user pressed stop the
+    queue was full, and ``stop()`` awaited ``put(None)`` on a full queue with
+    no consumer. The bot had left the call, but the job sat in "stopping" for
+    fourteen minutes, with no way out but restarting the server.
+    """
+
+    @staticmethod
+    def _client(max_queued_frames: int):
+        return DeepgramLiveClient(
+            api_key="k",
+            on_segment=lambda _segment: None,
+            model="nova-3",
+            language="en-US",
+            sample_rate=16_000,
+            max_queued_frames=max_queued_frames,
+        )
+
+    async def test_returns_on_a_full_queue_with_no_consumer(self) -> None:
+        client = self._client(4)
+        for _ in range(4):
+            client._queue.put_nowait(b"frame")
+        assert client._queue.full()
+
+        await asyncio.wait_for(client.stop(), timeout=2.0)
+
+    async def test_the_stopping_flag_is_set_either_way(self) -> None:
+        """The flag is what actually ends the loop; the sentinel only wakes it."""
+        client = self._client(2)
+        for _ in range(2):
+            client._queue.put_nowait(b"frame")
+        await asyncio.wait_for(client.stop(), timeout=2.0)
+        assert client._stopping.is_set()
+
+    async def test_a_live_consumer_still_receives_the_sentinel(self) -> None:
+        """Making room must not cost the wake-up a running consumer needs."""
+        client = self._client(3)
+        for _ in range(3):
+            client._queue.put_nowait(b"frame")
+        await asyncio.wait_for(client.stop(), timeout=2.0)
+
+        drained = []
+        while not client._queue.empty():
+            drained.append(client._queue.get_nowait())
+        assert None in drained, "the stop sentinel never reached the consumer"
+
+    async def test_an_empty_queue_is_the_ordinary_path(self) -> None:
+        client = self._client(8)
+        await asyncio.wait_for(client.stop(), timeout=2.0)
+        assert client._queue.get_nowait() is None
+
+    async def test_stopping_twice_is_harmless(self) -> None:
+        """A stop request can race with the run ending on its own."""
+        client = self._client(2)
+        await asyncio.wait_for(client.stop(), timeout=2.0)
+        await asyncio.wait_for(client.stop(), timeout=2.0)
+        assert client._stopping.is_set()
