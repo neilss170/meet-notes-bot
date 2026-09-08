@@ -748,3 +748,122 @@ class TestSessionCookie:
         response = app_client.post("/logout", follow_redirects=False)
         assert SESSION_COOKIE in response.headers["set-cookie"]
         assert app_client.get("/api/me").status_code == 401
+
+
+class TestReadinessGuard:
+    """The service must not send a bot into a meeting it cannot record.
+
+    Every wasted call began with a bot that joined and produced nothing, or
+    could not join at all, because something was already broken before anyone
+    clicked send. Refusing costs a moment; finding out in the meeting costs
+    the meeting.
+    """
+
+    @pytest.fixture
+    def signed_in(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch, utterances=2)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield client
+
+    @staticmethod
+    def _report(*, can_record: bool):
+        from meetbot.preflight import CheckResult, Preflight
+
+        if can_record:
+            return Preflight([CheckResult("Google sign-in", ok=True, detail="fine")])
+        return Preflight([
+            CheckResult(
+                "Google sign-in",
+                ok=False,
+                detail="The profile is signed out",
+                fix="python -m meetbot login",
+            )
+        ])
+
+    def test_refuses_to_start_a_meeting_that_cannot_be_recorded(
+        self, signed_in
+    ) -> None:
+        signed_in.app.state.health = self._report(can_record=False)
+        response = signed_in.post(
+            "/api/meetings", json={"meet_url": MEET_URL}
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert "signed out" in detail
+        assert "meetbot login" in detail, "the refusal must say what to do"
+
+    def test_allows_a_meeting_when_everything_passes(self, signed_in) -> None:
+        signed_in.app.state.health = self._report(can_record=True)
+        assert signed_in.post(
+            "/api/meetings", json={"meet_url": MEET_URL}
+        ).status_code == 201
+
+    def test_allows_a_meeting_before_the_checks_have_finished(
+        self, signed_in
+    ) -> None:
+        """The checks start a browser, so they lag startup.
+
+        Blocking until they finish would make the service refuse work for its
+        first ten seconds, which is worse than the problem being guarded.
+        """
+        signed_in.app.state.health = None
+        assert signed_in.post(
+            "/api/meetings", json={"meet_url": MEET_URL}
+        ).status_code == 201
+
+    def test_a_warning_does_not_block(self, signed_in) -> None:
+        """A missing summary still leaves a usable transcript."""
+        from meetbot.preflight import CheckResult, Preflight
+
+        signed_in.app.state.health = Preflight([
+            CheckResult("AI notes", ok=False, detail="no key", blocking=False),
+        ])
+        assert signed_in.post(
+            "/api/meetings", json={"meet_url": MEET_URL}
+        ).status_code == 201
+
+
+class TestHealthEndpoint:
+    @pytest.fixture
+    def signed_in(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield client
+
+    def test_reports_each_check_with_its_fix(self, signed_in) -> None:
+        from meetbot.preflight import CheckResult, Preflight
+
+        signed_in.app.state.health = Preflight([
+            CheckResult("Google sign-in", ok=False, detail="signed out",
+                        fix="python -m meetbot login"),
+            CheckResult("Deepgram", ok=True, detail="fine"),
+        ])
+        payload = signed_in.get("/api/health").json()
+        assert payload["can_record"] is False
+        broken = [c for c in payload["checks"] if not c["ok"]]
+        assert broken[0]["fix"] == "python -m meetbot login"
+
+    def test_says_so_while_the_checks_are_still_running(self, signed_in) -> None:
+        signed_in.app.state.health = None
+        signed_in.app.state.health_checking = True
+        payload = signed_in.get("/api/health").json()
+        assert payload["checking"] is True
+        assert payload["can_record"] is None
+
+    def test_health_needs_an_account(self, service_config, monkeypatch) -> None:
+        """It describes the deployment; strangers do not get to read it."""
+        _stub_runner(monkeypatch)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            assert client.get("/api/health").status_code == 401
+            assert client.post("/api/health/refresh").status_code == 401
