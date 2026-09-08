@@ -37,6 +37,11 @@ def service_config(tmp_path: Path) -> Config:
         # Per-test, or the suite would read and write the real ~/.meetbot -
         # and bootstrap an admin into the developer's own account database.
         service_state_dir=tmp_path / "state",
+        # The startup checks open a real Deepgram stream and call the LLM.
+        # Tests that reach the network are slow, flaky, and fail on CI for
+        # reasons that say nothing about the code; the readiness behaviour
+        # is covered by setting app.state.health directly instead.
+        preflight_on_start=False,
     )
 
 
@@ -867,3 +872,37 @@ class TestHealthEndpoint:
         with TestClient(create_app(service_config)) as client:
             assert client.get("/api/health").status_code == 401
             assert client.post("/api/health/refresh").status_code == 401
+
+
+class TestStartupDoesNotReachTheNetwork:
+    """The suite must not depend on live credentials.
+
+    The readiness checks open a real Deepgram stream and call the LLM. Running
+    them from the service's startup meant the whole service suite did too - it
+    passed on a laptop with working keys and failed on CI, where the guard
+    then refused every meeting and the tests died on a missing 'id'. A test
+    that needs the network fails for reasons that say nothing about the code.
+    """
+
+    def test_the_checks_are_on_by_default(self) -> None:
+        """Off in tests, but an operator must still get them."""
+        assert Config().preflight_on_start is True
+
+    def test_disabling_them_leaves_no_health_report(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            assert getattr(client.app.state, "health", None) is None
+
+    def test_a_meeting_still_starts_with_no_report(self, service_config, monkeypatch):
+        """No answer must not read as a failed answer."""
+        _stub_runner(monkeypatch)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            created = client.post("/api/meetings", json={"meet_url": MEET_URL})
+            assert created.status_code == 201
+            assert "id" in created.json()

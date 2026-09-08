@@ -205,6 +205,14 @@ class Config:
     #: a key that mints valid sessions.
     service_state_dir: Path = Path("~/.meetbot")
 
+    #: Run the readiness checks when the service starts. On by default: it
+    #: is how an operator learns the bot cannot record *before* sending it
+    #: into a meeting. Tests turn it off, because it opens a real Deepgram
+    #: stream and calls the LLM - a suite that depends on the network and on
+    #: live credentials is slow, flaky, and fails for reasons unrelated to
+    #: the code under test.
+    preflight_on_start: bool = True
+
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
@@ -400,6 +408,7 @@ def load_config(
         service_state_dir=Path(
             _env_str(env, "SERVICE_STATE_DIR", "~/.meetbot")
         ).expanduser(),
+        preflight_on_start=_env_bool(env, "PREFLIGHT_ON_START", True),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
