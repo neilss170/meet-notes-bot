@@ -410,3 +410,45 @@ class TestStopNeverBlocks:
         await asyncio.wait_for(client.stop(), timeout=2.0)
         await asyncio.wait_for(client.stop(), timeout=2.0)
         assert client._stopping.is_set()
+
+
+class TestKeyTermBoosting:
+    """Biasing transcription towards names and jargon.
+
+    ASR is worst at exactly the words a meeting summary most needs - people's
+    names, product names, team vocabulary - because they are rare in the
+    language model and often not English words at all. A live run turned
+    "companion" into "com companion" and mangled every technical term.
+    """
+
+    @staticmethod
+    def _params(**kwargs):
+        from urllib.parse import parse_qs, urlparse
+
+        url = build_stream_url(
+            model=kwargs.pop("model", "nova-3"), language="en-IN",
+            sample_rate=16_000, diarize=True, **kwargs,
+        )
+        return parse_qs(urlparse(url).query)
+
+    def test_each_term_is_sent_separately(self) -> None:
+        """Deepgram wants one keyterm per term, not a joined string."""
+        params = self._params(keyterms=("Scribe", "Neil Sharma", "Deepgram"))
+        assert params["keyterm"] == ["Scribe", "Neil Sharma", "Deepgram"]
+
+    def test_no_terms_means_no_parameter(self) -> None:
+        assert "keyterm" not in self._params()
+
+    def test_blank_entries_are_dropped(self) -> None:
+        """A trailing comma in the env var must not send an empty term."""
+        params = self._params(keyterms=("Scribe", "", "   ", "Groq"))
+        assert params["keyterm"] == ["Scribe", "Groq"]
+
+    def test_only_nova_3_is_sent_key_terms(self) -> None:
+        """nova-2 spells this differently and rejects the stream outright.
+
+        Sending it to the wrong model would be the utterance_end_ms bug
+        again: an accuracy option that silently takes transcription out.
+        """
+        assert "keyterm" not in self._params(model="nova-2", keyterms=("Scribe",))
+        assert "keyterm" not in self._params(model="base", keyterms=("Scribe",))
