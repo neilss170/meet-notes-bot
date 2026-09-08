@@ -41,8 +41,10 @@ def test_build_stream_url_sets_our_options() -> None:
     assert params["sample_rate"] == ["16000"]
     assert params["model"] == ["nova-3"]
     assert params["diarize"] == ["true"]
-    # We persist finals only; interim hypotheses would just churn the JSONL.
-    assert params["interim_results"] == ["false"]
+    # Interim results are on only because UtteranceEnd requires them - see
+    # TestUtteranceEndNeedsInterimResults. Finals are still all we persist:
+    # parse_results_message drops anything without is_final.
+    assert params["interim_results"] == ["true"]
 
 
 def test_build_stream_url_can_disable_diarization() -> None:
@@ -282,3 +284,61 @@ class TestTranscriptionQuality:
         params = self._params(endpointing_ms=1500, utterance_end_ms=2000)
         assert params["endpointing"] == "1500"
         assert params["utterance_end_ms"] == "2000"
+
+
+class TestUtteranceEndNeedsInterimResults:
+    """Deepgram rejects utterance_end_ms unless interim results are on.
+
+    Regression from a live meeting. The bot joined, captured audio and ran
+    for two minutes looking perfectly healthy, but every stream had been
+    refused at the handshake:
+
+        INVALID_QUERY_PARAMETER
+        "Utterance End feature requires interim results."
+
+    The meeting produced zero utterances. Nothing downstream can notice this
+    - the URL is only wrong in a way the server judges - so the pairing is
+    pinned here.
+    """
+
+    @staticmethod
+    def _params(**kwargs):
+        from urllib.parse import parse_qs, urlparse
+
+        url = build_stream_url(
+            model="nova-3", language="en-US", sample_rate=16_000,
+            diarize=True, **kwargs,
+        )
+        return {k: v[0] for k, v in parse_qs(urlparse(url).query).items()}
+
+    def test_asking_for_utterance_end_turns_interim_results_on(self) -> None:
+        params = self._params(utterance_end_ms=1000)
+        assert params["utterance_end_ms"] == "1000"
+        assert params["interim_results"] == "true"
+
+    def test_the_default_configuration_is_accepted(self) -> None:
+        """The defaults are what shipped broken; they must be valid."""
+        params = self._params()
+        if "utterance_end_ms" in params:
+            assert params["interim_results"] == "true"
+
+    def test_without_utterance_end_interim_results_stay_off(self) -> None:
+        """Nothing else needs them, and off means less to discard."""
+        params = self._params(utterance_end_ms=0)
+        assert "utterance_end_ms" not in params
+        assert params["interim_results"] == "false"
+
+    @pytest.mark.parametrize("utterance_end_ms", [0, 1, 500, 1000, 5000])
+    def test_the_pairing_holds_however_it_is_configured(
+        self, utterance_end_ms: int
+    ) -> None:
+        params = self._params(utterance_end_ms=utterance_end_ms)
+        if "utterance_end_ms" in params:
+            assert params["interim_results"] == "true", (
+                "Deepgram will reject this stream with HTTP 400"
+            )
+
+    def test_interim_payloads_are_still_discarded(self) -> None:
+        """Turning them on at the wire must not let them into the transcript."""
+        payload = _results([{"word": "half", "start": 0.0, "end": 0.4}], is_final=False)
+        assert parse_results_message(payload, default_speaker="Speaker 0") == []
