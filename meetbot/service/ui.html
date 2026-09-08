@@ -117,6 +117,19 @@
   .doc-body code {
     background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12.5px;
   }
+  .health {
+    border: 1px solid var(--line); border-left-width: 3px; border-radius: 8px;
+    padding: 13px 15px; margin-bottom: 18px; font-size: 13.5px;
+  }
+  .health.bad { border-left-color: var(--bad); background: color-mix(in srgb, var(--bad) 7%, var(--panel)); }
+  .health.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 7%, var(--panel)); }
+  .health h3 { margin: 0 0 7px; font-size: 13.5px; }
+  .health .item { margin: 5px 0; }
+  .health .fix {
+    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px;
+    background: var(--code-bg); border: 1px solid var(--line);
+    border-radius: 5px; padding: 2px 7px; display: inline-block; margin-top: 3px;
+  }
   .topbar {
     display: flex; align-items: baseline; justify-content: space-between;
     gap: 12px; flex-wrap: wrap;
@@ -161,6 +174,8 @@
       </form>
     </div>
   </div>
+
+  <div id="health" hidden></div>
 
   <div class="panel">
     <label for="url">Meeting link or code</label>
@@ -483,6 +498,47 @@ async function refresh(force) {
   if (pageScroll) window.scrollTo({ top: pageScroll });
 }
 
+/* ---- readiness --------------------------------------------------------- */
+
+/* Every wasted meeting so far began the same way: the bot was sent into a
+   call that could not possibly be recorded - a signed-out profile, a stream
+   Deepgram would refuse - and nobody found out until people were waiting.
+   The checks run on the server; this shows the answer before the click. */
+let health = null;
+
+function renderHealth() {
+  const box = $("health");
+  if (!health || health.checking && !health.checks.length) { box.hidden = true; return; }
+
+  const bad = (health.checks || []).filter((c) => !c.ok);
+  if (!bad.length) { box.hidden = true; return; }
+
+  const blocking = bad.some((c) => c.blocking);
+  box.className = `health ${blocking ? "bad" : "warn"}`;
+  box.innerHTML =
+    `<h3>${blocking ? "Scribe cannot record meetings yet" : "Working, with limits"}</h3>` +
+    bad.map((c) => `
+      <div class="item">
+        <strong>${esc(c.name)}:</strong> ${esc(c.detail)}
+        ${c.fix ? `<div class="fix">${esc(c.fix)}</div>` : ""}
+      </div>`).join("") +
+    `<div style="margin-top:11px"><button class="small ghost" id="recheck">Check again</button></div>`;
+  box.hidden = false;
+  $("recheck").addEventListener("click", recheck);
+}
+
+async function loadHealth() {
+  try { health = await api("/api/health"); renderHealth(); } catch (_) {}
+}
+
+async function recheck() {
+  const button = $("recheck");
+  if (button) { button.disabled = true; button.textContent = "Checking…"; }
+  try { health = await api("/api/health/refresh", { method: "POST" }); }
+  catch (err) { showError(err.message); }
+  renderHealth();
+}
+
 /* ---- accounts ---------------------------------------------------------- */
 
 let me = null;
@@ -586,7 +642,11 @@ $("url").addEventListener("keydown", (e) => { if (e.key === "Enter" && !busy) se
     $("hint").textContent = `joins as “${config.bot_name}”`;
   } catch (_) {}
   await refresh(true);
+  await loadHealth();
   setInterval(() => refresh(false), 2000);
+  // Slower than the meeting poll: the answer changes rarely, and the
+  // sign-in check starts a browser.
+  setInterval(loadHealth, 60000);
 })();
 </script>
 </body>

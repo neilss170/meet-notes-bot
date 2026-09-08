@@ -230,3 +230,42 @@ class TestSessions:
     @pytest.mark.parametrize("junk", ["", "a.b", "a.b.c.d", "....", "notatoken"])
     def test_garbage_is_just_no_session(self, junk: str, secret: bytes) -> None:
         assert read_session(junk, secret) is None
+
+
+class TestSecretIsBinaryNotText:
+    """The signing key is bytes, and must survive being read back exactly.
+
+    load_or_create_secret used to .strip() the file. About one random key in
+    twenty starts or ends with a byte that is ASCII whitespace, so that
+    restart read back a different secret from the one that signed the
+    outstanding cookies, and silently logged everybody out.
+    """
+
+    @pytest.mark.parametrize(
+        "edge",
+        [b" ", b"\n", b"\t", b"\r", b"\x0b", b"\x0c"],
+        ids=["space", "newline", "tab", "cr", "vtab", "ff"],
+    )
+    def test_a_key_wrapped_in_whitespace_bytes_survives(
+        self, tmp_path: Path, edge: bytes
+    ) -> None:
+        path = tmp_path / "session.key"
+        written = edge + b"k" * 46 + edge
+        path.write_bytes(written)
+        assert load_or_create_secret(path) == written
+
+    def test_sessions_issued_before_a_restart_still_verify(
+        self, tmp_path: Path
+    ) -> None:
+        """The consequence the byte-level bug actually had."""
+        path = tmp_path / "session.key"
+        path.write_bytes(b" " + b"s" * 46 + b" ")
+        token = issue_session("neil", load_or_create_secret(path))
+        # ... the service restarts and reads the key again ...
+        assert read_session(token, load_or_create_secret(path)) == "neil"
+
+    def test_a_freshly_generated_key_round_trips(self, tmp_path: Path) -> None:
+        path = tmp_path / "session.key"
+        first = load_or_create_secret(path)
+        assert load_or_create_secret(path) == first
+        assert len(first) >= 32

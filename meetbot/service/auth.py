@@ -353,7 +353,13 @@ def load_or_create_secret(path: Path) -> bytes:
     """
     path = Path(path).expanduser()
     if path.exists():
-        secret = path.read_bytes().strip()
+        # Read exactly what was written. This used to .strip(), which is
+        # right for text and wrong for key material: roughly one random key
+        # in twenty begins or ends with a byte that happens to be ASCII
+        # whitespace, and stripping it produced a different secret from the
+        # one that signed the outstanding cookies - logging everybody out on
+        # that restart, unpredictably and for no visible reason.
+        secret = path.read_bytes()
         if len(secret) >= 32:
             return secret
         logger.warning("Session secret at %s is too short; regenerating", path)

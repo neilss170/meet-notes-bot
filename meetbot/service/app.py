@@ -17,6 +17,7 @@ in front of the service keeps them off the wire.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +40,7 @@ from meetbot.service.auth import (
     load_or_create_secret,
     read_session,
 )
+from meetbot.preflight import Preflight, run_preflight
 from meetbot.profile import sweep_stale_profiles
 from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
 
@@ -90,6 +92,19 @@ def create_app(config: Config) -> FastAPI:
     users = UserStore(state_dir / "users.json")
     secret = load_or_create_secret(state_dir / "session.key")
 
+    async def _refresh_health() -> Preflight:
+        """Re-run the checks and remember the answer."""
+        app.state.health_checking = True
+        try:
+            report = await run_preflight(config)
+            app.state.health = report
+            if not report.can_record:
+                logger.warning("Scribe cannot record meetings yet:")
+                report.log()
+            return report
+        finally:
+            app.state.health_checking = False
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         created = bootstrap_admin(users)
@@ -107,6 +122,10 @@ def create_app(config: Config) -> FastAPI:
         # profile copy is still on disk. Clear anything old enough to be
         # certain it belongs to a run that is no longer alive.
         sweep_stale_profiles()
+        # Run the checks in the background: the sign-in check starts a
+        # browser, and making startup wait for it would delay the UI by ten
+        # seconds every time. The page polls /api/health for the answer.
+        app.state.preflight_task = asyncio.create_task(_refresh_health())
         restored = load_past_runs(manager, config.output_dir)
         if restored:
             logger.info("Loaded %d past meeting(s) from %s", restored, config.output_dir)
@@ -206,6 +225,29 @@ def create_app(config: Config) -> FastAPI:
             return RedirectResponse("/login", status_code=303)
         return HTMLResponse(UI_PATH.read_text(encoding="utf-8"))
 
+    @app.get("/api/health")
+    async def health(_: User = Depends(current_user)) -> dict[str, Any]:
+        """What is working, and what to do about anything that is not.
+
+        The UI reads this to stop someone sending the bot into a meeting that
+        cannot possibly be recorded - which is how every wasted call so far
+        began.
+        """
+        report: Preflight | None = getattr(app.state, "health", None)
+        if report is None:
+            return {
+                "checking": getattr(app.state, "health_checking", False),
+                "ok": None,
+                "can_record": None,
+                "checks": [],
+            }
+        return {"checking": getattr(app.state, "health_checking", False), **report.to_dict()}
+
+    @app.post("/api/health/refresh")
+    async def refresh_health(_: User = Depends(current_user)) -> dict[str, Any]:
+        """Check again, after the operator has fixed something."""
+        return (await _refresh_health()).to_dict()
+
     @app.get("/api/me")
     async def whoami(user: User = Depends(current_user)) -> dict[str, Any]:
         return user.to_dict()
@@ -244,6 +286,19 @@ def create_app(config: Config) -> FastAPI:
             for key, value in request.model_dump(exclude={"meet_url"}).items()
             if value is not None
         }
+        # A known-broken setup produces a bot that joins and records nothing,
+        # or cannot join at all. Refusing here costs a moment; finding out in
+        # the meeting costs the meeting.
+        report: Preflight | None = getattr(app.state, "health", None)
+        if report is not None and not report.can_record:
+            blocker = report.blockers[0]
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{blocker.name}: {blocker.detail}."
+                    + (f" Fix: {blocker.fix}" if blocker.fix else "")
+                ),
+            )
         try:
             job = manager.start(request.meet_url, owner=user.username, **overrides)
         except (ValueError, ConfigError) as exc:
