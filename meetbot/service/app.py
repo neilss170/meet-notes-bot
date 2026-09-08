@@ -39,6 +39,7 @@ from meetbot.service.auth import (
     load_or_create_secret,
     read_session,
 )
+from meetbot.profile import sweep_stale_profiles
 from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,10 @@ def create_app(config: Config) -> FastAPI:
             logger.warning("    password: %s", password)
             logger.warning("Sign in and change it. This is shown only once.")
             logger.warning("=" * 62)
+        # A run killed mid-meeting never reaches its own cleanup, so its
+        # profile copy is still on disk. Clear anything old enough to be
+        # certain it belongs to a run that is no longer alive.
+        sweep_stale_profiles()
         restored = load_past_runs(manager, config.output_dir)
         if restored:
             logger.info("Loaded %d past meeting(s) from %s", restored, config.output_dir)

@@ -7,11 +7,18 @@ error, so the only visible symptom is a bot that mysteriously cannot join.
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
 
-from meetbot.profile import SKIP_DIRS, clone_profile, discard_profile
+from meetbot.profile import (
+    SKIP_DIRS,
+    clone_profile,
+    discard_profile,
+    sweep_stale_profiles,
+)
 
 
 @pytest.fixture
@@ -103,6 +110,57 @@ class TestDiscardProfile:
         handle = (clone / "Default" / "Network" / "Cookies").open("w")
         try:
             discard_profile(clone)   # must not raise
+        finally:
+            handle.close()
+            discard_profile(clone)
+
+
+class TestSweepStaleProfiles:
+    """Cleanup for runs that never got to clean up after themselves.
+
+    discard_profile retries, but a crash or a kill skips it entirely - and
+    each clone is a copy of the signed-in profile, so they are not just
+    clutter. 63 of them, 37 MB, accumulated over one afternoon.
+    """
+
+    def _clone(self, tmp_path: Path, age_s: float) -> Path:
+        directory = tmp_path / f"meetbot-profile-{age_s:.0f}"
+        directory.mkdir()
+        (directory / "Local State").write_text("{}")
+        stamp = time.time() - age_s
+        os.utime(directory, (stamp, stamp))
+        return directory
+
+    def test_removes_an_old_clone(self, tmp_path: Path) -> None:
+        stale = self._clone(tmp_path, 7200)
+        assert sweep_stale_profiles(3600, tmp_path) == 1
+        assert not stale.exists()
+
+    def test_leaves_a_clone_that_may_still_be_in_use(self, tmp_path: Path) -> None:
+        """A meeting running right now owns a fresh clone."""
+        live = self._clone(tmp_path, 60)
+        assert sweep_stale_profiles(3600, tmp_path) == 0
+        assert live.exists()
+
+    def test_ignores_anything_that_is_not_ours(self, tmp_path: Path) -> None:
+        """The temp directory belongs to the whole system."""
+        other = tmp_path / "someone-elses-data"
+        other.mkdir()
+        os.utime(other, (time.time() - 99999, time.time() - 99999))
+        assert sweep_stale_profiles(3600, tmp_path) == 0
+        assert other.exists()
+
+    def test_an_empty_directory_is_fine(self, tmp_path: Path) -> None:
+        assert sweep_stale_profiles(3600, tmp_path) == 0
+
+
+class TestDiscardRetries:
+    def test_gives_up_quietly_rather_than_raising(self, master: Path) -> None:
+        """Cleanup must never fail a meeting that already has its transcript."""
+        clone = clone_profile(master)
+        handle = (clone / "Default" / "Network" / "Cookies").open("w")
+        try:
+            discard_profile(clone, attempts=2)
         finally:
             handle.close()
             discard_profile(clone)
