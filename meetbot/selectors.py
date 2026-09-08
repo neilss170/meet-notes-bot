@@ -185,6 +185,26 @@ PRESENT_SOURCE_TAB: Final[list[str]] = [
 #: Turning captions on is a per-viewer setting: it changes what this browser
 #: renders and does not enable captions, transcription or recording for
 #: anybody else in the call.
+#: Meet's overflow menu. Controls migrate in and out of it between releases
+#: - a live call in September 2026 had no captions button on the toolbar at
+#: all, only 'Audio settings', 'Backgrounds and effects', 'Chat with
+#: everyone', 'Leave call', 'More options', 'Reframe', the camera and
+#: microphone toggles, and 'Video settings'. Captions had moved in here.
+MORE_OPTIONS_BUTTON: Final[list[str]] = [
+    '[aria-label="More options"]',
+    'button[aria-label*="More options" i]',
+    '[role="button"][aria-label*="more options" i]',
+]
+
+#: The captions entry once the overflow menu is open. Matched on the word
+#: rather than an exact label, because Meet words it differently depending on
+#: release and on whether captions are currently running.
+CAPTIONS_MENU_ITEM: Final[list[str]] = [
+    '[role="menuitem"]:has-text("captions")',
+    '[role="menuitemcheckbox"]:has-text("captions")',
+    'li:has-text("captions")',
+]
+
 CAPTIONS_TOGGLE_OFF: Final[list[str]] = [
     '[aria-label="Turn on captions"]',
     'button[aria-label*="Turn on captions" i]',
@@ -268,7 +288,9 @@ __all__ = [
     "PRESENT_NOW_BUTTON",
     "PRESENT_SOURCE_TAB",
     "ALL_LABELED_ELEMENTS",
+    "CAPTIONS_MENU_ITEM",
     "CAPTIONS_TOGGLE_OFF",
+    "MORE_OPTIONS_BUTTON",
     "CAPTIONS_TOGGLE_ON",
     "CAPTION_REGION",
 ]

@@ -859,6 +859,12 @@ class MeetSession:
                     self._page, selectors.CAPTIONS_TOGGLE_OFF, timeout_ms=2000
                 )
                 if toggle is None:
+                    # Not on the toolbar. Meet moves controls into the
+                    # overflow menu between releases, and a live call had no
+                    # captions button on the toolbar at all - which is why
+                    # every speaker stayed "Speaker 0" for that meeting.
+                    toggle = await self._captions_in_overflow_menu()
+                if toggle is None:
                     logger.debug(
                         "No captions control visible (attempt %d/%d)",
                         attempt,
@@ -883,6 +889,37 @@ class MeetSession:
         )
         await self._log_labelled_controls("CAPTIONS_TOGGLE_OFF")
         return False
+
+    async def _captions_in_overflow_menu(self) -> Locator | None:
+        """Open "More options" and return its captions entry, if it has one.
+
+        Returns ``None`` with the menu closed again, so a failed search does
+        not leave a menu covering the controls the caller tries next.
+        """
+        if self._page is None or self._page.is_closed():
+            return None
+        more = await first_visible(
+            self._page, selectors.MORE_OPTIONS_BUTTON, timeout_ms=1500
+        )
+        if more is None:
+            return None
+        try:
+            await more.click(timeout=2000)
+        except PlaywrightError as exc:
+            logger.debug("Could not open the overflow menu: %s", exc)
+            return None
+
+        item = await first_visible(
+            self._page, selectors.CAPTIONS_MENU_ITEM, timeout_ms=2000
+        )
+        if item is not None:
+            logger.info("Found the captions control in Meet's overflow menu")
+            return item
+
+        await self._log_labelled_controls("CAPTIONS_MENU_ITEM")
+        with contextlib.suppress(PlaywrightError):
+            await self._page.keyboard.press("Escape")
+        return None
 
     async def read_caption_entries(self) -> list[tuple[str, str]]:
         """Visible ``(speaker, text)`` caption entries, most recent last.
