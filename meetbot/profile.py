@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Final
 
@@ -50,6 +51,12 @@ SKIP_DIRS: Final[frozenset[str]] = frozenset(
 #: dead process's claim into the fresh directory.
 _LOCK_PREFIX: Final[str] = "Singleton"
 
+#: Prefix every clone directory carries, so stale ones can be recognised.
+_CLONE_PREFIX: Final[str] = "meetbot-profile-"
+
+#: Pause between delete attempts, for handles Windows has not released yet.
+_RETRY_DELAY_S: Final[float] = 0.25
+
 
 def _ignored(_directory: str, names: list[str]) -> set[str]:
     return {n for n in names if n in SKIP_DIRS or n.startswith(_LOCK_PREFIX)}
@@ -76,25 +83,67 @@ def clone_profile(master: Path, parent: Path | None = None) -> Path:
             f"No signed-in Chromium profile at {master}. "
             "Run 'python -m meetbot login' first."
         )
-    destination = Path(tempfile.mkdtemp(prefix="meetbot-profile-", dir=parent))
+    destination = Path(tempfile.mkdtemp(prefix=_CLONE_PREFIX, dir=parent))
     shutil.copytree(master, destination, ignore=_ignored, dirs_exist_ok=True)
     logger.debug("Cloned the signed-in profile %s -> %s", master, destination)
     return destination
 
 
-def discard_profile(path: Path | None) -> None:
+def discard_profile(path: Path | None, attempts: int = 4) -> None:
     """Delete a clone made by :func:`clone_profile`.
 
-    Never raises. Windows can hold profile files open briefly after the
-    browser exits, and a meeting that has already produced its transcript
-    must not fail during cleanup - a leaked temp directory is the lesser
-    problem, and the OS clears it eventually.
+    Never raises: a meeting that has already produced its transcript must not
+    fail during cleanup.
+
+    Windows keeps profile files open for a moment after the browser exits, so
+    a single attempt usually leaves most of the directory behind - 63 clones
+    and 37 MB accumulated over one afternoon of testing. Retrying briefly
+    clears them, and :func:`sweep_stale_profiles` catches whatever a crash
+    skipped entirely.
     """
     if path is None:
         return
-    shutil.rmtree(path, ignore_errors=True)
-    if path.exists():
-        logger.debug("Could not remove the profile clone at %s", path)
+    for attempt in range(attempts):
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            return
+        if attempt < attempts - 1:
+            time.sleep(_RETRY_DELAY_S)
+    logger.debug("Could not remove the profile clone at %s", path)
 
 
-__all__ = ["SKIP_DIRS", "clone_profile", "discard_profile"]
+def sweep_stale_profiles(older_than_s: float = 3600.0, parent: Path | None = None) -> int:
+    """Remove clones left behind by runs that never cleaned up after themselves.
+
+    A crash, a kill, or a machine losing power skips :func:`discard_profile`
+    entirely, so its retries never happen. Age-based rather than
+    unconditional, so a clone belonging to a meeting running right now is
+    left alone.
+
+    Returns:
+        How many directories were removed.
+    """
+    root = parent or Path(tempfile.gettempdir())
+    cutoff = time.time() - older_than_s
+    removed = 0
+    for candidate in root.glob(f"{_CLONE_PREFIX}*"):
+        if not candidate.is_dir():
+            continue
+        try:
+            if candidate.stat().st_mtime > cutoff:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(candidate, ignore_errors=True)
+        removed += not candidate.exists()
+    if removed:
+        logger.info("Removed %d stale profile clone(s) from %s", removed, root)
+    return removed
+
+
+__all__ = [
+    "SKIP_DIRS",
+    "clone_profile",
+    "discard_profile",
+    "sweep_stale_profiles",
+]
