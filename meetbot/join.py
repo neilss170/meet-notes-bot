@@ -76,6 +76,13 @@ _PROBE_TIMEOUT_MS = 1500
 #: that a match still lands on the first round in practice.
 _PROBE_SLICE_MS = 250.0
 
+#: Budget for the "why did the join fail" checks. These run only after the
+#: join-button search has already given up, so nobody is waiting on a fast
+#: answer - and at the 400ms default, shared across candidates, the refusal
+#: text lost the race and Meet's own "You can't join this video call" was
+#: reported as a broken selector.
+TERMINAL_STATE_TIMEOUT_MS: Final[int] = 3_000
+
 #: How long to wait for Meet to actually call getDisplayMedia after the share
 #: controls have been clicked, before giving up and reporting the overlay as
 #: not started.
@@ -420,7 +427,9 @@ class MeetSession:
 
         join_button = await first_visible(page, selectors.JOIN_BUTTON, timeout_ms=15_000)
         if join_button is None:
-            if await any_visible(page, selectors.IN_CALL_MARKERS):
+            if await any_visible(
+                page, selectors.IN_CALL_MARKERS, timeout_ms=TERMINAL_STATE_TIMEOUT_MS
+            ):
                 logger.info("Already in the call; no join button needed")
                 self._joined_at = time.monotonic()
                 self._emit("joined", method="direct")
@@ -431,7 +440,9 @@ class MeetSession:
             # to find. Reporting a DOM change there sends the operator off to
             # fix selectors that are fine, so the terminal states are checked
             # first and named for what they actually are.
-            if await any_visible(page, selectors.JOIN_DENIED_MARKERS):
+            if await any_visible(
+                page, selectors.JOIN_DENIED_MARKERS, timeout_ms=TERMINAL_STATE_TIMEOUT_MS
+            ):
                 raise JoinError(
                     JoinOutcome.DENIED,
                     "Meet refused the join outright ('You can't join this video "
@@ -442,7 +453,9 @@ class MeetSession:
                     "to be signed in. Try a meeting started from a personal "
                     "Google account, or sign the bot's browser in.",
                 )
-            if await any_visible(page, selectors.MEETING_ENDED_MARKERS):
+            if await any_visible(
+                page, selectors.MEETING_ENDED_MARKERS, timeout_ms=TERMINAL_STATE_TIMEOUT_MS
+            ):
                 raise JoinError(
                     JoinOutcome.MEETING_ENDED,
                     "The meeting had already ended (or the code is no longer "
