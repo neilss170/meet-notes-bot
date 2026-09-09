@@ -838,8 +838,24 @@ def cmd_check(args: argparse.Namespace) -> int:
         return EXIT_CONFIG_ERROR
 
     logger.info("")
-    if report.can_record:
-        logger.info("Ready to record.")
+    # Two ways to record, and they fail independently. Reporting "not ready"
+    # because the browser session expired was wrong once local capture became
+    # the default - that path never touches Google.
+    if report.can_record_locally and report.can_send_bot:
+        logger.info("Ready to record, either locally or by sending the bot.")
+        return EXIT_OK
+    if report.can_record_locally:
+        logger.info("Ready to record this machine: python -m meetbot record")
+        logger.info(
+            "Bot mode is unavailable - see the warnings above. You only need "
+            "it for meetings that are not playing through this machine."
+        )
+        return EXIT_OK
+    if report.can_send_bot:
+        logger.info("Ready to send the bot: python -m meetbot run --url ...")
+        logger.info(
+            "Recording this machine is unavailable - see the warnings above."
+        )
         return EXIT_OK
     logger.error("Not ready - fix the items above, then run check again.")
     return EXIT_CONFIG_ERROR
