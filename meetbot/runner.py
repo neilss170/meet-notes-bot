@@ -515,7 +515,7 @@ async def _maybe_analyse(config: Config, run: MeetingRun) -> None:
         run.errors.append(f"Could not write analysis.md: {exc}")
 
 
-def _anonymised(utterances: list[Any]) -> list[Any]:
+def anonymised_utterances(utterances: list[Any]) -> list[Any]:
     """Copy ``utterances`` with real speaker names replaced by pseudonyms.
 
     Used when ``--anonymise-analysis`` is set, so personal names never reach
@@ -544,7 +544,7 @@ def _analyse_sync(
 ) -> MeetingAnalysis:
     """Blocking analysis call, run in a worker thread."""
     if config.anonymise_analysis:
-        utterances = _anonymised(utterances)
+        utterances = anonymised_utterances(utterances)
     client = build_client(
         config.llm_provider,
         config.llm_api_key,

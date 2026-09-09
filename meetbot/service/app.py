@@ -27,7 +27,16 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from meetbot.analysis.llm import LLMError, build_client
+from meetbot.analysis.notepad import (
+    DEFAULT_TEMPLATE,
+    TEMPLATES,
+    NotepadError,
+    answer_question,
+    enhance_notes,
+)
 from meetbot.config import Config, ConfigError
+from meetbot.runner import anonymised_utterances
 from meetbot.service.auth import (
     SESSION_COOKIE,
     SESSION_TTL_S,
@@ -43,6 +52,14 @@ from meetbot.service.auth import (
 from meetbot.preflight import Preflight, run_preflight
 from meetbot.profile import sweep_stale_profiles
 from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
+from meetbot.transcript.notes import Notepad
+from meetbot.transcript.format import format_timestamp
+from meetbot.transcript.store import (
+    Utterance,
+    apply_speaker_names,
+    read_speaker_names,
+    read_utterances,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +74,8 @@ ARTIFACTS: dict[str, str] = {
     "transcript.md": "text/markdown",
     "transcript.jsonl": "application/json",
     "analysis.md": "text/markdown",
+    "notes.md": "text/markdown",
+    "enhanced.md": "text/markdown",
     "meetbot.log": "text/plain",
 }
 
@@ -69,6 +88,24 @@ class StartRequest(BaseModel):
     live_captions_overlay: bool | None = None
     speaker_names_from_captions: bool | None = None
     anonymise_analysis: bool | None = None
+
+
+class NotesRequest(BaseModel):
+    """An autosave of whatever is currently in the notepad."""
+
+    notes: str = Field("", description="The full note body, not a delta")
+
+
+class EnhanceRequest(BaseModel):
+    """A request to rewrite the notes against the transcript."""
+
+    template: str | None = Field(None, description="Template id shaping the output")
+
+
+class AskRequest(BaseModel):
+    """A question about one meeting."""
+
+    question: str
 
 
 class CreateUserRequest(BaseModel):
@@ -332,6 +369,233 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"{name} has not been written")
         return path.read_text(encoding="utf-8", errors="replace")
 
+    # -- notepad -----------------------------------------------------------
+
+    def _utterances_of(job: MeetingJob) -> list[Utterance]:
+        """This meeting's utterances, with any learned real names applied."""
+        path = job.artifact("transcript.jsonl")
+        if path is None:
+            return []
+        try:
+            utterances = read_utterances(path)
+        except (OSError, ValueError):
+            logger.warning("Could not read the transcript for job %s", job.id)
+            return []
+        return apply_speaker_names(utterances, read_speaker_names(path))
+
+    def _notepad_of(job: MeetingJob) -> Notepad:
+        """The job's notepad, or a 409 explaining why there isn't one yet."""
+        pad = job.notepad
+        if pad is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This meeting has not started recording yet, so there is "
+                    "nowhere to keep notes. Try again in a moment."
+                ),
+            )
+        return pad
+
+    def _require_llm() -> None:
+        if not config.analysis_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "AI features are switched off (ANALYSIS_ENABLED=false). "
+                    "Notes are still saved, just not enhanced."
+                ),
+            )
+
+    def _client() -> Any:
+        return build_client(
+            config.llm_provider,
+            config.llm_api_key,
+            config.llm_model,
+            config.llm_base_url,
+        )
+
+    #: Job ids with an LLM call in flight, so a double-click cannot spend the
+    #: free-tier quota twice on the same meeting. Only ever mutated between
+    #: awaits on the one event loop, so a plain set is enough.
+    in_flight: set[str] = set()
+
+    @app.get("/api/templates")
+    async def list_templates(_: User = Depends(current_user)) -> dict[str, Any]:
+        """The note shapes the UI offers, so it does not hard-code them."""
+        return {
+            "templates": [t.to_dict() for t in TEMPLATES.values()],
+            "default": DEFAULT_TEMPLATE,
+        }
+
+    @app.get("/api/meetings/{job_id}/notepad")
+    async def get_notepad(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        job = _visible_job(job_id, user)
+        pad = job.notepad
+        if pad is None:
+            # Not an error: the meeting is still starting. The UI shows an
+            # empty, editable notepad and saves once the directory exists.
+            return {
+                "ready": False,
+                "notes": "",
+                "enhanced": "",
+                "template": DEFAULT_TEMPLATE,
+                "chat": [],
+            }
+        return {
+            "ready": True,
+            "notes": pad.read_notes(),
+            "enhanced": pad.read_enhanced(),
+            "template": pad.template or DEFAULT_TEMPLATE,
+            "chat": pad.read_chat(),
+        }
+
+    @app.put("/api/meetings/{job_id}/notes")
+    async def put_notes(
+        job_id: str, request: NotesRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Autosave the notepad. The body is the whole note, not a delta."""
+        pad = _notepad_of(_visible_job(job_id, user))
+        try:
+            await asyncio.to_thread(pad.write_notes, request.notes)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the notes: {exc}"
+            ) from exc
+        return {"saved": True, "chars": len(request.notes)}
+
+    def _enhance_sync(
+        utterances: list[Utterance],
+        notes: str,
+        template: str,
+        meet_url: str,
+        duration: str,
+    ) -> str:
+        """Blocking enhancement call, run in a worker thread."""
+        return enhance_notes(
+            utterances,
+            notes,
+            _client(),
+            template_id=template,
+            meeting_url=meet_url,
+            duration=duration,
+        )
+
+    @app.post("/api/meetings/{job_id}/enhance")
+    async def enhance(
+        job_id: str, request: EnhanceRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Rewrite the typed notes against the transcript."""
+        _require_llm()
+        job = _visible_job(job_id, user)
+        pad = _notepad_of(job)
+
+        utterances = _utterances_of(job)
+        notes = pad.read_notes()
+        if not utterances and not notes.strip():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Nothing to work from yet - type some notes, or wait for "
+                    "the transcript to start."
+                ),
+            )
+
+        key = f"{job_id}:enhance"
+        if key in in_flight:
+            raise HTTPException(
+                status_code=409, detail="These notes are already being enhanced."
+            )
+        in_flight.add(key)
+        try:
+            template = request.template or pad.template or DEFAULT_TEMPLATE
+            duration = format_timestamp(job.read_progress()["duration_s"])
+            # The typed notes are sent as written even under anonymisation:
+            # that setting is about speaker names the bot picked up from the
+            # call, and stripping names the user typed themselves would break
+            # the one thing that lets the model correct "Speaker 0".
+            for_llm = (
+                anonymised_utterances(utterances)
+                if config.anonymise_analysis
+                else utterances
+            )
+            enhanced = await asyncio.to_thread(
+                _enhance_sync, for_llm, notes, template, job.meet_url, duration
+            )
+            await asyncio.to_thread(pad.write_enhanced, enhanced, template=template)
+        except (NotepadError, LLMError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the notes: {exc}"
+            ) from exc
+        finally:
+            in_flight.discard(key)
+        return {"enhanced": enhanced, "template": template}
+
+    def _ask_sync(
+        utterances: list[Utterance],
+        question: str,
+        notes: str,
+        history: list[dict[str, Any]],
+    ) -> str:
+        """Blocking question call, run in a worker thread."""
+        return answer_question(
+            utterances, question, _client(), notes=notes, history=history
+        )
+
+    @app.post("/api/meetings/{job_id}/ask")
+    async def ask(
+        job_id: str, request: AskRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Answer a question about this meeting."""
+        _require_llm()
+        question = request.question.strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Ask a question first.")
+        job = _visible_job(job_id, user)
+        pad = _notepad_of(job)
+
+        key = f"{job_id}:ask"
+        if key in in_flight:
+            raise HTTPException(
+                status_code=409, detail="Still answering the last question."
+            )
+        in_flight.add(key)
+        try:
+            utterances = _utterances_of(job)
+            # The enhanced notes are better context than the raw ones: same
+            # real names, with the ASR errors already resolved.
+            notes = pad.read_enhanced() or pad.read_notes()
+            history = pad.read_chat()
+            for_llm = (
+                anonymised_utterances(utterances)
+                if config.anonymise_analysis
+                else utterances
+            )
+            answer = await asyncio.to_thread(
+                _ask_sync, for_llm, question, notes, history
+            )
+            turn = await asyncio.to_thread(pad.append_chat, question, answer)
+        except NotepadError as exc:
+            # Covers "nothing to search" as well as an unusable model reply,
+            # both of which the asker can act on.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except LLMError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            in_flight.discard(key)
+        return turn
+
+    @app.delete("/api/meetings/{job_id}/chat")
+    async def clear_chat(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Forget every question asked about this meeting."""
+        _notepad_of(_visible_job(job_id, user)).clear_chat()
+        return {"cleared": True}
+
     # -- accounts (admin) --------------------------------------------------
 
     @app.get("/api/users")
@@ -382,7 +646,10 @@ def create_app(config: Config) -> FastAPI:
 
 __all__ = [
     "ARTIFACTS",
+    "AskRequest",
     "CreateUserRequest",
+    "EnhanceRequest",
+    "NotesRequest",
     "PasswordRequest",
     "StartRequest",
     "create_app",

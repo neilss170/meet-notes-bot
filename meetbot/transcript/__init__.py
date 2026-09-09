@@ -9,6 +9,7 @@ from meetbot.transcript.format import (
     render_markdown,
     render_text,
 )
+from meetbot.transcript.notes import Notepad
 from meetbot.transcript.store import (
     MeetingMeta,
     TranscriptStore,
@@ -21,6 +22,7 @@ from meetbot.transcript.store import (
 
 __all__ = [
     "MeetingMeta",
+    "Notepad",
     "TranscriptStore",
     "Utterance",
     "format_timestamp",
