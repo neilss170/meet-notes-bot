@@ -37,6 +37,7 @@ from typing import Any, Callable
 
 from meetbot.config import Config, validate_meet_url
 from meetbot.runner import MeetingRun, run_meeting
+from meetbot.transcript.notes import Notepad
 from meetbot.transcript.store import iter_records
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,18 @@ class MeetingJob:
         progress["duration_s"] = last_end
         return progress
 
+    @property
+    def notepad(self) -> Notepad | None:
+        """This meeting's notepad, or ``None`` before it has a directory.
+
+        The output directory is only known once the run reports it, so a job
+        that is still starting up cannot persist notes yet. Callers treat
+        ``None`` as "come back in a moment" rather than as an error.
+        """
+        if self.output_dir is None:
+            return None
+        return Notepad(self.output_dir)
+
     def artifact(self, name: str) -> Path | None:
         """Path to a produced artifact, or ``None`` if it does not exist yet."""
         if self.output_dir is None:
@@ -166,6 +179,7 @@ class MeetingJob:
         return path if path.exists() else None
 
     def to_dict(self, *, include_progress: bool = True) -> dict[str, Any]:
+        pad = self.notepad
         payload: dict[str, Any] = {
             "id": self.id,
             "meet_url": self.meet_url,
@@ -178,6 +192,9 @@ class MeetingJob:
             "output_dir": str(self.output_dir) if self.output_dir else None,
             "has_transcript": self.artifact("transcript.md") is not None,
             "has_summary": self.artifact("analysis.md") is not None,
+            "has_notes": pad is not None and pad.has_notes,
+            "has_enhanced": pad is not None and pad.has_enhanced,
+            "template": pad.template if pad is not None else "",
         }
         if include_progress:
             payload.update(self.read_progress())

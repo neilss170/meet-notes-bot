@@ -8,6 +8,14 @@ A bot that joins a Google Meet call, captures what the other participants say,
 produces a speaker-labelled transcript as the meeting happens, and writes up
 the summary, decisions, action items and tone once it ends.
 
+Alongside it there is a **notepad**. You type whatever you can while the
+meeting runs — fragments, a name and an arrow — and Scribe fills those notes
+in from the transcript afterwards. Your notes stay the spine: their order,
+their emphasis and their wording survive, and the model's job is to expand the
+shorthand and attach the numbers, owners and dates you had no time to write.
+You can also ask questions of a finished meeting, answered only from what was
+actually said.
+
 It runs entirely on your own machine. Audio goes to Deepgram for transcription
 and the finished transcript goes to one LLM call for the summary; nothing else
 leaves the host, and no OS-level virtual audio device is involved.
@@ -114,10 +122,12 @@ meetbot/
     deepgram.py       # Deepgram live streaming client (raw WebSocket)
   transcript/
     store.py          # crash-durable JSONL read/write
+    notes.py          # the notepad on disk: notes, enhanced notes, chat
     format.py         # Markdown / plain-text / LLM-prompt rendering
   analysis/
     llm.py            # Claude and GPT adapters behind one JSON interface
     summarize.py      # prompts, map-reduce, parsing, Markdown rendering
+    notepad.py        # note enhancement, meeting templates, ask-a-question
 tests/
 ```
 
@@ -243,6 +253,55 @@ watch the transcript build up live, stop it early, and read the notes from any
 past meeting. The bot still runs on this machine; the UI is just the control
 surface.
 
+#### The notepad
+
+The transcript answers *what was said*. It cannot know what **you** thought
+mattered — two people in the same call want different notes out of it. So the
+notes tab is a plain textarea on the left and the finished notes on the right:
+
+- **Type as the meeting runs.** Fragments are the point. `api behind?? 2wks`,
+  `priya -> migration script, fri`. It autosaves about a second after you stop
+  typing, and leaving the tab or closing the page flushes it immediately.
+- **Press Enhance** (or `Ctrl`/`Cmd`+`Enter`). Your notes are sent with the
+  transcript, and what comes back follows *your* structure with the detail
+  filled in — the numbers, owners and dates you abbreviated or missed.
+- **Your notes are never overwritten.** `notes.md` keeps exactly what you
+  typed; the enhanced version is a separate file. If enhancement produces
+  something worse, the original is still there, and you can re-enhance.
+
+**Empty notes are a supported case, not a degenerate one.** The bot often runs
+unattended, so enhancing a meeting you never typed into writes the notes from
+the transcript alone, shaped by whichever template you picked.
+
+Templates change the shape of the output, not the machinery:
+
+| Template | Produces |
+|---|---|
+| General | Summary, notes, decisions, action items |
+| One-to-one | Discussed, wins, blockers, feedback, for next time |
+| Standup | Grouped per person, then blockers collected in one place |
+| Client call | What they asked for, concerns raised, commitments, follow-up |
+| Interview | Background, questions and answers, signals, follow-up questions |
+| Planning | The question, options with arguments, where it landed, open questions |
+
+The prompt is explicit that a note the transcript cannot support is left
+exactly as you wrote it rather than elaborated into something plausible — you
+may have been looking at a screen the bot cannot hear. Enhanced notes that
+contain invented detail would be worse than no notes at all.
+
+#### Ask
+
+The **Ask** tab answers questions about one meeting from its transcript and
+notes, and nothing else. "What did I miss?", "What was decided?", "List every
+action item and who owns it." If the meeting did not cover it, the answer says
+so rather than reasoning outwards into what was probably meant. Questions and
+answers are kept per meeting in `chat.jsonl`, and earlier turns are replayed
+so follow-ups work.
+
+Both features go through the same LLM provider as the summary, so they cost
+the same free-tier quota and are unavailable when `ANALYSIS_ENABLED=false` —
+notes still save, they just do not get enhanced.
+
 #### Accounts
 
 Every route requires a signed-in account. On an empty database the service
@@ -297,7 +356,13 @@ Things it handles that the one-shot CLI never had to:
 | `POST /api/meetings` | `{"meet_url": "..."}` — send the bot |
 | `GET /api/meetings/{id}` | Status plus live transcript |
 | `POST /api/meetings/{id}/stop` | Leave the call and write the summary |
-| `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, … |
+| `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, `notes.md`, `enhanced.md`, … |
+| `GET /api/meetings/{id}/notepad` | Notes, enhanced notes, template, chat |
+| `PUT /api/meetings/{id}/notes` | `{"notes": "..."}` — autosave the notepad |
+| `POST /api/meetings/{id}/enhance` | `{"template": "standup"}` — write the notes up |
+| `POST /api/meetings/{id}/ask` | `{"question": "..."}` — ask about this meeting |
+| `DELETE /api/meetings/{id}/chat` | Forget the questions asked about it |
+| `GET /api/templates` | The note shapes the UI offers |
 | `GET /api/health` | What is working, and the command that fixes what is not |
 | `POST /api/health/refresh` | Re-run the checks after fixing something |
 | `GET /api/users` | Admin only: list accounts |
@@ -315,6 +380,10 @@ Each run creates `recordings/<UTC timestamp>-<meeting code>/`:
 | `transcript.jsonl` | Source of truth. One JSON record per line, flushed as the meeting happens. |
 | `transcript.md` | Readable transcript, grouped into speaker turns. |
 | `analysis.md` | Summary, key points, **decisions**, action items, sentiment. |
+| `notes.md` | Exactly what you typed in the notepad. Never rewritten by the model. |
+| `enhanced.md` | Your notes filled in from the transcript. Overwritten each time you enhance. |
+| `notepad.json` | Which template was used, and when things were last written. |
+| `chat.jsonl` | One record per question asked about the meeting. |
 | `meetbot.log` | Full DEBUG log for the run, including browser-side messages. |
 
 `analysis.md` looks like this:

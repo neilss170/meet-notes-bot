@@ -272,7 +272,7 @@ class TestHttpApi:
     def test_serves_the_ui(self, client) -> None:
         response = client.get("/")
         assert response.status_code == 200
-        assert "Send a note-taking bot" in response.text
+        assert 'id="notepad"' in response.text
 
     def test_config_endpoint_exposes_no_secrets(self, client) -> None:
         payload = client.get("/api/config").json()
@@ -386,9 +386,10 @@ class TestStopFeedback:
         from meetbot.service.app import UI_PATH
 
         ui = UI_PATH.read_text(encoding="utf-8")
-        assert "const stopping = new Set()" in ui
-        assert "button.disabled = true" in ui
-        assert "stopping.delete(job.id)" in ui, "stopped jobs must clear the flag"
+        assert "stopping: new Set()" in ui
+        assert "state.stopping.add(jobId)" in ui
+        assert 'state.stopping.has(job.id) ? " disabled" : ""' in ui
+        assert "state.stopping.delete(job.id)" in ui, "stopped jobs clear the flag"
 
 
 class TestUiRendering:
@@ -407,25 +408,54 @@ class TestUiRendering:
     def test_the_list_is_not_rebuilt_when_nothing_changed(self) -> None:
         """Rebuilding on a timer threw away the reader's scroll position."""
         ui = self._ui()
-        assert "lastSignature" in ui
-        assert "signature === lastSignature" in ui
+        assert "state.sig" in ui
+        assert "if (signature === state.sig.list) return;" in ui
 
-    def test_scroll_position_is_restored_across_a_rebuild(self) -> None:
+    def test_scroll_position_is_preserved_across_a_repaint(self) -> None:
+        """The transcript follows a live call without yanking the page away
+        from somebody who has scrolled up to re-read something."""
         ui = self._ui()
-        assert "window.scrollY" in ui
-        assert "window.scrollTo" in ui
-        assert "scrollTop" in ui
+        assert "atBottom" in ui
+        assert "if (atBottom) pane.scrollTop = pane.scrollHeight;" in ui
+        assert "host.parentElement.scrollTop = scroll;" in ui
 
-    def test_the_open_artifact_is_held_as_state_not_refetched(self) -> None:
+    def test_documents_are_held_as_state_not_refetched_per_render(self) -> None:
         """Re-fetching on each render raced the poll loop.
 
         A slower earlier fetch could land after a newer one and paint the
         previous document, which is why Transcript and AI notes appeared to
-        show the same content.
+        show the same content. Everything on screen now comes from state
+        that one fetch per poll replaces wholesale.
         """
         ui = self._ui()
-        assert "let open = null" in ui
-        assert "open.jobId === jobId && open.name === name" in ui
+        assert "state.pad" in ui
+        assert "state.detail" in ui
+        assert "state.sig.enhanced" in ui
+
+    def test_the_poll_loop_never_overwrites_the_open_notepad(self) -> None:
+        """The notepad is the one control the user types into.
+
+        Refilling it from a 2-second poll - or rebuilding the pane on the
+        elapsed clock, which recreates the textarea - deletes whatever was
+        being written. Both paths are guarded.
+        """
+        ui = self._ui()
+        # Loaded once per meeting, then client-owned.
+        assert "padLoadedFor" in ui
+        assert "state.padLoadedFor !== state.selected" in ui
+        # The poll keeps the local copy while it is being edited.
+        assert 'state.saveState === "editing"' in ui
+        # The pane rebuild signature must not contain the volatile figures.
+        head = ui[ui.index("const signature = JSON.stringify(["):]
+        head = head[: head.index("]);")]
+        assert "elapsed_s" not in head, "the elapsed clock must not rebuild the pane"
+        assert "utterance_count" not in head, "the count must not rebuild the pane"
+
+    def test_unsaved_notes_are_flushed_when_leaving_them(self) -> None:
+        ui = self._ui()
+        assert "function flushNotes" in ui
+        assert "beforeunload" in ui
+        assert "keepalive: true" in ui
 
     def test_artifacts_render_as_structure_rather_than_preformatted_text(
         self,
@@ -906,3 +936,244 @@ class TestStartupDoesNotReachTheNetwork:
             created = client.post("/api/meetings", json={"meet_url": MEET_URL})
             assert created.status_code == 201
             assert "id" in created.json()
+
+
+class TestNotepadApi:
+    """The notepad: autosave, enhancement, and asking about a meeting.
+
+    Every LLM call is faked - the suite must not need a key or a network.
+    """
+
+    @pytest.fixture
+    def client(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch, utterances=2)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as signed_out:
+            signed_out.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            signed_out.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield signed_out
+
+    @pytest.fixture
+    def fake_llm(self, monkeypatch):
+        """Replace the provider adapter the routes build per request."""
+        from meetbot.service import app as app_module
+        from tests.conftest import FakeLLMClient
+
+        client = FakeLLMClient(text_responses=[])
+        monkeypatch.setattr(app_module, "build_client", lambda *a, **k: client)
+        return client
+
+    @staticmethod
+    def _meeting(client, *, transcript: bool = True) -> str:
+        """A finished meeting, optionally with a transcript on disk."""
+        from meetbot.transcript.store import MeetingMeta, TranscriptStore, Utterance
+
+        job_id = client.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+        for _ in range(80):
+            status = client.get(f"/api/meetings/{job_id}").json()["status"]
+            if status in ("finished", "failed"):
+                break
+        job = client.app.state.manager.get(job_id)
+        assert job.output_dir is not None, "the run never reported its directory"
+        if transcript:
+            store = TranscriptStore(job.output_dir / "transcript.jsonl")
+            store.write_meta(MeetingMeta(meet_url=MEET_URL, bot_name="Scribe"))
+            store.append(Utterance("Speaker 0", "We are two weeks behind.", 0.0, 3.0))
+            store.append(Utterance("Speaker 1", "I will take the script.", 4.0, 6.0))
+            store.close()
+        return job_id
+
+    # -- templates ---------------------------------------------------------
+
+    def test_templates_are_served_to_the_ui(self, client) -> None:
+        payload = client.get("/api/templates").json()
+        assert payload["default"]
+        ids = [t["id"] for t in payload["templates"]]
+        assert payload["default"] in ids
+        assert "guidance" not in payload["templates"][0], "prompt internals leaked"
+
+    def test_templates_need_a_session(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as anon:
+            assert anon.get("/api/templates").status_code == 401
+
+    # -- notes -------------------------------------------------------------
+
+    def test_notes_round_trip(self, client) -> None:
+        job_id = self._meeting(client)
+        saved = client.put(
+            f"/api/meetings/{job_id}/notes", json={"notes": "budget approved?"}
+        )
+        assert saved.status_code == 200
+        assert saved.json()["saved"] is True
+        assert client.get(f"/api/meetings/{job_id}/notepad").json()["notes"] == (
+            "budget approved?"
+        )
+
+    def test_a_meeting_with_no_notes_reports_empty_rather_than_failing(
+        self, client
+    ) -> None:
+        job_id = self._meeting(client)
+        payload = client.get(f"/api/meetings/{job_id}/notepad").json()
+        assert payload["notes"] == ""
+        assert payload["enhanced"] == ""
+        assert payload["chat"] == []
+        assert payload["template"]
+
+    def test_the_meetings_list_flags_notes_and_enhancement(self, client) -> None:
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/notes", json={"notes": "x"})
+        listed = client.get("/api/meetings").json()["meetings"]
+        row = next(m for m in listed if m["id"] == job_id)
+        assert row["has_notes"] is True
+        assert row["has_enhanced"] is False
+
+    def test_notes_need_a_session(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as anon:
+            assert anon.put("/api/meetings/x/notes", json={"notes": "n"}).status_code == 401
+            assert anon.get("/api/meetings/x/notepad").status_code == 401
+
+    def test_a_member_cannot_read_another_persons_notes(self, client) -> None:
+        """Transcripts are the sensitive part of this service; so are notes."""
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/notes", json={"notes": "confidential"})
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        response = other.get(f"/api/meetings/{job_id}/notepad")
+        assert response.status_code == 404
+        assert "confidential" not in response.text
+
+    # -- enhancement -------------------------------------------------------
+
+    def test_enhance_writes_notes_and_records_the_template(
+        self, client, fake_llm
+    ) -> None:
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/notes", json={"notes": "api late"})
+        fake_llm.text_responses = ["## Summary\n\nThe API work is two weeks late."]
+
+        response = client.post(
+            f"/api/meetings/{job_id}/enhance", json={"template": "standup"}
+        )
+        assert response.status_code == 200, response.text
+        assert "two weeks late" in response.json()["enhanced"]
+        assert response.json()["template"] == "standup"
+
+        # Persisted, and visible to a later reader.
+        pad = client.get(f"/api/meetings/{job_id}/notepad").json()
+        assert "two weeks late" in pad["enhanced"]
+        assert pad["template"] == "standup"
+        assert pad["notes"] == "api late", "the original notes must survive"
+
+    def test_enhance_sends_the_typed_notes_and_the_transcript(
+        self, client, fake_llm
+    ) -> None:
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/notes", json={"notes": "priya owns it"})
+        fake_llm.text_responses = ["notes"]
+        client.post(f"/api/meetings/{job_id}/enhance", json={})
+        prompt = fake_llm.text_calls[0]["user"]
+        assert "priya owns it" in prompt
+        assert "two weeks behind" in prompt.lower()
+
+    def test_enhance_works_with_no_typed_notes(self, client, fake_llm) -> None:
+        """The bot usually runs unattended, so this is the common case."""
+        job_id = self._meeting(client)
+        fake_llm.text_responses = ["## Summary\n\nSomething happened."]
+        response = client.post(f"/api/meetings/{job_id}/enhance", json={})
+        assert response.status_code == 200
+        assert "Something happened" in response.json()["enhanced"]
+
+    def test_enhance_refuses_when_there_is_nothing_to_work_from(
+        self, client, fake_llm
+    ) -> None:
+        job_id = self._meeting(client, transcript=False)
+        response = client.post(f"/api/meetings/{job_id}/enhance", json={})
+        assert response.status_code == 409
+        assert "nothing to work from" in response.json()["detail"].lower()
+        assert not fake_llm.text_calls, "no quota should have been spent"
+
+    def test_a_provider_failure_is_reported_as_a_bad_gateway(
+        self, client, fake_llm
+    ) -> None:
+        from meetbot.analysis.llm import LLMError
+
+        job_id = self._meeting(client)
+        fake_llm.text_error = LLMError("rate limit hit")
+        response = client.post(f"/api/meetings/{job_id}/enhance", json={})
+        assert response.status_code == 502
+        assert "rate limit" in response.json()["detail"]
+
+    def test_enhance_is_refused_when_ai_is_switched_off(
+        self, service_config, monkeypatch
+    ) -> None:
+        _stub_runner(monkeypatch, utterances=2)
+        service_config = dataclasses.replace(service_config, analysis_enabled=False)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+            job_id = self._meeting(client)
+            response = client.post(f"/api/meetings/{job_id}/enhance", json={})
+            assert response.status_code == 409
+            assert "switched off" in response.json()["detail"]
+            # Notes are still saved - only the AI step is unavailable.
+            assert client.put(
+                f"/api/meetings/{job_id}/notes", json={"notes": "still works"}
+            ).status_code == 200
+
+    # -- ask ---------------------------------------------------------------
+
+    def test_ask_answers_and_remembers_the_question(self, client, fake_llm) -> None:
+        job_id = self._meeting(client)
+        fake_llm.text_responses = ["They are two weeks behind."]
+        response = client.post(
+            f"/api/meetings/{job_id}/ask", json={"question": "How is the API work?"}
+        )
+        assert response.status_code == 200, response.text
+        turn = response.json()
+        assert turn["question"] == "How is the API work?"
+        assert turn["answer"] == "They are two weeks behind."
+
+        chat = client.get(f"/api/meetings/{job_id}/notepad").json()["chat"]
+        assert [t["question"] for t in chat] == ["How is the API work?"]
+
+    def test_ask_replays_earlier_turns_for_a_follow_up(self, client, fake_llm) -> None:
+        job_id = self._meeting(client)
+        fake_llm.text_responses = ["the API work", "Priya"]
+        client.post(f"/api/meetings/{job_id}/ask", json={"question": "what slipped?"})
+        client.post(f"/api/meetings/{job_id}/ask", json={"question": "who owns it?"})
+        assert "what slipped?" in fake_llm.text_calls[-1]["user"]
+
+    def test_an_empty_question_is_rejected_before_the_model(
+        self, client, fake_llm
+    ) -> None:
+        job_id = self._meeting(client)
+        response = client.post(f"/api/meetings/{job_id}/ask", json={"question": "  "})
+        assert response.status_code == 400
+        assert not fake_llm.text_calls
+
+    def test_the_chat_can_be_cleared(self, client, fake_llm) -> None:
+        job_id = self._meeting(client)
+        fake_llm.text_responses = ["answer"]
+        client.post(f"/api/meetings/{job_id}/ask", json={"question": "q"})
+        assert client.delete(f"/api/meetings/{job_id}/chat").status_code == 200
+        assert client.get(f"/api/meetings/{job_id}/notepad").json()["chat"] == []
+
+    # -- artifacts ---------------------------------------------------------
+
+    def test_notes_are_downloadable_as_artifacts(self, client, fake_llm) -> None:
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/notes", json={"notes": "typed"})
+        fake_llm.text_responses = ["## Enhanced"]
+        client.post(f"/api/meetings/{job_id}/enhance", json={})
+        assert client.get(
+            f"/api/meetings/{job_id}/artifact/notes.md"
+        ).text == "typed"
+        assert "Enhanced" in client.get(
+            f"/api/meetings/{job_id}/artifact/enhanced.md"
+        ).text
