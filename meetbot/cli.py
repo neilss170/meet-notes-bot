@@ -180,6 +180,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_llm_flags(run_parser)
 
+    record_parser = subparsers.add_parser(
+        "record",
+        help="Record this machine - no bot joins the meeting.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    record_parser.add_argument(
+        "--title",
+        default="",
+        help="What to call this recording. Also names the output folder.",
+    )
+    record_parser.add_argument(
+        "--speakers",
+        dest="loopback_index",
+        type=int,
+        default=None,
+        help=(
+            "Device index of the speakers to capture. Defaults to whatever "
+            "Windows is playing through. See --list-devices."
+        ),
+    )
+    record_parser.add_argument(
+        "--microphone",
+        dest="microphone_index",
+        type=int,
+        default=None,
+        help="Device index of your microphone. Defaults to the system default.",
+    )
+    record_parser.add_argument(
+        "--no-microphone",
+        action="store_true",
+        help=(
+            "Record only what the speakers play. Your own voice is left out, "
+            "so the transcript is one-sided."
+        ),
+    )
+    record_parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="List capturable devices and exit.",
+    )
+    _add_llm_flags(record_parser)
+
     analyze_parser = subparsers.add_parser(
         "analyze",
         help="Re-run the analysis over an existing transcript.",
@@ -398,6 +440,95 @@ def _report(run: MeetingRun) -> None:
         logger.info("Ended because    : %s", run.end_reason.value)
     for error in run.errors:
         logger.warning("Issue            : %s", error)
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    """Handle ``record``: capture this machine, with no bot in the call."""
+    from meetbot.capture.local import (
+        LocalCaptureError,
+        list_devices,
+        probe_loopback,
+    )
+    from meetbot.local_runner import run_local_meeting
+
+    if args.list_devices:
+        try:
+            loopbacks, microphones = list_devices()
+        except LocalCaptureError as exc:
+            logger.error("%s", exc)
+            return EXIT_CONFIG_ERROR
+        logger.info("Speakers (what the meeting plays through):")
+        for device in loopbacks:
+            logger.info("  [%d] %s", device.index, device.name)
+        logger.info("Microphones (your own voice):")
+        for device in microphones:
+            logger.info("  [%d] %s", device.index, device.name)
+        if not loopbacks:
+            logger.warning(
+                "No loopback device. Windows needs an active playback device."
+            )
+        return EXIT_OK
+
+    config = _config_from_args(args)
+    try:
+        # A local recording needs no meeting URL - that is the whole point.
+        config.validate(require_meeting=False)
+    except ConfigError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    logger.info(
+        "Recording this machine. No bot joins the meeting and nobody sees an "
+        "extra participant - but everyone in the room is still being recorded, "
+        "so tell them."
+    )
+    try:
+        probe = probe_loopback(seconds=0.5)
+        if probe.silent:
+            logger.warning("%s", probe.detail)
+    except LocalCaptureError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    logger.info("Recording. Press Ctrl+C to stop and write the notes.")
+    try:
+        run = asyncio.run(
+            run_local_meeting(
+                config,
+                title=args.title,
+                loopback_index=args.loopback_index,
+                microphone_index=(
+                    -1 if args.no_microphone else args.microphone_index
+                ),
+                on_stop=_stop_on_interrupt,
+            )
+        )
+    except LocalCaptureError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    _report(run)
+    return EXIT_OK if run.utterance_count else EXIT_RUN_FAILED
+
+
+def _stop_on_interrupt(stop: Any) -> None:
+    """Route Ctrl+C to ending the recording rather than killing the process.
+
+    A local recording has no natural end, so the interrupt *is* the stop
+    signal - and killing the process outright would skip the transcript and
+    the summary, losing the meeting that was just recorded.
+    """
+    import signal
+
+    def handle(_signum: int, _frame: Any) -> None:
+        logger.info("Stopping - writing the transcript and notes")
+        stop()
+
+    for name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(sig, handle)
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
@@ -714,58 +845,6 @@ def cmd_check(args: argparse.Namespace) -> int:
     return EXIT_CONFIG_ERROR
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
-    """Handle ``serve``: run the local web UI until interrupted."""
-    try:
-        import uvicorn
-    except ImportError:
-        logger.error(
-            "The web UI needs: pip install fastapi uvicorn python-multipart"
-        )
-        return EXIT_CONFIG_ERROR
-
-    from meetbot.service.app import create_app
-
-    config = _config_from_args(args)
-    try:
-        # No meeting URL yet - the whole point is that one arrives later, per
-        # request - so only the settings a server needs are checked here.
-        config.validate(require_meeting=False)
-    except ConfigError as exc:
-        logger.error("%s", exc)
-        return EXIT_CONFIG_ERROR
-
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        logger.warning(
-            "Binding to %s serves meetbot to the network. Accounts are "
-            "required, but sessions travel as cookies: put TLS in front of "
-            "it, or passwords and session tokens cross the wire in clear.",
-            args.host,
-        )
-
-    url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}"
-    logger.info("meetbot is at %s", url)
-    logger.info("Recordings: %s", config.output_dir)
-
-    if getattr(args, "open_browser", False):
-        import threading
-        import webbrowser
-
-        # Deferred: opening the browser before uvicorn is listening shows an
-        # error page the user then has to reload.
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-
-    uvicorn.run(
-        create_app(config),
-        host=args.host,
-        port=args.port,
-        log_level=(args.log_level or "info").lower(),
-        # uvicorn otherwise replaces the handlers configure_logging installed.
-        log_config=None,
-    )
-    return EXIT_OK
-
-
 def cmd_users(args: argparse.Namespace) -> int:
     """Handle ``users``: account management from the terminal.
 
@@ -826,6 +905,7 @@ def main(argv: list[str] | None = None) -> int:
 
     handlers = {
         "run": cmd_run,
+        "record": cmd_record,
         "analyze": cmd_analyze,
         "format": cmd_format,
         "check": cmd_check,

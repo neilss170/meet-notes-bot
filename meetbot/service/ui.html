@@ -153,6 +153,29 @@
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .grow { flex: 1 1 auto; }
 
+  /* A two-way switch, not a pair of buttons: only one of these modes can
+     be what you are doing. */
+  .segmented {
+    display: flex; gap: 2px; background: var(--bg); border-radius: 999px;
+    padding: 3px; margin-bottom: 12px;
+  }
+  .segmented button {
+    flex: 1 1 0; padding: 7px 10px; border-radius: 999px; font-size: 12.5px;
+    font-weight: 500; color: var(--muted);
+    transition: background .13s ease, color .13s ease;
+  }
+  .segmented button:hover { color: var(--ink); }
+  .segmented button.on { background: var(--ink); color: var(--bg); font-weight: 600; }
+  .hint {
+    font-size: 11.5px; color: var(--faint); line-height: 1.5; margin-top: 9px;
+    padding: 0 4px;
+  }
+  .hint.bad { color: var(--bad); }
+  .src {
+    font-size: 10px; color: var(--faint); text-transform: uppercase;
+    letter-spacing: .08em; flex: 0 0 auto;
+  }
+
   details.opts { margin-top: 10px; padding: 0 4px; }
   details.opts summary {
     cursor: pointer; font-size: 12px; color: var(--faint);
@@ -381,12 +404,30 @@
   <div class="body">
     <div class="side">
       <div class="side-top">
-        <label class="field" for="url">New meeting</label>
-        <input type="text" id="url" placeholder="meet.google.com/abc-defg-hij"
-               autocomplete="off" spellcheck="false">
-        <div class="row" style="margin-top:9px">
-          <button class="btn grow" id="send">Send bot</button>
+        <div class="segmented" id="modes">
+          <button data-mode="local" class="on">This machine</button>
+          <button data-mode="bot">Send a bot</button>
         </div>
+
+        <div id="form-local">
+          <input type="text" id="rec-title" placeholder="What is this meeting?"
+                 autocomplete="off">
+          <div class="row" style="margin-top:9px">
+            <button class="btn grow" id="record">Start recording</button>
+          </div>
+          <div class="hint" id="audio-hint">Checking audio&hellip;</div>
+        </div>
+
+        <div id="form-bot" hidden>
+          <input type="text" id="url" placeholder="meet.google.com/abc-defg-hij"
+                 autocomplete="off" spellcheck="false">
+          <div class="row" style="margin-top:9px">
+            <button class="btn grow" id="send">Send bot</button>
+          </div>
+          <div class="hint">
+            Joins the call as a visible participant and needs a signed-in
+            Google account.
+          </div>
         <details class="opts">
           <summary>Options</summary>
           <label class="opt">
@@ -403,6 +444,8 @@
             <span>Replace speaker names with pseudonyms before any AI call</span>
           </label>
         </details>
+        </div>
+
         <div class="err" id="error" hidden></div>
       </div>
       <div class="side-list" id="meetings"></div>
@@ -475,8 +518,10 @@ function dayGroup(epoch) {
     d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
 }
 
-/** The meeting code, which is the only name we have - there is no calendar. */
+/** What to call a meeting. A local recording has whatever title you typed;
+    a bot meeting has only its Meet code - there is no calendar to ask. */
 function meetingName(job) {
+  if (job.kind === "local") return job.title || "Untitled recording";
   const url = job.meet_url || "";
   const match = url.match(/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
   if (match) return match[1];
@@ -596,7 +641,7 @@ const showError = (message) => {
 
 function renderSidebar() {
   const signature = JSON.stringify(state.meetings.map((j) => [
-    j.id, j.status, j.utterance_count, j.has_enhanced, j.has_notes,
+    j.id, j.status, j.utterance_count, j.has_enhanced, j.has_notes, j.kind,
     j.id === state.selected,
   ]));
   if (signature === state.sig.list) return;
@@ -627,6 +672,7 @@ function renderSidebar() {
         `<div class="mtg-sub">` +
           `<span>${esc(clock(job.created_at))}</span>` +
           `<span>${esc(mmss(job.elapsed_s))}</span>` +
+          (job.kind === "local" ? '<span class="src">local</span>' : "") +
           (job.has_enhanced ? '<span class="tick" title="Notes enhanced">&#9679;</span>' : "") +
         `</div>` +
       `</button>`
@@ -648,8 +694,9 @@ function renderMain() {
     host.innerHTML =
       '<div class="empty-main">' +
         "<h3>Take notes, not minutes</h3>" +
-        "<p>Jot down whatever you can while the call runs. " +
-        "Scribe fills in the rest from the transcript.</p>" +
+        "<p>Start recording, then jot down whatever you can while the call " +
+        "runs. Scribe fills in the rest from the transcript &mdash; and " +
+        "nothing joins your meeting.</p>" +
       "</div>";
     return;
   }
@@ -692,8 +739,12 @@ function renderMain() {
           `<span>${esc(clock(job.created_at))}</span><span class="sep">&middot;</span>` +
           '<span id="m-elapsed"></span><span class="sep">&middot;</span>' +
           '<span id="m-count"></span>' +
-          (job.meet_url ? `<span class="sep">&middot;</span><a href="${esc(job.meet_url)}" ` +
-            'target="_blank" rel="noopener" style="color:var(--muted)">open call</a>' : "") +
+          (job.kind === "local"
+            ? '<span class="sep">&middot;</span><span>recorded on this machine</span>'
+            : job.meet_url
+              ? `<span class="sep">&middot;</span><a href="${esc(job.meet_url)}" ` +
+                'target="_blank" rel="noopener">open call</a>'
+              : "") +
         "</div>" +
         '<div class="tabs">' +
           tab("notes", "Notes") +
@@ -1129,6 +1180,49 @@ async function sendBot() {
   }
 }
 
+async function startRecording() {
+  if (state.sending) return;
+  state.sending = true;
+  const button = $("record");
+  button.disabled = true;
+  button.innerHTML = '<span class="spin"></span> Starting';
+  showError("");
+  try {
+    const job = await api("/api/recordings", {
+      method: "POST",
+      body: JSON.stringify({ title: $("rec-title").value.trim() }),
+    });
+    $("rec-title").value = "";
+    await poll();
+    await select(job.id);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    state.sending = false;
+    button.disabled = false;
+    button.textContent = "Start recording";
+  }
+}
+
+/** Say up front whether this machine can be recorded, and from what. */
+async function checkAudio() {
+  const hint = $("audio-hint");
+  try {
+    const info = await api("/api/audio-devices");
+    hint.classList.toggle("bad", !info.ready);
+    if (!info.ready) {
+      hint.textContent = info.detail;
+      $("record").disabled = true;
+      return;
+    }
+    const speakers = (info.speakers[0] || {}).name || "your speakers";
+    hint.textContent =
+      `Captures ${speakers} and your microphone. Nothing joins the call.`;
+  } catch (error) {
+    hint.textContent = "";
+  }
+}
+
 async function stopMeeting(jobId) {
   state.stopping.add(jobId);
   state.sig.head = "";
@@ -1243,6 +1337,21 @@ async function init() {
 
   $("send").addEventListener("click", sendBot);
   $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") sendBot(); });
+  $("record").addEventListener("click", startRecording);
+  $("rec-title").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") startRecording();
+  });
+  document.querySelectorAll("#modes button").forEach((el) => {
+    el.addEventListener("click", () => {
+      document.querySelectorAll("#modes button").forEach((b) =>
+        b.classList.toggle("on", b === el));
+      const local = el.dataset.mode === "local";
+      $("form-local").hidden = !local;
+      $("form-bot").hidden = local;
+      showError("");
+    });
+  });
+  checkAudio();
   $("admin-open").addEventListener("click", openAdmin);
   // A refresh mid-sentence should not lose the last thing typed.
   window.addEventListener("beforeunload", () => {
