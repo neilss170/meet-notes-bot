@@ -18,7 +18,9 @@ in front of the service keeps them off the wire.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -49,7 +51,13 @@ from meetbot.service.auth import (
     load_or_create_secret,
     read_session,
 )
-from meetbot.preflight import Preflight, run_preflight
+from meetbot.preflight import (
+    SESSION_CHECK_TIMEOUT_S,
+    CheckResult,
+    Preflight,
+    check_google_session,
+    run_preflight,
+)
 from meetbot.profile import sweep_stale_profiles
 from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
 from meetbot.transcript.notes import Notepad
@@ -65,6 +73,12 @@ logger = logging.getLogger(__name__)
 
 UI_PATH = Path(__file__).parent / "ui.html"
 LOGIN_PATH = Path(__file__).parent / "login.html"
+
+#: How long a readiness report is treated as evidence. Past this it is still
+#: shown - it is the best guess available - but it no longer blocks anything,
+#: because "this was broken when we last looked" is not a reason to refuse a
+#: request half an hour later.
+HEALTH_STALE_AFTER_S = 300.0
 
 #: Artifacts a client may fetch, mapped to their media type. An allow-list,
 #: not a path parameter joined onto a directory: the artifact name comes from
@@ -148,12 +162,43 @@ def create_app(config: Config) -> FastAPI:
         try:
             report = await run_preflight(config)
             app.state.health = report
+            app.state.health_at = time.time()
             if not report.can_record:
                 logger.warning("Scribe cannot record meetings yet:")
                 report.log()
             return report
         finally:
             app.state.health_checking = False
+
+    async def _recheck_session() -> CheckResult | None:
+        """Ask Google, right now, whether the bot is still signed in.
+
+        Returns ``None`` when the answer could not be obtained in time, which
+        is treated as "proceed" rather than "refuse" - failing to check is
+        not evidence of a problem, and the run itself will surface a dead
+        session soon enough.
+
+        The cached report is updated in place with the result, so the health
+        banner stops showing a failure the moment it stops being true.
+        """
+        try:
+            result = await asyncio.wait_for(
+                check_google_session(config), timeout=SESSION_CHECK_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            logger.warning("Could not re-check the Google session", exc_info=True)
+            return None
+
+        result = dataclasses.replace(result, mode="bot")
+        report: Preflight | None = getattr(app.state, "health", None)
+        if report is not None:
+            report.results = [
+                result if r.name == result.name else r for r in report.results
+            ] or [result]
+            if not any(r.name == result.name for r in report.results):
+                report.results.append(result)
+            app.state.health_at = time.time()
+        return result
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -291,8 +336,20 @@ def create_app(config: Config) -> FastAPI:
                 "ok": None,
                 "can_record": None,
                 "checks": [],
+                "checked_at": None,
+                "stale": True,
             }
-        return {"checking": getattr(app.state, "health_checking", False), **report.to_dict()}
+        checked_at = getattr(app.state, "health_at", None)
+        age = time.time() - checked_at if checked_at else None
+        return {
+            "checking": getattr(app.state, "health_checking", False),
+            "checked_at": checked_at,
+            "age_s": round(age, 1) if age is not None else None,
+            # Still shown when stale - it is the best guess available - but
+            # the UI says so, and nothing is refused on the strength of it.
+            "stale": age is None or age > HEALTH_STALE_AFTER_S,
+            **report.to_dict(),
+        }
 
     @app.post("/api/health/refresh")
     async def refresh_health(_: User = Depends(current_user)) -> dict[str, Any]:
@@ -340,22 +397,42 @@ def create_app(config: Config) -> FastAPI:
         # A known-broken setup produces a bot that joins and records nothing,
         # or cannot join at all. Refusing here costs a moment; finding out in
         # the meeting costs the meeting.
-        report: Preflight | None = getattr(app.state, "health", None)
-        if report is not None and not report.can_send_bot:
-            # Whatever stops the bot - an expired Google session, usually -
-            # says nothing about recording this machine, which is why the
-            # recording route checks the audio devices instead.
-            blocked = [r for r in report.results if r.blocking and not r.ok] or [
-                r for r in report.results if not r.ok
-            ]
-            blocker = blocked[0]
+        # Asked now rather than read from a cached report. The session is the
+        # only thing that stops a bot and the thing most likely to have
+        # changed since the service started - quoting an old answer is how
+        # signing back in appeared to have no effect.
+        session = await _recheck_session()
+        if session is not None and not session.ok:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"{blocker.name}: {blocker.detail}."
-                    + (f" Fix: {blocker.fix}" if blocker.fix else "")
+                    f"{session.name}: {session.detail}."
+                    + (f" Fix: {session.fix}" if session.fix else "")
                 ),
             )
+
+        # Everything else - configuration, Deepgram, the LLM - changes only
+        # when somebody edits it, so the cached answer is good enough, and a
+        # stale one is not grounds for refusing anything.
+        report: Preflight | None = getattr(app.state, "health", None)
+        checked_at = getattr(app.state, "health_at", None)
+        fresh = checked_at is not None and (
+            time.time() - checked_at <= HEALTH_STALE_AFTER_S
+        )
+        if fresh and report is not None:
+            broken = [
+                r for r in report.results
+                if r.blocking and not r.ok and r.mode == "both"
+            ]
+            if broken:
+                blocker = broken[0]
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{blocker.name}: {blocker.detail}."
+                        + (f" Fix: {blocker.fix}" if blocker.fix else "")
+                    ),
+                )
         try:
             job = manager.start(request.meet_url, owner=user.username, **overrides)
         except (ValueError, ConfigError) as exc:
