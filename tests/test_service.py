@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,26 @@ TestClient = fastapi_testclient.TestClient
 
 MEET_URL = "https://meet.google.com/abc-defg-hij"
 ADMIN_PASSWORD = "a-long-enough-password"
+
+
+@pytest.fixture(autouse=True)
+def no_real_session_check(monkeypatch):
+    """Keep the whole module off Playwright.
+
+    Sending a bot re-checks the Google session live rather than trusting a
+    cached report - which means a real browser launch. Every test here stubs
+    the runner for exactly the same reason, so the check is stubbed too.
+    Tests that care about the guard replace this with their own answer.
+    """
+    from meetbot.preflight import CheckResult
+    from meetbot.service import app as app_module
+
+    async def signed_in(_config):
+        return CheckResult(
+            "Google sign-in", ok=True, detail="stubbed for tests", mode="bot"
+        )
+
+    monkeypatch.setattr(app_module, "check_google_session", signed_in)
 
 
 @pytest.fixture
@@ -805,6 +826,9 @@ class TestReadinessGuard:
     could not join at all, because something was already broken before anyone
     clicked send. Refusing costs a moment; finding out in the meeting costs
     the meeting.
+
+    The session is re-checked when the bot is sent rather than read from the
+    report the service cached at startup - see the class below for why.
     """
 
     @pytest.fixture
@@ -819,61 +843,177 @@ class TestReadinessGuard:
             yield client
 
     @staticmethod
-    def _report(*, can_record: bool):
-        from meetbot.preflight import CheckResult, Preflight
+    def _session(monkeypatch, *, ok: bool, hang: bool = False):
+        """Replace the live session check. It launches a browser for real."""
+        from meetbot.preflight import CheckResult
+        from meetbot.service import app as app_module
 
-        if can_record:
-            return Preflight([CheckResult("Google sign-in", ok=True, detail="fine")])
-        return Preflight([
-            CheckResult(
+        async def fake(_config):
+            if hang:
+                raise TimeoutError("took too long")
+            if ok:
+                return CheckResult(
+                    "Google sign-in", ok=True, detail="signed in as a@b.com",
+                    mode="bot",
+                )
+            return CheckResult(
                 "Google sign-in",
                 ok=False,
                 detail="The profile is signed out",
                 fix="python -m meetbot login",
+                mode="bot",
             )
-        ])
 
-    def test_refuses_to_start_a_meeting_that_cannot_be_recorded(
-        self, signed_in
-    ) -> None:
-        signed_in.app.state.health = self._report(can_record=False)
-        response = signed_in.post(
-            "/api/meetings", json={"meet_url": MEET_URL}
-        )
+        monkeypatch.setattr(app_module, "check_google_session", fake)
+
+    def test_refuses_when_the_bot_is_signed_out(self, signed_in, monkeypatch) -> None:
+        self._session(monkeypatch, ok=False)
+        response = signed_in.post("/api/meetings", json={"meet_url": MEET_URL})
         assert response.status_code == 409
         detail = response.json()["detail"]
         assert "signed out" in detail
         assert "meetbot login" in detail, "the refusal must say what to do"
 
-    def test_allows_a_meeting_when_everything_passes(self, signed_in) -> None:
-        signed_in.app.state.health = self._report(can_record=True)
+    def test_allows_a_meeting_when_the_session_is_live(
+        self, signed_in, monkeypatch
+    ) -> None:
+        self._session(monkeypatch, ok=True)
+        assert signed_in.post(
+            "/api/meetings", json={"meet_url": MEET_URL}
+        ).status_code == 201
+
+    def test_a_stale_failure_does_not_block_a_session_that_now_works(
+        self, signed_in, monkeypatch
+    ) -> None:
+        """The bug this guards against, exactly.
+
+        The service checked once at startup, found the bot signed out, and
+        cached it. Signing back in therefore appeared to do nothing - the
+        start route was still quoting the report from before the fix, half an
+        hour later. Readiness is now asked for, not remembered.
+        """
+        from meetbot.preflight import CheckResult, Preflight
+
+        signed_in.app.state.health = Preflight([
+            CheckResult(
+                "Google sign-in", ok=False, detail="The profile is signed out",
+                fix="python -m meetbot login", mode="bot",
+            )
+        ])
+        signed_in.app.state.health_at = time.time()
+        self._session(monkeypatch, ok=True)
+
+        assert signed_in.post(
+            "/api/meetings", json={"meet_url": MEET_URL}
+        ).status_code == 201
+
+    def test_the_cached_report_is_corrected_by_the_live_check(
+        self, signed_in, monkeypatch
+    ) -> None:
+        """So the health banner stops lying the moment the truth changes."""
+        from meetbot.preflight import CheckResult, Preflight
+
+        signed_in.app.state.health = Preflight([
+            CheckResult(
+                "Google sign-in", ok=False, detail="The profile is signed out",
+                mode="bot",
+            )
+        ])
+        signed_in.app.state.health_at = time.time()
+        self._session(monkeypatch, ok=True)
+        signed_in.post("/api/meetings", json={"meet_url": MEET_URL})
+
+        health = signed_in.get("/api/health").json()
+        session = next(c for c in health["checks"] if c["name"] == "Google sign-in")
+        assert session["ok"] is True
+        assert health["can_send_bot"] is True
+
+    def test_a_check_that_cannot_run_does_not_refuse(
+        self, signed_in, monkeypatch
+    ) -> None:
+        """Failing to check is not evidence of a problem.
+
+        The run launches its own browser and will surface a dead session
+        soon enough; refusing because the check timed out would block work
+        over nothing.
+        """
+        self._session(monkeypatch, ok=True, hang=True)
         assert signed_in.post(
             "/api/meetings", json={"meet_url": MEET_URL}
         ).status_code == 201
 
     def test_allows_a_meeting_before_the_checks_have_finished(
-        self, signed_in
+        self, signed_in, monkeypatch
     ) -> None:
         """The checks start a browser, so they lag startup.
 
         Blocking until they finish would make the service refuse work for its
         first ten seconds, which is worse than the problem being guarded.
         """
+        self._session(monkeypatch, ok=True)
         signed_in.app.state.health = None
         assert signed_in.post(
             "/api/meetings", json={"meet_url": MEET_URL}
         ).status_code == 201
 
-    def test_a_warning_does_not_block(self, signed_in) -> None:
+    def test_a_warning_does_not_block(self, signed_in, monkeypatch) -> None:
         """A missing summary still leaves a usable transcript."""
         from meetbot.preflight import CheckResult, Preflight
 
+        self._session(monkeypatch, ok=True)
         signed_in.app.state.health = Preflight([
             CheckResult("AI notes", ok=False, detail="no key", blocking=False),
         ])
+        signed_in.app.state.health_at = time.time()
         assert signed_in.post(
             "/api/meetings", json={"meet_url": MEET_URL}
         ).status_code == 201
+
+    def test_something_every_mode_needs_still_blocks(
+        self, signed_in, monkeypatch
+    ) -> None:
+        """A bad Deepgram key is not a bot problem - it stops everything."""
+        from meetbot.preflight import CheckResult, Preflight
+
+        self._session(monkeypatch, ok=True)
+        signed_in.app.state.health = Preflight([
+            CheckResult("Deepgram", ok=False, detail="rejected the key"),
+        ])
+        signed_in.app.state.health_at = time.time()
+        response = signed_in.post("/api/meetings", json={"meet_url": MEET_URL})
+        assert response.status_code == 409
+        assert "Deepgram" in response.json()["detail"]
+
+    def test_recording_this_machine_never_waits_on_the_bot_session(
+        self, signed_in, monkeypatch
+    ) -> None:
+        """Local capture has nothing to do with Google.
+
+        It must not consult, wait for, or be refused by the bot's session -
+        that was the whole point of not joining the meeting.
+        """
+        from meetbot.preflight import CheckResult, Preflight
+        from meetbot.service import app as app_module
+
+        called = []
+
+        async def fake(_config):
+            called.append(1)
+            return CheckResult("Google sign-in", ok=False, detail="out", mode="bot")
+
+        monkeypatch.setattr(app_module, "check_google_session", fake)
+        signed_in.app.state.health = Preflight([
+            CheckResult("Google sign-in", ok=False, detail="out", mode="bot")
+        ])
+        signed_in.app.state.health_at = time.time()
+
+        # Fails only because this test box has no loopback device, never
+        # because of Google - and the session check must not have been run.
+        response = signed_in.post("/api/recordings", json={"title": "x"})
+        assert response.status_code in (201, 409)
+        if response.status_code == 409:
+            assert "Google" not in response.json()["detail"]
+        assert called == [], "local recording consulted the bot's session"
 
 
 class TestHealthEndpoint:

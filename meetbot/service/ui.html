@@ -485,6 +485,7 @@ const state = {
   asking: false,
   sending: false,
   stopping: new Set(),
+  pollCount: 0,
   /* Signatures of what is currently painted, so the poll loop only rebuilds
      a region when it actually changed. Rebuilding on a timer throws away
      scroll position and text selection. */
@@ -1098,18 +1099,39 @@ async function renderSummary(rebuild) {
 function renderHealth() {
   const host = $("health");
   const report = state.health;
-  if (!report || report.can_record) { host.innerHTML = ""; return; }
-  const blocker = (report.blockers || [])[0];
-  if (!blocker) { host.innerHTML = ""; return; }
+  if (!report) { host.innerHTML = ""; return; }
+
+  // Anything still failing is worth showing, even when something else works -
+  // otherwise "the bot is signed out" is invisible until you try to use it.
+  const failed = (report.checks || []).filter((c) => !c.ok);
+  if (!failed.length) { host.innerHTML = ""; return; }
+  const first = failed[0];
+
+  /* A readiness check ages. Reporting an hour-old failure as current is how
+     signing the bot back in appeared not to work - the fix was already in
+     place and the page was still quoting the check from before it. */
+  const mins = report.age_s == null ? null : Math.floor(report.age_s / 60);
+  const when = mins == null ? ""
+    : mins < 1 ? "checked just now"
+    : mins === 1 ? "checked a minute ago"
+    : `checked ${mins} minutes ago`;
+
   host.innerHTML =
-    '<div class="banner bad">' +
-      `<strong>${esc(blocker.name)}:</strong> <span>${esc(blocker.detail)}</span>` +
-      (blocker.fix ? `<code>${esc(blocker.fix)}</code>` : "") +
+    `<div class="banner ${report.stale ? "warn" : "bad"}">` +
+      `<strong>${esc(first.name)}:</strong> <span>${esc(first.detail)}</span>` +
+      (first.fix ? `<code>${esc(first.fix)}</code>` : "") +
+      (report.stale
+        ? '<span class="hint" style="margin:0">This may be out of date &mdash; ' +
+          `${esc(when)}.</span>`
+        : (when ? `<span class="hint" style="margin:0">${esc(when)}</span>` : "")) +
       '<span class="grow"></span>' +
       '<button class="btn sm ghost" id="recheck">Re-check</button>' +
     "</div>";
+
   $("recheck").addEventListener("click", async () => {
-    $("recheck").disabled = true;
+    const button = $("recheck");
+    button.disabled = true;
+    button.innerHTML = '<span class="spin"></span> Checking';
     try { state.health = await api("/api/health/refresh", { method: "POST" }); }
     catch (error) { showError(error.message); }
     renderHealth();
@@ -1246,6 +1268,13 @@ async function poll() {
     }
     renderSidebar();
     if (state.selected) { await refreshSelected(); renderMain(); }
+    // Readiness changes rarely, so it is re-read every tenth poll rather than
+    // every one - enough to notice a re-check done elsewhere and to keep the
+    // "checked N minutes ago" honest, without 30 requests a minute for it.
+    if (state.pollCount++ % 10 === 0) {
+      try { state.health = await api("/api/health"); renderHealth(); }
+      catch (_) { /* non-fatal */ }
+    }
   } catch (error) {
     if (!String(error.message).includes("signed out")) console.warn(error);
   }
