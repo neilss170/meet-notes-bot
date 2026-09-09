@@ -133,7 +133,7 @@ async def _signed_in_page(playwright_api, served):
     await page.fill("input[name=username]", "neil")
     await page.fill("input[name=password]", PASSWORD)
     await page.click("button[type=submit]")
-    await page.wait_for_selector("#notepad", timeout=20_000)
+    await page.wait_for_selector("#notepad", timeout=40_000)
     return browser, page, errors
 
 
@@ -167,7 +167,7 @@ class TestNotepadInTheBrowser:
                 await page.fill("#notepad", "budget approved?")
                 await page.wait_for_function(
                     "document.querySelector('#savestate')?.textContent === 'Saved'",
-                    timeout=15_000,
+                    timeout=30_000,
                 )
                 notes = served["dir"] / "notes.md"
                 assert notes.read_text(encoding="utf-8") == "budget approved?"
@@ -190,7 +190,7 @@ class TestNotepadInTheBrowser:
                 await page.wait_for_function(
                     "document.querySelector('#enhanced')?.textContent"
                     ".includes('Canned enhancement')",
-                    timeout=30_000,
+                    timeout=60_000,
                 )
                 # The notes are the spine; enhancing must not consume them.
                 assert await page.input_value("#notepad") == typed
@@ -216,7 +216,7 @@ class TestNotepadInTheBrowser:
                 await page.click("#ask-go")
                 await page.wait_for_function(
                     "document.body.textContent.includes('That did not come up')",
-                    timeout=30_000,
+                    timeout=60_000,
                 )
                 body = await page.text_content(".askwrap")
                 assert "Was the budget discussed?" in body

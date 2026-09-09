@@ -251,6 +251,46 @@ class TestLocalRecorder:
             recorder.stop()
 
 
+class TestGoingQuiet:
+    """Two ways a recording produces nothing while looking healthy."""
+
+    def test_recent_peak_resets_so_going_quiet_is_visible(
+        self, fake_portaudio
+    ) -> None:
+        """Cumulative peak cannot tell "stopped" from "still working".
+
+        Bluetooth headphones that disconnect mid-meeting leave the capture
+        stream open on a device nobody is listening to. The audio simply
+        stops - but the maximum since the beginning stays high forever, so
+        only a peak that resets can notice.
+        """
+        recorder = LocalRecorder(SPEAKERS, MIC)
+        recorder.start()
+        try:
+            recorder._them.callback(tone(1000, 0.2, 48_000, 2), 0, None, 0)
+            recorder._them.drain()
+            assert recorder.recent_peak() > 1000, "the audio was not seen"
+            # Nothing further arrives - the device has gone away.
+            assert recorder.recent_peak() == 0
+            assert recorder._them.peak > 1000, "cumulative peak should persist"
+        finally:
+            recorder.stop()
+
+    def test_the_loopback_name_contains_the_render_device_name(self) -> None:
+        """How the device-change check works, pinned.
+
+        Windows names a loopback after its render endpoint plus a suffix, so
+        the watchdog tests containment rather than equality. If that naming
+        ever stopped holding, the check would fire on every recording.
+        """
+        assert "Speaker (Realtek)" in SPEAKERS.name
+        assert SPEAKERS.name.endswith("[Loopback]")
+
+    def test_a_changed_default_output_would_not_match(self) -> None:
+        moved_to = "Headphones (AirPods - Find My)"
+        assert moved_to not in SPEAKERS.name
+
+
 # --- multichannel transcription --------------------------------------------
 
 

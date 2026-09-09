@@ -180,6 +180,25 @@ def list_devices() -> tuple[list[AudioDevice], list[AudioDevice]]:
         audio.terminate()
 
 
+def default_output_name() -> str:
+    """Name of the device Windows is currently playing through.
+
+    Cheap enough to poll: a recording watches this so it can say something
+    when Bluetooth headphones drop and playback moves elsewhere.
+    """
+    pyaudio = _pyaudio()
+    audio = pyaudio.PyAudio()
+    try:
+        wasapi = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
+        return str(
+            audio.get_device_info_by_index(wasapi["defaultOutputDevice"])["name"]
+        )
+    except (OSError, KeyError):
+        return ""
+    finally:
+        audio.terminate()
+
+
 def default_devices() -> tuple[AudioDevice | None, AudioDevice | None]:
     """The loopback for the default speakers, and the default microphone.
 
@@ -318,6 +337,10 @@ class _Source:
         self.buffer = bytearray()
         self.frames = 0
         self.peak = 0
+        #: Peak since the last time anyone asked. Reset on read, so a source
+        #: that has gone quiet is distinguishable from one that was never
+        #: working - which cumulative `peak` cannot tell you.
+        self.recent_peak = 0
         self.error: str | None = None
         self.dropped = 0
         self.overflows = 0
@@ -347,7 +370,9 @@ class _Source:
         for chunk in pending:
             block = np.frombuffer(chunk, dtype=np.int16)
             if block.size:
-                self.peak = max(self.peak, int(np.abs(block).max()))
+                loudest = int(np.abs(block).max())
+                self.peak = max(self.peak, loudest)
+                self.recent_peak = max(self.recent_peak, loudest)
             converted = self._resampler.process(chunk)
             if converted:
                 self.buffer.extend(converted)
@@ -530,6 +555,18 @@ class LocalRecorder:
         payload["me"] = self._source_stats(self._me) if self._me else None
         return payload
 
+    def recent_peak(self, *, reset: bool = True) -> int:
+        """Loudest sample the speakers produced since this was last called."""
+        peak = self._them.recent_peak
+        if reset:
+            self._them.recent_peak = 0
+        return peak
+
+    @property
+    def capturing(self) -> str:
+        """Name of the device being recorded, for comparing against default."""
+        return self.loopback.name
+
     @staticmethod
     def _source_stats(source: _Source) -> dict[str, Any]:
         return {
@@ -653,6 +690,7 @@ __all__ = [
     "Resampler",
     "capture_available",
     "default_devices",
+    "default_output_name",
     "find_device",
     "list_devices",
     "probe_loopback",
