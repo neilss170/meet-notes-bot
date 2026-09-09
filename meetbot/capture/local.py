@@ -61,6 +61,21 @@ BLOCK_MS = 100
 #: large enough that the read loop is not spinning.
 DEVICE_CHUNK = 1024
 
+#: Peak the automatic gain aims a quiet channel at, as a fraction of full
+#: scale. Deliberately short of 1.0 so a sudden louder passage has somewhere
+#: to go before it clips.
+GAIN_TARGET = 0.5
+
+#: Most a channel may be amplified, as a multiplier. Beyond roughly this the
+#: room's noise floor becomes louder than the speech was, and a recogniser
+#: fed amplified hiss does not fall silent - it invents words.
+MAX_GAIN = 12.0
+
+#: Below this peak a block is treated as silence and left alone. Amplifying
+#: the gaps between sentences is how a transcript fills up with things nobody
+#: said.
+GAIN_NOISE_FLOOR = 220
+
 #: How far a source may run ahead before the oldest audio is dropped. Two
 #: devices free-run on separate clocks and drift apart; without a cap the
 #: faster one's buffer grows for the whole meeting and the streams desync.
@@ -226,6 +241,34 @@ def default_devices() -> tuple[AudioDevice | None, AudioDevice | None]:
     return loopback, microphone
 
 
+def resolve_or_default(
+    loopback_index: int | None = None, microphone_index: int | None = None
+) -> tuple[AudioDevice, AudioDevice | None]:
+    """Pick devices by index, falling back to whatever Windows is using.
+
+    Raises:
+        LocalCaptureError: If there is no usable speaker loopback.
+    """
+    default_loopback, default_mic = default_devices()
+    loopback = (
+        find_device(loopback_index) if loopback_index is not None else default_loopback
+    )
+    if loopback is None:
+        raise LocalCaptureError(
+            f"No audio device with index {loopback_index}."
+            if loopback_index is not None
+            else "No speaker loopback device is available, so there is nothing "
+                 "to record. Check that Windows has an active playback device."
+        )
+    if microphone_index is None:
+        microphone = default_mic
+    elif microphone_index < 0:
+        microphone = None
+    else:
+        microphone = find_device(microphone_index)
+    return loopback, microphone
+
+
 def find_device(index: int) -> AudioDevice | None:
     """Look up a device by index across both kinds."""
     loopbacks, microphones = list_devices()
@@ -316,6 +359,63 @@ class Resampler:
         return np.clip(out, -32768, 32767).astype(np.int16).tobytes()
 
 
+class AutoGain:
+    """Bring a quiet channel up to something a recogniser can work with.
+
+    Only ever amplifies. A channel that is already loud is left exactly as it
+    was, so this is a no-op on the speakers and does its work on the
+    microphone.
+
+    Two rules keep it from making things worse:
+
+    **Silence is not amplified.** Gain is only recalculated from blocks that
+    contain something above :data:`GAIN_NOISE_FLOOR`. Turning up the room
+    between sentences would raise the noise floor into the range where ASR
+    starts hallucinating words out of hiss.
+
+    **Gain falls faster than it rises.** Dropping quickly avoids clipping
+    when somebody suddenly speaks up; rising slowly avoids the pumping you
+    get when the level chases every syllable.
+    """
+
+    def __init__(
+        self,
+        *,
+        target: float = GAIN_TARGET,
+        max_gain: float = MAX_GAIN,
+        noise_floor: int = GAIN_NOISE_FLOOR,
+    ) -> None:
+        self._np = _numpy()
+        self.target = target * 32767.0
+        self.max_gain = max_gain
+        self.noise_floor = noise_floor
+        self.gain = 1.0
+        self.applied_max = 1.0
+
+    def process(self, pcm: bytes) -> bytes:
+        """Apply gain to one block of mono int16 PCM."""
+        np = self._np
+        if not pcm:
+            return pcm
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        if samples.size == 0:
+            return pcm
+
+        peak = float(np.abs(samples).max())
+        if peak >= self.noise_floor:
+            wanted = min(self.max_gain, max(1.0, self.target / peak))
+            # Down fast, up slow - see the class docstring.
+            alpha = 0.5 if wanted < self.gain else 0.08
+            self.gain += (wanted - self.gain) * alpha
+            self.applied_max = max(self.applied_max, self.gain)
+
+        if self.gain <= 1.01:
+            return pcm
+        return (
+            np.clip(samples * self.gain, -32768, 32767).astype(np.int16).tobytes()
+        )
+
+
 # -- capture ----------------------------------------------------------------
 
 
@@ -328,9 +428,12 @@ class _Source:
     costs latency rather than dropped audio.
     """
 
-    def __init__(self, device: AudioDevice, label: str) -> None:
+    def __init__(
+        self, device: AudioDevice, label: str, *, auto_gain: bool = True
+    ) -> None:
         self.device = device
         self.label = label
+        self.gain = AutoGain() if auto_gain else None
         #: Raw device bytes, written by the audio callback. deque.append and
         #: popleft are atomic in CPython, so no lock is needed here.
         self.raw: deque[bytes] = deque(maxlen=512)
@@ -375,6 +478,8 @@ class _Source:
                 self.recent_peak = max(self.recent_peak, loudest)
             converted = self._resampler.process(chunk)
             if converted:
+                if self.gain is not None:
+                    converted = self.gain.process(converted)
                 self.buffer.extend(converted)
         limit = int(MAX_BUFFER_S * TARGET_RATE) * 2
         if len(self.buffer) > limit:
@@ -418,6 +523,7 @@ class LocalRecorder:
         microphone: AudioDevice | None = None,
         *,
         block_ms: int = BLOCK_MS,
+        auto_gain: bool = True,
     ) -> None:
         """Create a recorder.
 
@@ -427,6 +533,9 @@ class LocalRecorder:
             microphone: Your own input. Optional; when absent, channel 0 is
                 silence and only the far side is transcribed.
             block_ms: Milliseconds of audio per emitted block.
+            auto_gain: Lift a quiet channel to a usable level. On by default:
+                a laptop microphone is routinely 20 dB below the meeting
+                audio, which is enough to make the recogniser drop words.
 
         Raises:
             LocalCaptureError: If no loopback device was given.
@@ -441,8 +550,10 @@ class LocalRecorder:
         self.block_frames = int(TARGET_RATE * block_ms / 1000)
         self._stop = threading.Event()
         self._audio: Any = None
-        self._them = _Source(loopback, "them")
-        self._me = _Source(microphone, "me") if microphone else None
+        self._them = _Source(loopback, "them", auto_gain=auto_gain)
+        self._me = (
+            _Source(microphone, "me", auto_gain=auto_gain) if microphone else None
+        )
         self._started_at: float | None = None
 
     # -- lifecycle ---------------------------------------------------------
@@ -572,7 +683,11 @@ class LocalRecorder:
         return {
             "device": source.device.name,
             "seconds": round(source.frames / TARGET_RATE, 1),
+            # Peak as the device delivered it, before any gain - so a
+            # microphone that is genuinely too quiet stays visible rather
+            # than being hidden by the thing compensating for it.
             "peak": source.peak,
+            "gain": round(source.gain.applied_max, 1) if source.gain else 1.0,
             "dropped_frames": source.dropped,
             "error": source.error,
         }
@@ -679,10 +794,14 @@ def capture_available() -> tuple[bool, str]:
 
 __all__ = [
     "BLOCK_MS",
+    "GAIN_NOISE_FLOOR",
+    "GAIN_TARGET",
+    "MAX_GAIN",
     "CHANNEL_COUNT",
     "CHANNEL_ME",
     "CHANNEL_THEM",
     "TARGET_RATE",
+    "AutoGain",
     "AudioDevice",
     "LocalCaptureError",
     "LocalRecorder",
@@ -694,4 +813,5 @@ __all__ = [
     "find_device",
     "list_devices",
     "probe_loopback",
+    "resolve_or_default",
 ]

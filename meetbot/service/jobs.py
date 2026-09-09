@@ -161,6 +161,10 @@ class MeetingJob:
             return progress
 
         progress["events"] = events[-20:]
+        # Arrival order is not chronological order with two channels in
+        # flight - see read_utterances. Sort before trimming, or the newest
+        # lines are picked from the wrong end.
+        transcript.sort(key=lambda line: line["start"])
         progress["transcript"] = transcript[-LIVE_TRANSCRIPT_LINES:]
         progress["utterance_count"] = len(transcript)
         progress["speakers"] = speakers

@@ -220,6 +220,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List capturable devices and exit.",
     )
+    record_parser.add_argument(
+        "--levels",
+        action="store_true",
+        help=(
+            "Listen for a few seconds and report how loud each channel is, "
+            "then exit. Talk while it runs."
+        ),
+    )
     _add_llm_flags(record_parser)
 
     analyze_parser = subparsers.add_parser(
@@ -469,6 +477,9 @@ def cmd_record(args: argparse.Namespace) -> int:
             )
         return EXIT_OK
 
+    if args.levels:
+        return _report_levels(args)
+
     config = _config_from_args(args)
     try:
         # A local recording needs no meeting URL - that is the whole point.
@@ -509,6 +520,110 @@ def cmd_record(args: argparse.Namespace) -> int:
 
     _report(run)
     return EXIT_OK if run.utterance_count else EXIT_RUN_FAILED
+
+
+#: Peak below which a channel is too quiet to transcribe reliably. The first
+#: real recording measured a laptop microphone at -20 dBFS, which produced
+#: dropped words and invented ones.
+QUIET_DBFS = -18.0
+
+
+def _report_levels(args: argparse.Namespace, seconds: float = 6.0) -> int:
+    """Measure both channels and say plainly whether they are usable.
+
+    A microphone that is too quiet does not fail: it transcribes badly, and
+    the transcript looks like the tool is bad at its job rather than like a
+    level problem. Measuring takes six seconds and removes the guesswork.
+    """
+    import math
+    import time
+
+    from meetbot.capture.local import (
+        CHANNEL_COUNT,
+        TARGET_RATE,
+        LocalCaptureError,
+        LocalRecorder,
+        resolve_or_default,
+    )
+
+    try:
+        import numpy as np
+    except ImportError:
+        logger.error("Measuring levels needs numpy: pip install numpy")
+        return EXIT_CONFIG_ERROR
+
+    try:
+        loopback, microphone = resolve_or_default(
+            args.loopback_index,
+            -1 if args.no_microphone else args.microphone_index,
+        )
+    except LocalCaptureError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    logger.info("Speakers  : %s", loopback.name)
+    logger.info("Microphone: %s", microphone.name if microphone else "(none)")
+    logger.info("")
+    logger.info(
+        "Listening for %.0fs. Talk normally, and have the meeting audio "
+        "playing if you can.", seconds
+    )
+
+    # Gain off: the point is to measure what the devices actually deliver.
+    recorder = LocalRecorder(loopback, microphone, auto_gain=False)
+    recorder.start()
+    collected: list[bytes] = []
+    try:
+        deadline = time.monotonic() + seconds
+        for block in recorder.blocks():
+            collected.append(block)
+            if time.monotonic() >= deadline:
+                break
+    finally:
+        recorder.stop()
+
+    frames = np.frombuffer(b"".join(collected), dtype=np.int16)
+    if frames.size == 0:
+        logger.error("Nothing was captured at all.")
+        return EXIT_RUN_FAILED
+
+    def report(label: str, samples: Any, advice: str) -> bool:
+        peak = int(np.abs(samples).max()) if samples.size else 0
+        dbfs = 20 * math.log10(peak / 32767) if peak else -99.0
+        if peak <= 2:
+            logger.error("  %-11s silent", label)
+            logger.warning("      %s", advice)
+            return False
+        if dbfs < QUIET_DBFS:
+            logger.warning("  %-11s %6.1f dBFS (peak %d) - quiet", label, dbfs, peak)
+            return False
+        logger.info("  %-11s %6.1f dBFS (peak %d) - good", label, dbfs, peak)
+        return True
+
+    logger.info("")
+    them_ok = report(
+        "speakers", frames[1::CHANNEL_COUNT],
+        "Nothing is playing, or the output is muted. Loopback captures the "
+        "mix after the volume control, so muted output records silence.",
+    )
+    me_ok = True
+    if microphone is not None:
+        me_ok = report(
+            "microphone", frames[0::CHANNEL_COUNT],
+            "The microphone delivered nothing. Check Windows privacy settings "
+            "allow apps to use it.",
+        )
+
+    logger.info("")
+    if not me_ok and microphone is not None:
+        logger.warning(
+            "Your voice is quiet. Scribe amplifies it automatically, but a "
+            "closer microphone is better - list them with --list-devices and "
+            "pick one with --microphone <index>."
+        )
+    if them_ok and me_ok:
+        logger.info("Both channels look good.")
+    return EXIT_OK
 
 
 def _stop_on_interrupt(stop: Any) -> None:

@@ -401,3 +401,107 @@ class TestSlugify:
 
     def test_long_titles_are_capped(self) -> None:
         assert len(slugify("word " * 50)) <= 40
+
+
+class TestAutoGain:
+    """A quiet microphone is the difference between a transcript and noise.
+
+    Measured on the first real recording: the speakers arrived at -1.6 dBFS
+    and the laptop's array microphone at -20.4 dBFS. Deepgram transcribed the
+    loud channel perfectly and mangled the quiet one - dropping words, and
+    inventing others that were never said.
+    """
+
+    @staticmethod
+    def _run(signal, **kwargs):
+        from meetbot.capture.local import AutoGain
+
+        gain = AutoGain(**kwargs)
+        out = b"".join(
+            gain.process(signal[i:i + 1600].tobytes())
+            for i in range(0, len(signal), 1600)
+        )
+        return np.frombuffer(out, dtype=np.int16), gain
+
+    @staticmethod
+    def _speech(amplitude: float, seconds: float = 4.0):
+        """A tone modulated like speech, at a given fraction of full scale."""
+        t = np.arange(int(16_000 * seconds)) / 16_000
+        wave = amplitude * np.sin(2 * np.pi * 200 * t) * (
+            1 + 0.5 * np.sin(2 * np.pi * 3 * t)
+        )
+        return (wave * 32767).astype(np.int16)
+
+    def test_a_quiet_channel_is_lifted(self) -> None:
+        quiet = self._speech(0.1)
+        out, gain = self._run(quiet)
+        assert gain.applied_max > 2.0, "a 20 dB deficit was left alone"
+        assert np.abs(out).max() > np.abs(quiet).max() * 2
+
+    def test_lifting_never_clips(self) -> None:
+        """Clipping would trade quiet-and-garbled for loud-and-garbled."""
+        out, _ = self._run(self._speech(0.1))
+        assert int(np.abs(out).max()) < 32767
+
+    def test_an_already_loud_channel_is_untouched(self) -> None:
+        """This runs on the speakers too, where it must do nothing at all."""
+        loud = self._speech(0.8)
+        out, gain = self._run(loud)
+        assert gain.applied_max == pytest.approx(1.0, abs=0.01)
+        assert out.tobytes() == loud.tobytes()
+
+    def test_the_noise_floor_is_not_amplified(self) -> None:
+        """The failure this guards against invents speech from nothing.
+
+        Turning up the room between sentences pushes hiss into the range
+        where a recogniser starts hearing words in it. Silence stays silent.
+        """
+        rng = np.random.default_rng(0)
+        hiss = rng.normal(0, 40, 16_000 * 3).astype(np.int16)
+        out, gain = self._run(hiss)
+        assert gain.applied_max == pytest.approx(1.0, abs=0.01)
+        assert int(np.abs(out).max()) == int(np.abs(hiss).max())
+
+    def test_gain_is_bounded(self) -> None:
+        """Past a point the room is louder than the speech ever was."""
+        from meetbot.capture.local import MAX_GAIN
+
+        _, gain = self._run(self._speech(0.02, seconds=8.0))
+        assert gain.applied_max <= MAX_GAIN + 0.01
+
+    def test_a_silent_gap_does_not_reset_the_level(self) -> None:
+        """Speech, a pause, then speech - the pause must not pump the gain."""
+        signal = self._speech(0.1, seconds=6.0).copy()
+        signal[16_000:32_000] = 0
+        out, gain = self._run(signal)
+        assert gain.applied_max > 2.0
+        # The silent stretch stays silent rather than becoming amplified hiss.
+        assert int(np.abs(out[17_000:31_000]).max()) == 0
+
+    def test_empty_input_is_returned_unchanged(self) -> None:
+        from meetbot.capture.local import AutoGain
+
+        assert AutoGain().process(b"") == b""
+
+    def test_it_can_be_switched_off(self, fake_portaudio) -> None:
+        recorder = LocalRecorder(SPEAKERS, MIC, auto_gain=False)
+        try:
+            assert recorder._them.gain is None
+            assert recorder._me.gain is None
+        finally:
+            recorder.stop()
+
+    def test_stats_report_the_untouched_peak(self, fake_portaudio) -> None:
+        """A microphone that is genuinely too quiet must stay diagnosable.
+
+        Reporting the post-gain level would hide the problem behind the thing
+        compensating for it.
+        """
+        recorder = LocalRecorder(SPEAKERS, MIC)
+        recorder.start()
+        try:
+            stats = recorder.stats()
+            assert "gain" in stats["me"]
+            assert stats["me"]["peak"] == 0
+        finally:
+            recorder.stop()
