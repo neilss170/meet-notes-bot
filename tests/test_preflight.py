@@ -148,3 +148,80 @@ class TestConfigCheck:
         assert result.ok is False
         assert "12345" in result.detail
         assert result.fix
+
+
+class TestModeAwareReadiness:
+    """Readiness is per recording mode, not one global verdict.
+
+    Before this, an expired Google session reported the whole tool as
+    unusable - at a point where the default way to record does not involve
+    Google at all. Neil's own machine sat in exactly that state.
+    """
+
+    @staticmethod
+    def _report(**overrides):
+        from meetbot.preflight import CheckResult, Preflight
+
+        checks = {
+            "config": CheckResult("Configuration", ok=True, detail="valid"),
+            "local": CheckResult("Local capture", ok=True, detail="ok", mode="local"),
+            "deepgram": CheckResult("Deepgram", ok=True, detail="ok"),
+            "google": CheckResult("Google sign-in", ok=True, detail="ok", mode="bot"),
+        }
+        checks.update(overrides)
+        return Preflight(list(checks.values()))
+
+    def test_an_expired_google_session_does_not_block_local_recording(self) -> None:
+        from meetbot.preflight import CheckResult
+
+        report = self._report(
+            google=CheckResult(
+                "Google sign-in", ok=False, detail="signed out", mode="bot"
+            )
+        )
+        assert report.can_record_locally is True
+        assert report.can_send_bot is False
+        assert report.can_record is True
+        assert report.blockers == [], "a bot problem is not a blocker on its own"
+        assert [w.name for w in report.warnings] == ["Google sign-in"]
+
+    def test_missing_audio_devices_do_not_block_the_bot(self) -> None:
+        from meetbot.preflight import CheckResult
+
+        report = self._report(
+            local=CheckResult(
+                "Local capture", ok=False, detail="no loopback", mode="local"
+            )
+        )
+        assert report.can_send_bot is True
+        assert report.can_record_locally is False
+        assert report.can_record is True
+        assert report.blockers == []
+
+    def test_both_broken_is_a_real_blocker(self) -> None:
+        from meetbot.preflight import CheckResult
+
+        report = self._report(
+            local=CheckResult("Local capture", ok=False, detail="none", mode="local"),
+            google=CheckResult("Google sign-in", ok=False, detail="out", mode="bot"),
+        )
+        assert report.can_record is False
+        assert {b.name for b in report.blockers} == {
+            "Local capture", "Google sign-in"
+        }
+
+    def test_something_everything_needs_still_blocks_everything(self) -> None:
+        from meetbot.preflight import CheckResult
+
+        report = self._report(
+            deepgram=CheckResult("Deepgram", ok=False, detail="bad key")
+        )
+        assert report.can_record_locally is False
+        assert report.can_send_bot is False
+        assert [b.name for b in report.blockers] == ["Deepgram"]
+
+    def test_the_payload_exposes_both_modes(self) -> None:
+        payload = self._report().to_dict()
+        assert payload["can_record_locally"] is True
+        assert payload["can_send_bot"] is True
+        assert payload["checks"][1]["mode"] == "local"

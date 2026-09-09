@@ -25,6 +25,7 @@ did not send.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import re
 from dataclasses import dataclass, field
@@ -55,6 +56,12 @@ class CheckResult:
         blocking: Whether a meeting is pointless without this. A failed
             non-blocking check degrades the result rather than preventing it -
             no summary, or generic speaker labels.
+        mode: Which way of recording this blocks. ``"both"`` for things every
+            path needs; ``"bot"`` for the browser and the Google session, which
+            local recording never touches; ``"local"`` for the audio devices,
+            which the bot never touches. Without this a stale Google session
+            reported the whole tool as unusable, when the default way to
+            record does not involve Google at all.
     """
 
     name: str
@@ -62,6 +69,7 @@ class CheckResult:
     detail: str
     fix: str = ""
     blocking: bool = True
+    mode: str = "both"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -70,6 +78,7 @@ class CheckResult:
             "detail": self.detail,
             "fix": self.fix,
             "blocking": self.blocking,
+            "mode": self.mode,
         }
 
 
@@ -84,32 +93,61 @@ class Preflight:
         """Whether everything passed, including the non-blocking checks."""
         return all(result.ok for result in self.results)
 
+    def _blocking_for(self, mode: str) -> list[CheckResult]:
+        return [
+            r for r in self.results if r.blocking and r.mode in ("both", mode)
+        ]
+
+    @property
+    def can_record_locally(self) -> bool:
+        """Whether this machine can be recorded with nothing joining the call."""
+        return all(r.ok for r in self._blocking_for("local"))
+
+    @property
+    def can_send_bot(self) -> bool:
+        """Whether the bot could join a meeting."""
+        return all(r.ok for r in self._blocking_for("bot"))
+
     @property
     def can_record(self) -> bool:
-        """Whether a meeting is worth starting at all."""
-        return all(result.ok for result in self.results if result.blocking)
+        """Whether *any* way of recording would work."""
+        return self.can_record_locally or self.can_send_bot
 
     @property
     def blockers(self) -> list[CheckResult]:
+        """Failures that stop every way of recording.
+
+        A check that only blocks one mode is not a blocker while the other
+        mode still works - it is reported as a warning instead, so an expired
+        Google session no longer reads as "this tool is broken".
+        """
+        if self.can_record:
+            return [r for r in self.results if r.blocking and not r.ok
+                    and r.mode == "both"]
         return [r for r in self.results if r.blocking and not r.ok]
 
     @property
     def warnings(self) -> list[CheckResult]:
-        return [r for r in self.results if not r.blocking and not r.ok]
+        failed = [r for r in self.results if not r.ok]
+        blockers = {id(r) for r in self.blockers}
+        return [r for r in failed if id(r) not in blockers]
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "can_record": self.can_record,
+            "can_record_locally": self.can_record_locally,
+            "can_send_bot": self.can_send_bot,
             "checks": [result.to_dict() for result in self.results],
         }
 
     def log(self) -> None:
         """Write the outcome out in the order a reader needs it."""
+        blockers = {id(r) for r in self.blockers}
         for result in self.results:
             if result.ok:
                 logger.info("  OK    %-16s %s", result.name, result.detail)
-            elif result.blocking:
+            elif id(result) in blockers:
                 logger.error("  FAIL  %-16s %s", result.name, result.detail)
             else:
                 logger.warning("  WARN  %-16s %s", result.name, result.detail)
@@ -305,6 +343,62 @@ def check_config(config: Config) -> CheckResult:
 # -- the whole set ---------------------------------------------------------
 
 
+def check_local_capture(config: Config) -> CheckResult:
+    """Whether this machine can be recorded without a bot.
+
+    Two separate things can be wrong, and they fail differently. Having no
+    loopback device at all is a hard stop. Having one that is producing
+    silence is not - nothing may be playing right now - but it is the single
+    most common reason a recording comes back empty, so it is worth saying
+    out loud rather than discovering afterwards.
+    """
+    try:
+        from meetbot.capture.local import capture_available, probe_loopback
+    except Exception as exc:  # noqa: BLE001 - a missing optional dependency
+        return CheckResult(
+            "Local capture",
+            ok=False,
+            detail=f"unavailable: {exc}",
+            fix="pip install PyAudioWPatch numpy",
+            mode="local",
+        )
+
+    ready, detail = capture_available()
+    if not ready:
+        return CheckResult(
+            "Local capture",
+            ok=False,
+            detail=detail,
+            fix="Check Windows Sound settings for an active playback device",
+            mode="local",
+        )
+
+    try:
+        probe = probe_loopback(seconds=0.4)
+    except Exception as exc:  # noqa: BLE001 - probing must never be fatal
+        return CheckResult(
+            "Local capture", ok=True, detail=f"{detail} (not probed: {exc})",
+            mode="local",
+        )
+
+    if probe.silent:
+        # Not blocking: silence is correct when nothing is playing. It is
+        # reported because muted output produces a well-formed empty
+        # transcript, which looks like a bug in this tool rather than a
+        # volume slider.
+        return CheckResult(
+            "Local capture",
+            ok=False,
+            detail=f"{detail} - but the speakers are silent right now",
+            fix="If a meeting is audible, check the output is not muted",
+            blocking=False,
+            mode="local",
+        )
+    return CheckResult(
+        "Local capture", ok=True, detail=f"{detail}; audio detected", mode="local"
+    )
+
+
 async def run_preflight(
     config: Config, *, include_session: bool = True, offline: bool = False
 ) -> Preflight:
@@ -317,6 +411,7 @@ async def run_preflight(
         offline: Skip everything that needs the network.
     """
     results = [check_config(config)]
+    results.append(await asyncio.to_thread(check_local_capture, config))
 
     if offline:
         results.append(
@@ -331,11 +426,13 @@ async def run_preflight(
 
     if include_session and not offline:
         try:
-            results.append(
-                await asyncio.wait_for(
-                    check_google_session(config), timeout=SESSION_CHECK_TIMEOUT_S
-                )
+            session = await asyncio.wait_for(
+                check_google_session(config), timeout=SESSION_CHECK_TIMEOUT_S
             )
+            # Forced here rather than on each of the six results inside the
+            # check: one place cannot be half-done, and every way that check
+            # can fail is a bot-mode problem by definition.
+            results.append(dataclasses.replace(session, mode="bot"))
         except asyncio.TimeoutError:
             results.append(
                 CheckResult(
@@ -343,6 +440,7 @@ async def run_preflight(
                     ok=False,
                     detail=f"Check timed out after {SESSION_CHECK_TIMEOUT_S:.0f}s",
                     fix="python -m meetbot login",
+                    mode="bot",
                 )
             )
 
@@ -357,5 +455,6 @@ __all__ = [
     "check_deepgram",
     "check_google_session",
     "check_llm",
+    "check_local_capture",
     "run_preflight",
 ]

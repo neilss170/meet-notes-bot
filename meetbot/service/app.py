@@ -341,8 +341,14 @@ def create_app(config: Config) -> FastAPI:
         # or cannot join at all. Refusing here costs a moment; finding out in
         # the meeting costs the meeting.
         report: Preflight | None = getattr(app.state, "health", None)
-        if report is not None and not report.can_record:
-            blocker = report.blockers[0]
+        if report is not None and not report.can_send_bot:
+            # Whatever stops the bot - an expired Google session, usually -
+            # says nothing about recording this machine, which is why the
+            # recording route checks the audio devices instead.
+            blocked = [r for r in report.results if r.blocking and not r.ok] or [
+                r for r in report.results if not r.ok
+            ]
+            blocker = blocked[0]
             raise HTTPException(
                 status_code=409,
                 detail=(
