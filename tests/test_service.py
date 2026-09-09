@@ -417,7 +417,7 @@ class TestUiRendering:
         ui = self._ui()
         assert "atBottom" in ui
         assert "if (atBottom) pane.scrollTop = pane.scrollHeight;" in ui
-        assert "host.parentElement.scrollTop = scroll;" in ui
+        assert "if (pane) pane.scrollTop = scroll;" in ui
 
     def test_documents_are_held_as_state_not_refetched_per_render(self) -> None:
         """Re-fetching on each render raced the poll loop.
@@ -490,6 +490,19 @@ class TestMarkdownRendering:
         bold = ui.index("<strong>$1</strong>")
         italic = ui.index("<em>$2</em>")
         assert bold < italic
+
+    def test_wrapped_prose_is_one_paragraph(self) -> None:
+        """A model wraps its prose across source lines. That is one paragraph.
+
+        Emitting a <p> per source line instead put a paragraph break inside
+        every wrapped sentence. It read as broken leading rather than as a
+        bug, and only became obvious once the notes had a capped measure to
+        wrap in - so it is pinned here rather than left to the eye.
+        """
+        ui = self._ui()
+        assert "const closePara" in ui
+        assert "para.push(inline(line.trim()));" in ui
+        assert "para.join(\" \")" in ui, "lines must be joined, not concatenated"
 
     def test_snake_case_is_protected_from_italics(self) -> None:
         """file_name_like_this and openai/gpt-oss-120b must survive.
