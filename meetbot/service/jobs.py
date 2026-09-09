@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from meetbot.config import Config, validate_meet_url
+from meetbot.local_runner import run_local_meeting
 from meetbot.runner import MeetingRun, run_meeting
 from meetbot.transcript.notes import Notepad
 from meetbot.transcript.store import iter_records
@@ -81,6 +82,13 @@ class MeetingJob:
 
     id: str
     meet_url: str
+    #: How the audio was captured. ``"bot"`` sent Chromium into the call;
+    #: ``"local"`` recorded this machine's speakers and microphone with
+    #: nothing joining the meeting. The pipeline downstream is identical, so
+    #: this only affects what the UI says and how the job is stopped.
+    kind: str = "bot"
+    #: What a local recording is called. Bot meetings are named by their URL.
+    title: str = ""
     #: Username that sent the bot. Empty for runs recovered from disk, which
     #: predate accounts - those are shown to admins only.
     owner: str = ""
@@ -183,6 +191,8 @@ class MeetingJob:
         payload: dict[str, Any] = {
             "id": self.id,
             "meet_url": self.meet_url,
+            "kind": self.kind,
+            "title": self.title,
             "owner": self.owner,
             "status": self.status.value,
             "created_at": self.created_at,
@@ -276,6 +286,46 @@ class JobManager:
         logger.info("Job %s: sending the bot to %s", job.id, meet_url)
         return job
 
+    def start_local(
+        self,
+        *,
+        title: str = "",
+        owner: str = "",
+        loopback_index: int | None = None,
+        microphone_index: int | None = None,
+        **overrides: Any,
+    ) -> MeetingJob:
+        """Record this machine, with nothing joining the meeting.
+
+        Unlike :meth:`start` there is no URL to validate and no browser to
+        launch, so the only way this fails at request time is that the
+        machine has no capturable output - which the caller checks first so
+        the failure is a rejected request rather than a job that dies.
+
+        Returns:
+            The job, already recording in the background.
+        """
+        config = dataclasses.replace(
+            self._base,
+            # Local capture binds no bridge port and joins no meeting; the
+            # URL exists only so downstream code has something to name.
+            meet_url="",
+            **overrides,
+        )
+        job = MeetingJob(
+            id=uuid.uuid4().hex[:12],
+            meet_url=title or "Local recording",
+            kind="local",
+            title=title,
+            owner=owner,
+        )
+        self._jobs[job.id] = job
+        job._task = asyncio.create_task(
+            self._run_local(job, config, loopback_index, microphone_index)
+        )
+        logger.info("Job %s: recording this machine (%s)", job.id, title or "untitled")
+        return job
+
     async def stop(self, job_id: str) -> bool:
         """Ask a running job to leave the call and finish up.
 
@@ -317,6 +367,54 @@ class JobManager:
         """
         if kind == "joined" and job.status is JobStatus.JOINING:
             job.status = JobStatus.IN_CALL
+
+    async def _run_local(
+        self,
+        job: MeetingJob,
+        config: Config,
+        loopback_index: int | None,
+        microphone_index: int | None,
+    ) -> None:
+        """Drive one local recording to completion."""
+        try:
+            # There is no lobby to be admitted through, so a local recording
+            # is in progress the moment it starts.
+            job.status = JobStatus.IN_CALL
+            run = await run_local_meeting(
+                config,
+                title=job.title,
+                loopback_index=loopback_index,
+                microphone_index=microphone_index,
+                on_stop=lambda stop: setattr(job, "_stop", stop),
+                on_output_dir=lambda path: setattr(job, "output_dir", path),
+                reconfigure_logging=False,
+            )
+            job._run = run
+            job.utterance_count = run.utterance_count
+            job.errors = list(run.errors)
+            # A local recording ends because somebody stopped it, so there is
+            # no EndReason to check - capturing anything at all is success.
+            job.status = (
+                JobStatus.FINISHED if run.utterance_count else JobStatus.FAILED
+            )
+            logger.info(
+                "Job %s: %s (%d utterances)",
+                job.id,
+                job.status.value,
+                run.utterance_count,
+            )
+        except asyncio.CancelledError:
+            job.status = JobStatus.FAILED
+            job.errors.append("Cancelled before recording started")
+            raise
+        except Exception as exc:  # noqa: BLE001 - one job must not kill the server
+            logger.exception("Job %s failed", job.id)
+            job.status = JobStatus.FAILED
+            job.errors.append(f"{type(exc).__name__}: {exc}")
+        finally:
+            job.finished_at = time.time()
+            if not job.status.is_terminal:
+                job.status = JobStatus.FAILED
 
     async def _run(self, job: MeetingJob, config: Config) -> None:
         """Drive one meeting to completion, recording the outcome on the job."""
@@ -383,14 +481,21 @@ def load_past_runs(manager: JobManager, output_dir: Path, limit: int = 50) -> in
         if not transcript.exists():
             continue
         meet_url = ""
+        kind = "bot"
         with contextlib.suppress(OSError, ValueError):
             for record in iter_records(transcript):
                 if record.get("type") == "meta":
                     meet_url = record.get("meet_url", "")
+                    # The recorder names itself in the header, which is the
+                    # only durable record of how a past run was captured.
+                    if "local" in str(record.get("bot_name", "")).lower():
+                        kind = "local"
                     break
         job = MeetingJob(
             id=f"past-{path.name}",
             meet_url=meet_url or path.name,
+            kind=kind,
+            title=meet_url if kind == "local" else "",
             status=JobStatus.FINISHED,
             created_at=path.stat().st_mtime,
             finished_at=path.stat().st_mtime,

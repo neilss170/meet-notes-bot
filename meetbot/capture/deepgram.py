@@ -74,6 +74,7 @@ def build_stream_url(
     diarize: bool,
     encoding: str = "linear16",
     channels: int = 1,
+    multichannel: bool = False,
     endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
     utterance_end_ms: int = DEFAULT_UTTERANCE_END_MS,
     keyterms: Sequence[str] = (),
@@ -114,6 +115,12 @@ def build_stream_url(
         "diarize": "true" if diarize else "false",
         "endpointing": str(endpointing_ms),
     }
+    # Multichannel transcribes each channel independently rather than mixing
+    # them down. Local capture uses it to keep "me" and "everyone else" apart,
+    # which is a better speaker label than diarization can infer.
+    if multichannel:
+        params["multichannel"] = "true"
+
     # Names and jargon are what ASR gets wrong most, because they are rare in
     # the language model and often not English words at all. Boosting them
     # costs nothing and is the cheapest accuracy win available.
@@ -133,7 +140,10 @@ def build_stream_url(
 
 
 def parse_results_message(
-    payload: dict[str, Any], *, default_speaker: str
+    payload: dict[str, Any],
+    *,
+    default_speaker: str,
+    channel_speakers: Sequence[str] = (),
 ) -> list[TranscriptSegment]:
     """Turn one Deepgram ``Results`` message into transcript segments.
 
@@ -142,10 +152,33 @@ def parse_results_message(
     diarization off (per-participant capture) everything collapses to a single
     segment labelled ``default_speaker``.
 
+    Args:
+        payload: One ``Results`` message.
+        default_speaker: Label used when no diarization id is available.
+        channel_speakers: Label per channel index, for multichannel audio. A
+            non-empty entry names that channel outright and overrides
+            diarization, because the channel already *is* the attribution -
+            audio captured from your own microphone is you, and no amount of
+            voice analysis knows that better. An empty entry falls back to
+            diarization, which is what the far side of a call needs.
+
     Non-final results and empty transcripts yield an empty list.
     """
     if not payload.get("is_final", False):
         return []
+
+    # Multichannel results carry [index, total]; mono results carry nothing.
+    known_speaker = ""
+    raw_index = payload.get("channel_index")
+    if isinstance(raw_index, (list, tuple)) and raw_index:
+        try:
+            index = int(raw_index[0])
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < len(channel_speakers):
+            known_speaker = channel_speakers[index]
+    if known_speaker:
+        default_speaker = known_speaker
 
     channel = payload.get("channel") or {}
     alternatives = channel.get("alternatives") or []
@@ -195,7 +228,9 @@ def parse_results_message(
     for word in words:
         raw_speaker = word.get("speaker")
         speaker = (
-            default_speaker if raw_speaker is None else f"Speaker {int(raw_speaker)}"
+            default_speaker
+            if known_speaker or raw_speaker is None
+            else f"Speaker {int(raw_speaker)}"
         )
         text = word.get("punctuated_word") or word.get("word") or ""
         if not text:
@@ -237,6 +272,9 @@ class DeepgramLiveClient:
         diarize: bool = True,
         default_speaker: str = "Speaker 0",
         channel_label: str = "mixed",
+        channels: int = 1,
+        multichannel: bool = False,
+        channel_speakers: Sequence[str] = (),
         max_queued_frames: int = 600,
         on_connect: Callable[[], None] | None = None,
         endpointing_ms: int = DEFAULT_ENDPOINTING_MS,
@@ -256,6 +294,12 @@ class DeepgramLiveClient:
                 channel already carries exactly one participant.
             default_speaker: Label used when no diarization id is available.
             channel_label: Human-readable channel name, used in logs.
+            channels: Channels in the PCM handed to :meth:`send_audio`.
+            multichannel: Transcribe each channel separately rather than
+                mixing them down. Set by local capture, which keeps your
+                microphone and the meeting audio on separate channels.
+            channel_speakers: Speaker label per channel index. See
+                :func:`parse_results_message`.
             max_queued_frames: Bound on buffered audio frames during an
                 outage. Oldest frames are dropped past this.
             on_connect: Called each time a Deepgram stream is (re)established.
@@ -276,11 +320,14 @@ class DeepgramLiveClient:
             language=language,
             sample_rate=sample_rate,
             diarize=diarize,
+            channels=channels,
+            multichannel=multichannel,
             endpointing_ms=endpointing_ms,
             utterance_end_ms=utterance_end_ms,
             keyterms=keyterms,
         )
         self._default_speaker = default_speaker
+        self._channel_speakers = tuple(channel_speakers)
         self._channel_label = channel_label
         self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(
             maxsize=max_queued_frames
@@ -488,7 +535,9 @@ class DeepgramLiveClient:
             message_type = payload.get("type")
             if message_type == "Results":
                 for segment in parse_results_message(
-                    payload, default_speaker=self._default_speaker
+                    payload,
+                    default_speaker=self._default_speaker,
+                    channel_speakers=self._channel_speakers,
                 ):
                     self._segments_emitted += 1
                     result = self._on_segment(segment)

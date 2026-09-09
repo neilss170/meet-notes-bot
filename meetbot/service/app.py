@@ -90,6 +90,19 @@ class StartRequest(BaseModel):
     anonymise_analysis: bool | None = None
 
 
+class RecordRequest(BaseModel):
+    """A request to record this machine, with no bot joining anything."""
+
+    title: str = Field("", description="What to call this recording")
+    loopback_index: int | None = Field(
+        None, description="Speakers to capture; system default when omitted"
+    )
+    microphone_index: int | None = Field(
+        None, description="Microphone to capture; negative to record none"
+    )
+    anonymise_analysis: bool | None = None
+
+
 class NotesRequest(BaseModel):
     """An autosave of whatever is currently in the notepad."""
 
@@ -369,6 +382,94 @@ def create_app(config: Config) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"{name} has not been written")
         return path.read_text(encoding="utf-8", errors="replace")
 
+    # -- recording this machine --------------------------------------------
+
+    @app.get("/api/audio-devices")
+    async def audio_devices(_: User = Depends(current_user)) -> dict[str, Any]:
+        """What this machine can be recorded from.
+
+        ``ready`` is false with a reason rather than raising, because "this
+        box has no loopback device" is a normal answer the UI has to render,
+        not an error.
+        """
+        from meetbot.capture.local import (
+            LocalCaptureError,
+            capture_available,
+            list_devices,
+        )
+
+        ready, detail = await asyncio.to_thread(capture_available)
+        if not ready:
+            return {"ready": False, "detail": detail, "speakers": [], "microphones": []}
+        try:
+            loopbacks, microphones = await asyncio.to_thread(list_devices)
+        except LocalCaptureError as exc:
+            return {
+                "ready": False,
+                "detail": str(exc),
+                "speakers": [],
+                "microphones": [],
+            }
+        return {
+            "ready": True,
+            "detail": detail,
+            "speakers": [d.to_dict() for d in loopbacks],
+            "microphones": [d.to_dict() for d in microphones],
+        }
+
+    @app.post("/api/audio-devices/probe")
+    async def probe_audio(_: User = Depends(current_user)) -> dict[str, Any]:
+        """Listen to the speakers briefly and say whether anything is there.
+
+        Loopback taps the mix *after* the volume control, so muted output
+        records a perfectly well-formed empty transcript. Better to find that
+        out before the meeting than after it.
+        """
+        from meetbot.capture.local import LocalCaptureError, probe_loopback
+
+        try:
+            probe = await asyncio.to_thread(probe_loopback, 1.0)
+        except LocalCaptureError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "device": probe.device,
+            "peak": probe.peak,
+            "silent": probe.silent,
+            "detail": probe.detail,
+        }
+
+    @app.post("/api/recordings", status_code=201)
+    async def start_recording(
+        request: RecordRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Record this machine. Nothing joins the meeting."""
+        from meetbot.capture.local import capture_available
+
+        ready, detail = await asyncio.to_thread(capture_available)
+        if not ready:
+            # A rejected request, rather than a job that appears to start and
+            # then dies with nothing recorded.
+            raise HTTPException(status_code=409, detail=detail)
+
+        overrides = {
+            key: value
+            for key, value in request.model_dump(
+                exclude={"title", "loopback_index", "microphone_index"}
+            ).items()
+            if value is not None
+        }
+        try:
+            job = manager.start_local(
+                title=request.title.strip(),
+                owner=user.username,
+                loopback_index=request.loopback_index,
+                microphone_index=request.microphone_index,
+                **overrides,
+            )
+        except (ValueError, ConfigError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return job.to_dict()
+
     # -- notepad -----------------------------------------------------------
 
     def _utterances_of(job: MeetingJob) -> list[Utterance]:
@@ -647,6 +748,7 @@ def create_app(config: Config) -> FastAPI:
 __all__ = [
     "ARTIFACTS",
     "AskRequest",
+    "RecordRequest",
     "CreateUserRequest",
     "EnhanceRequest",
     "NotesRequest",

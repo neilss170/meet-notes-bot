@@ -1,12 +1,20 @@
-# Scribe — Google Meet transcription & meeting intelligence
+# Scribe — meeting notes, without a bot in the call
 
 [![tests](https://github.com/neilss170/meet-notes-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/neilss170/meet-notes-bot/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A bot that joins a Google Meet call, captures what the other participants say,
-produces a speaker-labelled transcript as the meeting happens, and writes up
-the summary, decisions, action items and tone once it ends.
+Records your meetings, transcribes them, and turns your rough notes into good
+ones. **Nothing joins the call.**
+
+Scribe listens to what your speakers are already playing and what your
+microphone is already hearing, so there is no bot in the participant list, no
+Google account to expire, and no lobby to be admitted through. It works with
+Google Meet, Zoom, Teams, or a phone on speaker &mdash; to the recorder they
+are all just audio arriving at your sound card.
+
+There is still a bot mode, kept because it predates local capture and works
+when the meeting is not on this machine. It is no longer the default.
 
 Alongside it there is a **notepad**. You type whatever you can while the
 meeting runs — fragments, a name and an arrow — and Scribe fills those notes
@@ -16,13 +24,15 @@ shorthand and attach the numbers, owners and dates you had no time to write.
 You can also ask questions of a finished meeting, answered only from what was
 actually said.
 
-It runs entirely on your own machine. Audio goes to Deepgram for transcription
-and the finished transcript goes to one LLM call for the summary; nothing else
-leaves the host, and no OS-level virtual audio device is involved.
+It runs on your own machine. Audio goes to Deepgram for transcription and the
+transcript goes to one LLM call for the summary; nothing else leaves the host,
+and no virtual audio device has to be installed.
 
-**It needs a Google account of its own.** Meet increasingly refuses anonymous
-guests outright, so the bot signs in once (`meetbot login`) and reuses that
-browser profile. Treat that profile like a password — see
+**Local recording is Windows-only.** It uses WASAPI loopback, which is how the
+speakers can be captured without installing anything. The bot path works
+anywhere, and **needs a Google account of its own** — Meet increasingly
+refuses anonymous guests, so the bot signs in once (`meetbot login`) and
+reuses that browser profile. Treat that profile like a password — see
 [Secrets](#secrets).
 
 > The package, module and CLI are still named `meetbot`; only the product name
@@ -49,7 +59,7 @@ playwright install chromium
 # 4. Configure
 cp .env.example .env             # then add your Deepgram and LLM keys
 
-# 5. Sign the bot into Google (once)
+# 5. Sign the bot into Google (only needed for bot mode)
 python -m meetbot login
 
 # 6. Confirm everything works before you need it to
@@ -57,6 +67,13 @@ python -m meetbot check
 
 # 7. Start the web UI
 python -m meetbot serve --open
+```
+
+Or record a meeting straight from the terminal, with nothing joining it:
+
+```bash
+python -m meetbot record --list-devices      # what can be captured
+python -m meetbot record --title "Standup"   # Ctrl+C to stop and write it up
 ```
 
 Step 6 is the one worth keeping. It opens a real Deepgram stream with *your*
@@ -239,6 +256,56 @@ anyone who copies it is signed in as that account. It is gitignored, and it
 should not go on a shared machine. Use a dedicated account for the bot rather
 than a personal one, and one with access only to what it needs.
 
+### Recording without a bot
+
+This is the default, and the reason the bot exists only as a fallback.
+
+Windows exposes **WASAPI loopback**: a tap on the render endpoint, which is
+everything your speakers are playing. That is every remote participant, in
+any application. Your microphone is captured separately, and the two are kept
+apart all the way to Deepgram:
+
+| Channel | Source | Speaker label |
+|---|---|---|
+| 0 | your microphone | `You` |
+| 1 | your speakers | `Speaker 0`, `Speaker 1`, … |
+
+Keeping them separate is not tidiness. Diarization *guesses* who spoke from
+voice characteristics; your microphone channel is definitionally you, so at
+least one speaker is labelled from where the audio came from rather than from
+a model's inference. Only the far side needs guessing at.
+
+```bash
+python -m meetbot record --title "Weekly sync"
+python -m meetbot record --list-devices        # pick devices by index
+python -m meetbot record --speakers 10 --microphone 9
+python -m meetbot record --no-microphone       # capture only the far side
+```
+
+Two things are worth knowing before trusting it:
+
+**Loopback taps the mix *after* the volume control.** Muted speakers, or a
+volume of zero, record silence — and nothing looks broken while it happens.
+You get a perfectly well-formed empty transcript. Scribe checks for this
+before recording and warns during it, but if a recording comes back empty,
+that is the first thing to check.
+
+**It captures everything the machine plays**, not only the meeting. A video
+playing in another tab is recorded too. That is the trade for not needing a
+bot, an account, or anyone's permission to join.
+
+Compared with the bot:
+
+| | Local capture | Bot |
+|---|---|---|
+| Joins the call | no | yes, visibly |
+| Google account | not needed | required, expires every few hours |
+| Meeting tools | any | Google Meet only |
+| Breaks when Meet redesigns | no | yes |
+| Your own voice | labelled `You` | diarized like everyone else |
+| Captures other apps' audio | yes | no |
+| Platform | Windows | anywhere |
+
 ### Without a terminal: the web UI
 
 Running a command per meeting does not scale past demoing it yourself. `serve`
@@ -354,6 +421,9 @@ Things it handles that the one-shot CLI never had to:
 |---|---|
 | `GET /api/meetings` | List every meeting, live and past |
 | `POST /api/meetings` | `{"meet_url": "..."}` — send the bot |
+| `POST /api/recordings` | `{"title": "..."}` — record this machine, no bot |
+| `GET /api/audio-devices` | Speakers and microphones that can be captured |
+| `POST /api/audio-devices/probe` | Listen briefly; catches muted output |
 | `GET /api/meetings/{id}` | Status plus live transcript |
 | `POST /api/meetings/{id}/stop` | Leave the call and write the summary |
 | `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, `notes.md`, `enhanced.md`, … |
@@ -478,6 +548,12 @@ Two details are load-bearing:
 ---
 
 ## Consent and disclosure — read this before using it
+
+**Local capture makes this more your responsibility, not less.** The bot
+announced itself: it appeared in the participant list with a name saying it
+was recording. Recording from your own machine announces nothing to anybody.
+Nobody in the meeting can tell it is happening, which means telling them is
+now entirely on you. Do it.
 
 **Recording a meeting is a legal act, not just a technical one.** This tool is
 built so that it cannot run invisibly, and you should not try to make it.
