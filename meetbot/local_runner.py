@@ -47,6 +47,7 @@ from meetbot.capture.local import (
     LocalCaptureError,
     LocalRecorder,
     default_devices,
+    default_output_name,
     find_device,
 )
 from meetbot.config import Config
@@ -71,6 +72,10 @@ CHANNEL_SPEAKERS = (SELF_SPEAKER, "")
 #: How long the speakers may be silent before saying so. Long enough not to
 #: nag during a genuine pause, short enough to catch muted output early.
 SILENCE_WARN_S = 45.0
+
+#: How often to check that playback is still coming out of the device being
+#: recorded. Bluetooth headphones drop without warning.
+DEVICE_CHECK_S = 10.0
 
 
 def slugify(title: str, fallback: str = "local") -> str:
@@ -316,36 +321,71 @@ async def _warn_if_silent(
     stop_event: asyncio.Event,
     emit: Callable[..., None],
 ) -> None:
-    """Say something once if the speakers never make a sound.
+    """Watch for the two ways a recording silently produces nothing.
 
-    The failure this exists for is silent in every sense: muted output
-    records a perfectly well-formed empty transcript, and nothing looks
-    wrong until the meeting is over.
+    Both end the same way - a perfectly well-formed empty transcript, with
+    nothing looking wrong until the meeting is over - so both are worth
+    interrupting for.
+
+    **The output device moved.** Bluetooth headphones disconnect, Windows
+    switches playback to the speakers, and the capture stream stays open on a
+    device nobody is listening to any more. This is checked by name rather
+    than inferred from silence, because it is exactly knowable.
+
+    **Nothing is coming out at all.** Muted output, or zero volume. Reported
+    once after :data:`SILENCE_WARN_S`, and again if it recurs, using a peak
+    that resets on each check so a source that has *gone* quiet is
+    distinguishable from one that never worked.
     """
-    warned = False
+    capturing = recorder.capturing
+    silent_for = 0.0
+    warned_silent = False
+    warned_device = False
+
     while not stop_event.is_set():
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=SILENCE_WARN_S)
+            await asyncio.wait_for(stop_event.wait(), timeout=DEVICE_CHECK_S)
             return
         except asyncio.TimeoutError:
             pass
-        if warned:
+
+        if not warned_device:
+            current = await asyncio.to_thread(default_output_name)
+            # The loopback device is the render device's name plus a suffix,
+            # so containment is the right test rather than equality.
+            if current and current not in capturing:
+                warned_device = True
+                message = (
+                    f"Windows is now playing through {current!r}, but this "
+                    f"recording is capturing {capturing!r}. If the output "
+                    "device changed - Bluetooth headphones disconnecting, "
+                    "say - the rest of this recording will be silent. Stop "
+                    "and start again to follow the new device."
+                )
+                logger.warning(message)
+                emit("local_capture_device_changed", detail=message, now=current)
+
+        if recorder.recent_peak() > 2:
+            silent_for = 0.0
+            warned_silent = False
             continue
-        stats = recorder.stats()
-        them = stats.get("them") or {}
-        if not them.get("peak"):
-            warned = True
+
+        silent_for += DEVICE_CHECK_S
+        if silent_for >= SILENCE_WARN_S and not warned_silent:
+            warned_silent = True
             message = (
-                "The speakers have been silent since recording began. If the "
-                "meeting is audible, check that the output is not muted - "
-                "loopback captures the mix after the volume control."
+                f"No audio from the speakers for {int(silent_for)}s. If the "
+                "meeting is audible, check the output is not muted - loopback "
+                "captures the mix after the volume control."
             )
             logger.warning(message)
             emit("local_capture_silent", detail=message)
 
 
+
 __all__ = [
     "CHANNEL_SPEAKERS",
+    "DEVICE_CHECK_S",
     "SELF_SPEAKER",
     "SILENCE_WARN_S",
     "make_local_output_dir",
