@@ -223,3 +223,84 @@ class TestRetroactiveSpeakerNames:
         store.append(Utterance("Speaker 0", "Morning.", 0.0, 1.0))
         store.close()
         assert read_speaker_names(path) == {}
+
+
+class TestChronologicalReads:
+    """Arrival order is not chronological order with two channels in flight.
+
+    Found on the first real local recording: the microphone and the speakers
+    are separate Deepgram channels, finalised independently, so the file
+    contained a turn starting at 00:45 written before one starting at 00:43.
+    The transcript read jumbled and the summariser was handed the
+    conversation out of sequence.
+    """
+
+    def test_utterances_come_back_oldest_first(self, tmp_path) -> None:
+        from meetbot.transcript.store import (
+            TranscriptStore,
+            Utterance,
+            read_utterances,
+        )
+
+        path = tmp_path / "transcript.jsonl"
+        with TranscriptStore(path) as store:
+            store.append(Utterance("Speaker 0", "exposed to nature", 40.7, 43.0))
+            # Written next, but starts *later* than the one after it.
+            store.append(Utterance("You", "P I.", 45.5, 46.0))
+            store.append(Utterance("Speaker 0", "outdoor activities", 43.9, 45.0))
+
+        starts = [u.start for u in read_utterances(path)]
+        assert starts == sorted(starts)
+        assert starts == [40.7, 43.9, 45.5]
+
+    def test_the_file_itself_stays_in_arrival_order(self, tmp_path) -> None:
+        """The store is append-only on purpose - that is what survives a kill.
+
+        Sorting belongs to the reader; rewriting the file to keep it ordered
+        would cost the crash durability the format exists for.
+        """
+        import json
+
+        from meetbot.transcript.store import TranscriptStore, Utterance
+
+        path = tmp_path / "transcript.jsonl"
+        with TranscriptStore(path) as store:
+            store.append(Utterance("You", "second", 45.5, 46.0))
+            store.append(Utterance("Speaker 0", "first", 43.9, 45.0))
+
+        written = [
+            json.loads(line)["start"]
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert written == [45.5, 43.9], "the file was rewritten"
+
+    def test_the_sort_is_stable_for_equal_starts(self, tmp_path) -> None:
+        from meetbot.transcript.store import (
+            TranscriptStore,
+            Utterance,
+            read_utterances,
+        )
+
+        path = tmp_path / "transcript.jsonl"
+        with TranscriptStore(path) as store:
+            store.append(Utterance("You", "mine", 10.0, 11.0))
+            store.append(Utterance("Speaker 0", "theirs", 10.0, 11.0))
+
+        assert [u.text for u in read_utterances(path)] == ["mine", "theirs"]
+
+    def test_a_single_channel_transcript_is_unchanged(self, tmp_path) -> None:
+        """The bot path is already chronological; sorting must be a no-op."""
+        from meetbot.transcript.store import (
+            TranscriptStore,
+            Utterance,
+            read_utterances,
+        )
+
+        path = tmp_path / "transcript.jsonl"
+        texts = ["one", "two", "three"]
+        with TranscriptStore(path) as store:
+            for i, text in enumerate(texts):
+                store.append(Utterance("Speaker 0", text, float(i), float(i) + 0.5))
+
+        assert [u.text for u in read_utterances(path)] == texts

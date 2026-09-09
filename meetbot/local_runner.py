@@ -48,7 +48,7 @@ from meetbot.capture.local import (
     LocalRecorder,
     default_devices,
     default_output_name,
-    find_device,
+    resolve_or_default,
 )
 from meetbot.config import Config
 from meetbot.logging_setup import configure_logging
@@ -97,30 +97,14 @@ def resolve_devices(
 ) -> tuple[AudioDevice, AudioDevice | None]:
     """Pick the devices to record, by index or by asking Windows.
 
+    Thin alias for :func:`meetbot.capture.local.resolve_or_default`, kept
+    because the runner's callers name it this way.
+
     Raises:
         LocalCaptureError: If there is no usable speaker loopback, which is
             the one device this cannot work without.
     """
-    default_loopback, default_mic = default_devices()
-
-    loopback = (
-        find_device(loopback_index) if loopback_index is not None else default_loopback
-    )
-    if loopback is None:
-        raise LocalCaptureError(
-            "No speaker loopback device is available, so there is nothing to "
-            "record. Check that Windows has an active playback device."
-            if loopback_index is None
-            else f"No audio device with index {loopback_index}."
-        )
-
-    if microphone_index is None:
-        microphone = default_mic
-    elif microphone_index < 0:
-        microphone = None  # explicitly asked for no microphone
-    else:
-        microphone = find_device(microphone_index)
-    return loopback, microphone
+    return resolve_or_default(loopback_index, microphone_index)
 
 
 async def run_local_meeting(

@@ -216,7 +216,22 @@ def iter_records(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def read_utterances(path: Path) -> list[Utterance]:
-    """Load every utterance from a transcript file, in file order."""
+    """Load every utterance from a transcript file, oldest first.
+
+    The file is in *arrival* order, which is not the same as chronological
+    order once more than one channel is being transcribed. Local capture
+    sends the microphone and the speakers as separate channels and Deepgram
+    finalises them independently, so an utterance that starts at 00:43 can be
+    written after one that starts at 00:45. Read back unsorted, the
+    transcript reads jumbled and the summariser is handed the conversation
+    out of sequence.
+
+    Sorting happens here rather than at write time because the store is
+    append-only on purpose: that is what makes a transcript survive the
+    process being killed mid-meeting. The sort is stable, so utterances
+    sharing a start time keep the order they arrived in, and a single-channel
+    transcript - already chronological - is unchanged by it.
+    """
     utterances: list[Utterance] = []
     for record in iter_records(path):
         if record.get("type") != "utterance":
@@ -225,7 +240,7 @@ def read_utterances(path: Path) -> list[Utterance]:
             utterances.append(Utterance.from_record(record))
         except (TypeError, ValueError) as exc:
             logger.warning("Skipping unreadable utterance in %s: %s", path, exc)
-    return utterances
+    return sorted(utterances, key=lambda u: u.start)
 
 
 #: Event kind carrying a learned diarization-id -> real-name mapping.
