@@ -79,11 +79,14 @@ from meetbot.service.jobs import JobManager, JobStatus, MeetingJob, load_past_ru
 from meetbot.transcript.notes import ChatLog, Notepad
 from meetbot.transcript.format import format_timestamp
 from meetbot.transcript.store import (
+    SPEAKER_NAMES_EVENT,
+    TranscriptStore,
     Utterance,
     apply_speaker_names,
     read_meta,
     read_speaker_names,
     read_utterances,
+    speakers,
 )
 
 logger = logging.getLogger(__name__)
@@ -102,6 +105,10 @@ HEALTH_STALE_AFTER_S = 300.0
 #: notes for the call somebody has just ended are the ones they are waiting
 #: for, so a fast exit is the wrong trade here.
 NOTES_ON_SHUTDOWN_GRACE_S = 20.0
+
+#: Longest a speaker's name may be. Long enough for "Priya Raghunathan (QA)",
+#: short enough that nobody can push a paragraph into every transcript line.
+MAX_SPEAKER_NAME = 60
 
 #: Artifacts a client may fetch, mapped to their media type. An allow-list,
 #: not a path parameter joined onto a directory: the artifact name comes from
@@ -159,6 +166,15 @@ class AskRequest(BaseModel):
     """A question about one meeting, or about all of them."""
 
     question: str
+
+
+class SpeakerNamesRequest(BaseModel):
+    """Who the diarization labels in one meeting actually are."""
+
+    names: dict[str, str] = Field(
+        default_factory=dict,
+        description='Label to real name, e.g. {"Speaker 0": "Priya"}',
+    )
 
 
 class MuteAppRequest(BaseModel):
@@ -720,6 +736,35 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             return []
         return apply_speaker_names(utterances, read_speaker_names(path))
 
+    def _speakers_of(job: MeetingJob) -> list[dict[str, str]]:
+        """Every voice in the meeting: the label stored, and what to call it.
+
+        The label is what the transcript actually holds, so it stays the key
+        however many times the name is changed - and a meeting that was never
+        named reads as its own name, which is what the page shows.
+        """
+        path = job.artifact("transcript.jsonl")
+        if path is None:
+            return []
+        try:
+            recorded = read_utterances(path)
+            named = read_speaker_names(path)
+        except (OSError, ValueError):
+            logger.warning("Could not read speakers for job %s", job.id)
+            return []
+        return [
+            {"id": label, "name": named.get(label, label)}
+            for label in speakers(recorded)
+        ]
+
+    def _write_speaker_names(path: Path, names: dict[str, str]) -> None:
+        """Append the mapping; never rewrite what was already recorded."""
+        store = TranscriptStore(path, append=True)
+        try:
+            store.append_event(SPEAKER_NAMES_EVENT, names=names)
+        finally:
+            store.close()
+
     def _title_of(job: MeetingJob) -> str:
         """What a meeting is called - the same rule the page uses."""
         if job.kind == "local":
@@ -830,7 +875,58 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         return {
             "segments": [s.to_dict() for s in segment_utterances(utterances)],
             "utterance_count": len(utterances),
+            "speakers": await asyncio.to_thread(_speakers_of, job),
         }
+
+    @app.put("/api/meetings/{job_id}/speakers")
+    async def name_speakers(
+        job_id: str,
+        request: SpeakerNamesRequest,
+        user: User = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Put a real name to "Speaker 0", and to everybody else.
+
+        Nothing links an audio track to a person, so diarization can only say
+        that two different people spoke. One person who was there can say who
+        they were in a couple of seconds, and that is worth more than any
+        amount of guessing - "Speaker 1 will write the migration script" is a
+        note nobody can act on.
+
+        Recorded as an event appended to the transcript rather than a rewrite
+        of it: the file is append-only exactly so that a crash cannot lose
+        what was said. Every reader applies the mapping already, so the notes,
+        the citations and both chats say the name from here on.
+        """
+        job = _visible_job(job_id, user)
+        path = job.artifact("transcript.jsonl")
+        if path is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Nothing has been transcribed yet, so there is nobody to name.",
+            )
+        known = {voice["id"] for voice in await asyncio.to_thread(_speakers_of, job)}
+        names: dict[str, str] = {}
+        for label, name in request.names.items():
+            label = label.strip()
+            if label not in known:
+                # Accepting it silently would look like a save that did nothing.
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Nobody in this meeting is labelled {label!r}.",
+                )
+            # An emptied box means "forget it": mapping a label to itself is
+            # how a file that only ever grows takes something back.
+            names[label] = " ".join(name.split())[:MAX_SPEAKER_NAME] or label
+        if not names:
+            raise HTTPException(status_code=400, detail="Say who was speaking.")
+        try:
+            await asyncio.to_thread(_write_speaker_names, path, names)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the names: {exc}"
+            ) from exc
+        logger.info("Job %s: named %d speaker(s)", job.id, len(names))
+        return {"speakers": await asyncio.to_thread(_speakers_of, job)}
 
     @app.put("/api/meetings/{job_id}/notes")
     async def put_notes(

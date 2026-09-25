@@ -1698,6 +1698,157 @@ class TestNotesWriteThemselves:
             holding.set()
 
 
+class TestSpeakerNames:
+    """Putting a real name to "Speaker 0", once, for everything downstream.
+
+    Nothing links an audio track to a person, so diarization can only say that
+    two different people spoke. Somebody who was there can say who they were in
+    a couple of seconds - and "Speaker 1 will write the migration script" is a
+    note nobody can act on.
+    """
+
+    @pytest.fixture
+    def client(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch, utterances=2)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as signed_out:
+            signed_out.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            signed_out.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield signed_out
+
+    @pytest.fixture
+    def fake_llm(self, monkeypatch):
+        from meetbot.service import app as app_module
+        from tests.conftest import FakeLLMClient
+
+        llm = FakeLLMClient(text_responses=[])
+        monkeypatch.setattr(app_module, "build_client", lambda *a, **k: llm)
+        return llm
+
+    @staticmethod
+    def _meeting(client, *, transcript: bool = True) -> str:
+        """A finished meeting with two diarized voices on disk."""
+        return TestNotepadApi._meeting(client, transcript=transcript)
+
+    def _voices(self, client, job_id) -> list[dict]:
+        return client.get(f"/api/meetings/{job_id}/transcript").json()["speakers"]
+
+    def test_a_meeting_starts_with_the_labels_it_was_recorded_with(
+        self, client
+    ) -> None:
+        job_id = self._meeting(client)
+        assert self._voices(client, job_id) == [
+            {"id": "Speaker 0", "name": "Speaker 0"},
+            {"id": "Speaker 1", "name": "Speaker 1"},
+        ]
+
+    def test_a_voice_can_be_given_a_name(self, client) -> None:
+        job_id = self._meeting(client)
+        response = client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 1": "Priya"}}
+        )
+        assert response.status_code == 200, response.text
+        assert {"id": "Speaker 1", "name": "Priya"} in response.json()["speakers"]
+
+        transcript = client.get(f"/api/meetings/{job_id}/transcript").json()
+        said = {s["speaker"]: s["text"] for s in transcript["segments"]}
+        assert "Priya" in said
+        assert "take the script" in said["Priya"]
+        assert "Speaker 1" not in said, "the old label is still being shown"
+
+    def test_the_transcript_keeps_what_was_actually_recorded(self, client) -> None:
+        """Append-only is why a crash cannot lose a meeting; naming respects it."""
+        job_id = self._meeting(client)
+        client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 1": "Priya"}}
+        )
+        raw = (
+            client.app.state.manager.get(job_id).output_dir / "transcript.jsonl"
+        ).read_text(encoding="utf-8")
+        assert '"Speaker 1"' in raw, "an utterance was rewritten"
+        assert "speaker_names" in raw, "the mapping was not recorded as an event"
+
+    def test_the_name_reaches_the_notes(self, client, fake_llm) -> None:
+        """The whole point: the model stops writing about Speaker 1."""
+        job_id = self._meeting(client)
+        client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 1": "Priya"}}
+        )
+        fake_llm.text_responses = ["## Summary: Priya took the script."]
+        assert client.post(f"/api/meetings/{job_id}/enhance", json={}).status_code == 200
+        prompt = fake_llm.text_calls[0]["user"]
+        assert "Priya" in prompt
+        assert "Speaker 1" not in prompt
+
+    def test_naming_again_wins(self, client) -> None:
+        job_id = self._meeting(client)
+        for name in ("Priya", "Priya Raghunathan"):
+            client.put(
+                f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 0": name}}
+            )
+        assert {"id": "Speaker 0", "name": "Priya Raghunathan"} in self._voices(
+            client, job_id
+        )
+
+    def test_clearing_a_name_puts_the_label_back(self, client) -> None:
+        """Somebody who named the wrong voice has to be able to undo it."""
+        job_id = self._meeting(client)
+        client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 0": "Priya"}}
+        )
+        client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 0": "   "}}
+        )
+        assert {"id": "Speaker 0", "name": "Speaker 0"} in self._voices(client, job_id)
+
+    def test_a_name_is_tidied_and_capped(self, client) -> None:
+        job_id = self._meeting(client)
+        client.put(
+            f"/api/meetings/{job_id}/speakers",
+            json={"names": {"Speaker 0": "  Priya   R " + "a" * 200}},
+        )
+        named = next(
+            v["name"] for v in self._voices(client, job_id) if v["id"] == "Speaker 0"
+        )
+        assert named.startswith("Priya R")
+        assert len(named) == 60, "an unbounded name would reach every line"
+
+    def test_a_voice_nobody_used_is_refused(self, client) -> None:
+        """Accepting it silently would look like a save that did nothing."""
+        job_id = self._meeting(client)
+        response = client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 9": "Ghost"}}
+        )
+        assert response.status_code == 400
+        assert "Speaker 9" in response.json()["detail"]
+
+    def test_a_meeting_with_no_transcript_has_nobody_to_name(self, client) -> None:
+        job_id = self._meeting(client, transcript=False)
+        response = client.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 0": "Priya"}}
+        )
+        assert response.status_code == 409
+        assert "nobody to name" in response.json()["detail"].lower()
+
+    def test_naming_somebody_elses_meeting_is_a_404(self, client) -> None:
+        job_id = self._meeting(client)
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        assert other.put(
+            f"/api/meetings/{job_id}/speakers", json={"names": {"Speaker 0": "Me"}}
+        ).status_code == 404
+
+    def test_naming_needs_a_session(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as anon:
+            assert anon.put(
+                "/api/meetings/x/speakers", json={"names": {"Speaker 0": "Me"}}
+            ).status_code == 401
+
+
 class TestRecallApi:
     """Questions across every meeting, and the citations behind every answer."""
 

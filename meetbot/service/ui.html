@@ -394,6 +394,30 @@
   }
   .placeholder strong { color: var(--muted); font-weight: 550; }
 
+  /* -- who was speaking ---------------------------------------------------- */
+  .speakerbar {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line);
+  }
+  .sb-label {
+    font-size: 10px; font-weight: 650; color: var(--faint);
+    text-transform: uppercase; letter-spacing: .1em; margin-right: 2px;
+  }
+  .sb-chip {
+    font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 999px;
+    color: var(--ink); background: var(--chip); border: 1px solid var(--glass-edge);
+    cursor: pointer; transition: border-color .15s ease, background .15s ease;
+  }
+  .sb-chip:hover { background: var(--chip-on); border-color: var(--focus); }
+  .sb-chip.unnamed { color: var(--faint); }
+  .sb-input {
+    font: inherit; font-size: 12px; padding: 4px 11px; border-radius: 999px;
+    width: 170px; color: var(--ink); background: var(--field);
+    border: 1px solid var(--focus); outline: none;
+    box-shadow: 0 0 0 4px var(--focus-ring);
+  }
+  .sb-err { font-size: 11.5px; color: var(--bad); }
+
   /* -- rendered markdown --------------------------------------------------- */
   .doc { font-size: 14.5px; line-height: 1.65; }
   .doc .md-h1, .doc .md-h2 {
@@ -919,6 +943,9 @@ const state = {
   saveTimer: null,
   saveState: "",           // "" | "editing" | "saving" | "saved" | "error"
   enhancing: false,
+  /* Which voice is being named right now, if any, and what went wrong. */
+  naming: null,
+  namingError: "",
   asking: false,
   sending: false,
   stopping: new Set(),
@@ -926,11 +953,11 @@ const state = {
   /* Signatures of what is currently painted, so the poll loop only rebuilds
      a region when it actually changed. Rebuilding on a timer throws away
      scroll position and text selection. */
-  sig: { list: "", head: "", transcript: "", enhanced: "", chat: "" },
+  sig: { list: "", head: "", transcript: "", enhanced: "", chat: "", speakers: "" },
 
   /* The whole transcript of the selected meeting, in the lines citations
      point at. The meeting payload only carries the newest few. */
-  full: { id: null, count: -1, segments: [], at: 0, loading: false },
+  full: { id: null, count: -1, segments: [], speakers: [], at: 0, loading: false },
   /* What the transcript tab has painted, so a live meeting's new words can
      be added where they land instead of repainting everything. */
   tx: { id: null, texts: [], registeringUntil: 0, lastNewAt: 0 },
@@ -1610,7 +1637,7 @@ async function loadTranscript() {
     if (state.selected === id) {
       state.full = {
         id, count: data.utterance_count, segments: data.segments || [],
-        at: Date.now(), loading: false,
+        speakers: data.speakers || [], at: Date.now(), loading: false,
       };
       if (state.tab === "transcript") renderTranscript(false);
       return;
@@ -1666,6 +1693,7 @@ function renderTranscript(rebuild) {
   if (rebuild || !$("tx-lines")) {
     pane.innerHTML =
       '<div class="transcript">' +
+        '<div class="speakerbar" id="tx-speakers" hidden></div>' +
         '<div id="tx-lines"></div>' +
         '<div class="tx-foot" id="tx-foot" hidden></div>' +
       "</div>";
@@ -1681,6 +1709,7 @@ function renderTranscript(rebuild) {
     state.sig.transcript = signature;
     paintTranscript(pane, job, lines, have, live, jump);
   }
+  renderSpeakers(job);
   updateListening(job);
 }
 
@@ -1765,6 +1794,83 @@ function paintTranscript(pane, job, lines, have, live, jump) {
   // Follow a live meeting, but do not yank the page from under someone who
   // has scrolled up to re-read something.
   if (atBottom) pane.scrollTop = pane.scrollHeight;
+}
+
+/* Diarization can only say that two different people spoke. One person who
+   was there can say who they were, once, and every line, note and citation
+   carries the name from then on. */
+
+function renderSpeakers(job) {
+  const bar = $("tx-speakers");
+  if (!bar) return;
+  const voices = state.full.id === job.id ? (state.full.speakers || []) : [];
+  bar.hidden = !voices.length;
+  if (!voices.length) return;
+
+  const signature = JSON.stringify(voices) + `:${state.naming}:${state.namingError}`;
+  if (signature === state.sig.speakers) return;
+  state.sig.speakers = signature;
+
+  bar.innerHTML =
+    '<span class="sb-label">Voices</span>' +
+    voices.map((voice) => {
+      const named = voice.name !== voice.id;
+      if (state.naming === voice.id) {
+        return '<input class="sb-input" id="sb-edit" spellcheck="false" maxlength="60" ' +
+          `data-id="${esc(voice.id)}" value="${esc(named ? voice.name : "")}" ` +
+          `placeholder="Who was ${esc(voice.id)}?">`;
+      }
+      return `<button class="sb-chip${named ? "" : " unnamed"}" data-id="${esc(voice.id)}" ` +
+        `title="Say who this was">${esc(voice.name)}</button>`;
+    }).join("") +
+    (state.namingError ? `<span class="sb-err">${esc(state.namingError)}</span>` : "");
+
+  bar.querySelectorAll(".sb-chip").forEach((el) => {
+    el.addEventListener("click", () => {
+      state.naming = el.dataset.id;
+      state.namingError = "";
+      renderSpeakers(job);
+      const box = $("sb-edit");
+      if (box) { box.focus(); box.select(); }
+    });
+  });
+
+  const box = $("sb-edit");
+  if (!box) return;
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); saveSpeaker(box.dataset.id, box.value); }
+    if (event.key === "Escape") { state.naming = null; renderSpeakers(job); }
+  });
+  // Clicking away saves rather than discarding: losing a name somebody just
+  // typed because they reached for the mouse would be its own small betrayal.
+  box.addEventListener("blur", () => {
+    if (state.naming === box.dataset.id) saveSpeaker(box.dataset.id, box.value);
+  });
+}
+
+async function saveSpeaker(id, value) {
+  const job = state.detail;
+  if (!job) return;
+  const voices = state.full.speakers || [];
+  const current = (voices.find((voice) => voice.id === id) || {}).name || id;
+  const wanted = value.trim();
+  state.naming = null;
+  state.namingError = "";
+  if ((wanted || id) === current) { renderSpeakers(job); return; }
+  try {
+    const result = await api(`/api/meetings/${job.id}/speakers`, {
+      method: "PUT", body: JSON.stringify({ names: { [id]: wanted } }),
+    });
+    state.full.speakers = result.speakers || [];
+    // Every line that carried the old label has just been renamed.
+    state.full.count = -1;
+    state.tx.id = null;
+    state.sig.transcript = "";
+    await loadTranscript();
+  } catch (error) {
+    state.namingError = error.message;
+  }
+  if (state.detail) renderSpeakers(state.detail);
 }
 
 /** The spark at the foot of a live transcript, and what it says. */
@@ -2238,7 +2344,8 @@ async function select(jobId) {
   state.tab = "notes";
   state.cited = null;
   state.tx = { id: null, texts: [], registeringUntil: 0, lastNewAt: 0 };
-  state.sig = { list: state.sig.list, head: "", transcript: "", enhanced: "", chat: "" };
+  state.sig = { list: state.sig.list, head: "", transcript: "", enhanced: "",
+                chat: "", speakers: "" };
   state.sig.list = "";
   renderSidebar();
   await refreshSelected();
