@@ -229,6 +229,35 @@ class TestNotepadInTheBrowser:
             finally:
                 await browser.close()
 
+    async def test_naming_a_voice_relabels_the_transcript(self, served) -> None:
+        """Diarization gives labels; one person who was there gives names."""
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await page.click('button[data-tab="transcript"]')
+                await page.wait_for_selector('.sb-chip[data-id="Speaker 1"]')
+                await page.click('.sb-chip[data-id="Speaker 1"]')
+                await page.fill("#sb-edit", "Priya")
+                await page.press("#sb-edit", "Enter")
+
+                await page.wait_for_function(
+                    "document.querySelector('#tx-lines')"
+                    ".textContent.includes('Priya')",
+                    timeout=30_000,
+                )
+                lines = await page.text_content("#tx-lines")
+                assert "Speaker 1" not in lines, "the old label is still shown"
+                assert "Speaker 0" in lines, "the other voice was renamed too"
+                # Recorded as an event; the utterances themselves are untouched.
+                raw = (served["dir"] / "transcript.jsonl").read_text(encoding="utf-8")
+                assert "speaker_names" in raw
+                assert '"Speaker 1"' in raw
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
     async def test_switching_tabs_loses_nothing(self, served) -> None:
         from playwright.async_api import async_playwright
 
