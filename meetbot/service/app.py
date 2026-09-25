@@ -75,7 +75,7 @@ from meetbot.preflight import (
     run_preflight,
 )
 from meetbot.profile import sweep_stale_profiles
-from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
+from meetbot.service.jobs import JobManager, JobStatus, MeetingJob, load_past_runs
 from meetbot.transcript.notes import ChatLog, Notepad
 from meetbot.transcript.format import format_timestamp
 from meetbot.transcript.store import (
@@ -96,6 +96,12 @@ LOGIN_PATH = Path(__file__).parent / "login.html"
 #: because "this was broken when we last looked" is not a reason to refuse a
 #: request half an hour later.
 HEALTH_STALE_AFTER_S = 300.0
+
+#: How long shutdown waits for notes that are still being written. Stopping
+#: the service stops any live recording, which starts its write-up - and the
+#: notes for the call somebody has just ended are the ones they are waiting
+#: for, so a fast exit is the wrong trade here.
+NOTES_ON_SHUTDOWN_GRACE_S = 20.0
 
 #: Artifacts a client may fetch, mapped to their media type. An allow-list,
 #: not a path parameter joined onto a directory: the artifact name comes from
@@ -188,6 +194,28 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     users = UserStore(state_dir / "users.json")
     secret = load_or_create_secret(state_dir / "session.key")
     calls = CallWatcher(state_dir / "call-alerts.json")
+
+    #: Job ids with an LLM call in flight, so a double-click cannot spend the
+    #: free-tier quota twice on the same meeting - and so the page can say
+    #: that notes are being written. Only ever mutated between awaits on the
+    #: one event loop, so a plain set is enough.
+    in_flight: set[str] = set()
+
+    #: Write-ups running for meetings that have just ended. Held so the
+    #: garbage collector cannot drop one mid-write, and so shutdown can wait.
+    notes_tasks: set[asyncio.Task[None]] = set()
+
+    def _payload(job: MeetingJob, *, include_progress: bool = True) -> dict[str, Any]:
+        """A meeting as the page reads it, plus whether notes are on their way.
+
+        ``enhancing`` covers the button and the automatic write-up after a
+        meeting ends alike: to whoever is watching they are the same event,
+        and the page shows the same indicator for either.
+        """
+        return {
+            **job.to_dict(include_progress=include_progress),
+            "enhancing": f"{job.id}:enhance" in in_flight,
+        }
 
     async def _refresh_health() -> Preflight:
         """Re-run the checks and remember the answer."""
@@ -295,6 +323,11 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         if manager.active_count:
             logger.info("Stopping %d active meeting(s)", manager.active_count)
         await manager.shutdown()
+        # Stopping those meetings starts writing them up, so wait a moment
+        # for that to land rather than killing the tasks on the way out.
+        if notes_tasks:
+            logger.info("Finishing the notes for %d meeting(s)", len(notes_tasks))
+            await asyncio.wait(set(notes_tasks), timeout=NOTES_ON_SHUTDOWN_GRACE_S)
 
     app = FastAPI(title="Scribe", lifespan=lifespan)
 
@@ -446,7 +479,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             "active": sum(1 for job in mine if not job.status.is_terminal),
             # Progress means reading a file per job; the list view only needs
             # counts, so the detail endpoint does that work instead.
-            "meetings": [job.to_dict(include_progress=False) for job in mine],
+            "meetings": [_payload(job, include_progress=False) for job in mine],
         }
 
     @app.post("/api/meetings", status_code=201)
@@ -507,7 +540,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     async def get_meeting(
         job_id: str, user: User = Depends(current_user)
     ) -> dict[str, Any]:
-        return _visible_job(job_id, user).to_dict()
+        return _payload(_visible_job(job_id, user))
 
     @app.post("/api/meetings/{job_id}/stop")
     async def stop_meeting(
@@ -515,7 +548,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         job = _visible_job(job_id, user)
         stopped = await manager.stop(job_id)
-        return {"stopped": stopped, **job.to_dict(include_progress=False)}
+        return {"stopped": stopped, **_payload(job, include_progress=False)}
 
     @app.get("/api/meetings/{job_id}/artifact/{name}", response_class=PlainTextResponse)
     async def get_artifact(
@@ -750,11 +783,6 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             config.llm_base_url,
         )
 
-    #: Job ids with an LLM call in flight, so a double-click cannot spend the
-    #: free-tier quota twice on the same meeting. Only ever mutated between
-    #: awaits on the one event loop, so a plain set is enough.
-    in_flight: set[str] = set()
-
     @app.get("/api/templates")
     async def list_templates(_: User = Depends(current_user)) -> dict[str, Any]:
         """The note shapes the UI offers, so it does not hard-code them."""
@@ -886,6 +914,70 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         finally:
             in_flight.discard(key)
         return {"enhanced": enhanced, "template": template}
+
+    async def _write_notes_for(job: MeetingJob) -> None:
+        """Write up a meeting that has just ended, without being asked.
+
+        The same call the Enhance button makes, with the template the meeting
+        already carries. Anything that goes wrong is logged and dropped: the
+        transcript and the typed notes are both on disk, the button is still
+        there, and a failed write-up must not be reported as a failed meeting.
+        """
+        pad = job.notepad
+        if pad is None or pad.has_enhanced:
+            # Already written - by hand during the call, most likely. Notes
+            # somebody may have read are not replaced behind their back.
+            return
+        key = f"{job.id}:enhance"
+        if key in in_flight:
+            return
+        utterances = await asyncio.to_thread(_utterances_of, job)
+        notes = await asyncio.to_thread(pad.read_notes)
+        if not utterances and not notes.strip():
+            # A meeting that captured nothing has nothing to write up, and
+            # spending a call to be told so is worse than staying quiet.
+            return
+        in_flight.add(key)
+        try:
+            template = pad.template or DEFAULT_TEMPLATE
+            duration = format_timestamp(job.read_progress()["duration_s"])
+            for_llm = (
+                anonymised_utterances(utterances)
+                if config.anonymise_analysis
+                else utterances
+            )
+            enhanced = await asyncio.to_thread(
+                _enhance_sync, for_llm, notes, template, job.meet_url, duration
+            )
+            await asyncio.to_thread(pad.write_enhanced, enhanced, template=template)
+            logger.info("Job %s: wrote the notes (%d chars)", job.id, len(enhanced))
+        except (NotepadError, LLMError, OSError) as exc:
+            logger.warning(
+                "Job %s: could not write the notes automatically: %s", job.id, exc
+            )
+        finally:
+            in_flight.discard(key)
+
+    def _notes_when_finished(job: MeetingJob) -> None:
+        """Start writing a meeting up the moment it ends.
+
+        The page has promised this since its stop button was labelled "Stop &
+        write notes"; this is what makes the label true. Only meetings that
+        ran in this process reach here - see ``JobManager.on_finished`` - so
+        loading sixteen past recordings from disk writes up none of them.
+        """
+        if not (config.auto_notes and config.analysis_enabled):
+            return
+        if job.status is not JobStatus.FINISHED:
+            # A meeting that failed captured nothing worth a call.
+            return
+        task = asyncio.create_task(_write_notes_for(job))
+        notes_tasks.add(task)
+        task.add_done_callback(notes_tasks.discard)
+
+    # Wired here rather than at construction: writing a meeting up needs the
+    # notepad helpers above, which need the app the manager is built for.
+    manager.on_finished = _notes_when_finished
 
     def _ask_sync(
         job: MeetingJob, question: str, notes: str, history: list[dict[str, Any]]

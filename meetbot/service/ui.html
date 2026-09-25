@@ -208,6 +208,14 @@
   .pill.warm::before { background: var(--warn); }
   @keyframes pulse { 50% { opacity: .35; } }
   .tick { color: var(--spark); font-size: 9px; }
+  /* A meeting being written up right now: the same spark as every other wait,
+     shrunk to sit in a line of metadata. */
+  .writing {
+    display: inline-flex; align-items: center; gap: 3px; color: var(--spark);
+    font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+    flex: 0 0 auto;
+  }
+  .writing .spark { width: 12px; height: 12px; font-size: 11px; }
 
   /* -- controls ---------------------------------------------------------- */
   label.field {
@@ -1272,7 +1280,7 @@ function setCitations(on) {
 function renderSidebar() {
   const signature = JSON.stringify(state.meetings.map((j) => [
     j.id, j.status, j.utterance_count, j.has_enhanced, j.has_notes, j.kind,
-    j.id === state.selected,
+    j.enhancing, j.id === state.selected,
   ]));
   if (signature === state.sig.list) return;
   state.sig.list = signature;
@@ -1303,7 +1311,12 @@ function renderSidebar() {
           `<span>${esc(clock(job.created_at))}</span>` +
           `<span>${esc(mmss(job.elapsed_s))}</span>` +
           (job.kind === "local" ? '<span class="src">local</span>' : "") +
-          (job.has_enhanced ? '<span class="tick" title="Notes enhanced">&#9679;</span>' : "") +
+          (job.enhancing
+            ? '<span class="writing"><span class="spark" aria-hidden="true"></span>' +
+              "writing notes</span>"
+            : job.has_enhanced
+              ? '<span class="tick" title="Notes written">&#9679;</span>'
+              : "") +
         `</div>` +
       `</button>`
     );
@@ -1474,7 +1487,9 @@ function renderNotes(rebuild) {
     state.padLoadedFor = state.selected;
   }
 
-  const busy = state.enhancing;
+  // Either the button was pressed here, or the meeting ended and the server
+  // is writing it up. To the reader those are the same thing.
+  const busy = state.enhancing || !!(state.detail && state.detail.enhancing);
   const button = $("enhance");
   button.disabled = busy;
   button.innerHTML = busy
@@ -1504,9 +1519,10 @@ function renderNotes(rebuild) {
       $("tpl-used").textContent = "";
       host.innerHTML =
         '<div class="placeholder">Nothing here yet.<br><br>Write whatever you can in ' +
-        "the notepad, then press <strong>Enhance notes</strong> and Scribe will fill " +
-        "them in from the transcript.<br><br>Left it blank? Enhance anyway &mdash; " +
-        "you'll get notes in the shape of the template you picked.</div>";
+        "the notepad &mdash; when the recording ends, Scribe fills it in from the " +
+        "transcript on its own.<br><br>Left it blank? You'll still get notes, in the " +
+        "shape of the template you picked. <strong>Enhance notes</strong> does it " +
+        "now instead of waiting.</div>";
     }
     if (pane) pane.scrollTop = scroll;
   }

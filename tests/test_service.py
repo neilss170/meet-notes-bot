@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 import time
 from pathlib import Path
 
@@ -66,6 +67,9 @@ def service_config(tmp_path: Path) -> Config:
         # The watcher reads the real microphone state and raises Windows
         # notifications; a suite run during a call must do neither.
         call_alerts=False,
+        # Writing a meeting up as it ends would mean a real LLM call for every
+        # stubbed meeting in this file. The tests about that turn it back on.
+        auto_notes=False,
     )
 
 
@@ -205,6 +209,46 @@ class TestJobManager:
         assert manager.active_count == 1
         await asyncio.wait_for(manager.shutdown(), timeout=3)
         assert manager.active_count == 0
+
+    async def test_a_finished_meeting_is_announced_once(
+        self, service_config, monkeypatch
+    ) -> None:
+        """The service writes the notes off the back of this, so it must fire."""
+        _stub_runner(monkeypatch, utterances=2)
+        seen = []
+        manager = JobManager(service_config, on_finished=seen.append)
+        job = manager.start(MEET_URL)
+        await job._task
+        assert [j.id for j in seen] == [job.id]
+        assert seen[0].status is JobStatus.FINISHED
+
+    async def test_a_listener_that_explodes_does_not_fail_the_meeting(
+        self, service_config, monkeypatch
+    ) -> None:
+        """The recording is already on disk; a bad listener must not undo that."""
+        _stub_runner(monkeypatch, utterances=2)
+
+        def boom(_job) -> None:
+            raise RuntimeError("writing the notes blew up")
+
+        manager = JobManager(service_config, on_finished=boom)
+        job = manager.start(MEET_URL)
+        await job._task
+        assert job.status is JobStatus.FINISHED
+
+    async def test_runs_restored_from_disk_are_not_announced(
+        self, service_config, tmp_path
+    ) -> None:
+        """Otherwise every startup would write up every recording on disk."""
+        seen = []
+        manager = JobManager(service_config, on_finished=seen.append)
+        directory = tmp_path / "old-recordings" / "20260101-standup"
+        directory.mkdir(parents=True)
+        (directory / "transcript.jsonl").write_text(
+            '{"type": "meta", "meet_url": "' + MEET_URL + '"}\n', encoding="utf-8"
+        )
+        assert load_past_runs(manager, tmp_path / "old-recordings") == 1
+        assert seen == [], "a meeting that finished before we started is not news"
 
     async def test_overrides_reach_the_config(
         self, service_config, monkeypatch
@@ -1416,6 +1460,242 @@ class _CitingLLM:
 
     def complete_json(self, **_kwargs) -> dict:
         return {}
+
+
+class TestNotesWriteThemselves:
+    """A meeting is written up as it ends, with nobody pressing anything.
+
+    The stop button has been labelled "Stop & write notes" since it was added.
+    These are the tests that make the label true - and the ones that keep the
+    feature from writing up sixteen old recordings at every startup.
+    """
+
+    @pytest.fixture
+    def auto_config(self, service_config) -> Config:
+        """The suite runs with this off; these tests are what it is for."""
+        return dataclasses.replace(service_config, auto_notes=True)
+
+    @pytest.fixture
+    def fake_llm(self, monkeypatch):
+        from meetbot.service import app as app_module
+        from tests.conftest import FakeLLMClient
+
+        client = FakeLLMClient(text_responses=[])
+        monkeypatch.setattr(app_module, "build_client", lambda *a, **k: client)
+        return client
+
+    @staticmethod
+    def _sign_in(client) -> None:
+        client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+        client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+
+    @staticmethod
+    def _transcript(directory: Path) -> None:
+        from meetbot.transcript.store import MeetingMeta, TranscriptStore, Utterance
+
+        store = TranscriptStore(directory / "transcript.jsonl")
+        store.write_meta(MeetingMeta(meet_url=MEET_URL, bot_name="Scribe"))
+        store.append(Utterance("Speaker 0", "We are two weeks behind.", 0.0, 3.0))
+        store.append(Utterance("Speaker 1", "I will take the script.", 4.0, 6.0))
+        store.close()
+
+    @staticmethod
+    def _until(check, timeout: float = 15.0):
+        """Whatever ``check`` first returns truthily, or ``None`` if it never does.
+
+        The write-up runs as a task in the server's own loop, so the test has
+        to wait for it rather than await it.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            value = check()
+            if value:
+                return value
+            time.sleep(0.05)
+        return None
+
+    def _recording(self, client) -> str:
+        """A meeting that is running, with a transcript on disk."""
+        job_id = client.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+        directory = self._until(lambda: client.app.state.manager.get(job_id).output_dir)
+        assert directory is not None, "the run never reported its directory"
+        self._transcript(directory)
+        return job_id
+
+    def test_a_meeting_is_written_up_as_soon_as_it_ends(
+        self, auto_config, monkeypatch, fake_llm
+    ) -> None:
+        _stub_runner(monkeypatch, utterances=2, block=True)
+        auto_config.output_dir.mkdir(parents=True, exist_ok=True)
+        fake_llm.text_responses = ["## Summary\n\nThe API work is two weeks behind."]
+        with TestClient(create_app(auto_config)) as client:
+            self._sign_in(client)
+            job_id = self._recording(client)
+
+            client.post(f"/api/meetings/{job_id}/stop")
+
+            written = self._until(
+                lambda: client.get(f"/api/meetings/{job_id}/notepad").json()["enhanced"]
+            )
+        assert written and "two weeks behind" in written
+
+    def test_what_was_typed_during_the_call_is_the_spine_of_it(
+        self, auto_config, monkeypatch, fake_llm
+    ) -> None:
+        """The automatic write-up is the same call the button makes."""
+        _stub_runner(monkeypatch, utterances=2, block=True)
+        auto_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(auto_config)) as client:
+            self._sign_in(client)
+            job_id = self._recording(client)
+            client.put(
+                f"/api/meetings/{job_id}/notes", json={"notes": "priya owns migration"}
+            )
+
+            client.post(f"/api/meetings/{job_id}/stop")
+
+            assert self._until(lambda: fake_llm.text_calls) is not None
+            prompt = fake_llm.text_calls[0]["user"]
+        assert "priya owns migration" in prompt
+        assert "two weeks behind" in prompt.lower()
+
+    def test_a_meeting_that_captured_nothing_is_not_sent_to_the_model(
+        self, auto_config, monkeypatch, fake_llm
+    ) -> None:
+        """Paying for a call to be told there was nothing is worse than silence."""
+        _stub_runner(monkeypatch, utterances=2, block=True)
+        auto_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(auto_config)) as client:
+            self._sign_in(client)
+            job_id = client.post(
+                "/api/meetings", json={"meet_url": MEET_URL}
+            ).json()["id"]
+            assert self._until(
+                lambda: client.app.state.manager.get(job_id).output_dir
+            ) is not None
+
+            client.post(f"/api/meetings/{job_id}/stop")
+
+            assert self._until(
+                lambda: client.get(f"/api/meetings/{job_id}").json()["status"]
+                in ("finished", "failed")
+            )
+            time.sleep(0.4)
+        assert not fake_llm.text_calls, "no quota should have been spent"
+
+    def test_notes_written_during_the_call_are_not_replaced(
+        self, auto_config, monkeypatch, fake_llm
+    ) -> None:
+        """Notes somebody may already have read are not rewritten behind them."""
+        _stub_runner(monkeypatch, utterances=2, block=True)
+        auto_config.output_dir.mkdir(parents=True, exist_ok=True)
+        fake_llm.text_responses = ["## Summary\n\nWritten by hand mid-call."]
+        with TestClient(create_app(auto_config)) as client:
+            self._sign_in(client)
+            job_id = self._recording(client)
+            client.post(f"/api/meetings/{job_id}/enhance", json={})
+            spent = len(fake_llm.text_calls)
+
+            client.post(f"/api/meetings/{job_id}/stop")
+
+            assert self._until(
+                lambda: client.get(f"/api/meetings/{job_id}").json()["status"]
+                == "finished"
+            )
+            time.sleep(0.4)
+            pad = client.get(f"/api/meetings/{job_id}/notepad").json()
+        assert len(fake_llm.text_calls) == spent, "it wrote them a second time"
+        assert "by hand" in pad["enhanced"]
+
+    def test_recordings_restored_from_disk_are_left_alone(
+        self, auto_config, monkeypatch, fake_llm
+    ) -> None:
+        """Sixteen recordings on disk must not cost sixteen calls at startup."""
+        _stub_runner(monkeypatch)
+        past = auto_config.output_dir / "20260101-093000-local"
+        past.mkdir(parents=True)
+        self._transcript(past)
+        with TestClient(create_app(auto_config)) as client:
+            self._sign_in(client)
+            listed = client.get("/api/meetings").json()["meetings"]
+            assert any(m["id"].startswith("past-") for m in listed), "not restored"
+            time.sleep(0.4)
+        assert not fake_llm.text_calls
+
+    def test_it_can_be_switched_off(
+        self, service_config, monkeypatch, fake_llm
+    ) -> None:
+        """AUTO_NOTES=false, for somebody on a metered key."""
+        assert service_config.auto_notes is False
+        _stub_runner(monkeypatch, utterances=2, block=True)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            self._sign_in(client)
+            job_id = self._recording(client)
+
+            client.post(f"/api/meetings/{job_id}/stop")
+
+            assert self._until(
+                lambda: client.get(f"/api/meetings/{job_id}").json()["status"]
+                == "finished"
+            )
+            time.sleep(0.4)
+            pad = client.get(f"/api/meetings/{job_id}/notepad").json()
+        assert not fake_llm.text_calls
+        assert pad["enhanced"] == ""
+        # Still enhanceable by hand - only the automatic part is off.
+        assert service_config.analysis_enabled is True
+
+    def test_the_page_is_told_while_the_notes_are_being_written(
+        self, auto_config, monkeypatch
+    ) -> None:
+        """The page shows a thinking indicator for this, so it has to know."""
+        writing = threading.Event()
+        holding = threading.Event()
+
+        class SlowLLM:
+            model = "slow-model"
+
+            def complete_text(self, **_kwargs) -> str:
+                writing.set()
+                holding.wait(20)
+                return "## Summary\n\nWritten at last."
+
+            def complete_json(self, **_kwargs) -> dict:
+                return {}
+
+        from meetbot.service import app as app_module
+
+        monkeypatch.setattr(app_module, "build_client", lambda *a, **k: SlowLLM())
+        _stub_runner(monkeypatch, utterances=2, block=True)
+        auto_config.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with TestClient(create_app(auto_config)) as client:
+                self._sign_in(client)
+                job_id = self._recording(client)
+
+                client.post(f"/api/meetings/{job_id}/stop")
+
+                assert writing.wait(20), "the write-up never started"
+                row = next(
+                    m
+                    for m in client.get("/api/meetings").json()["meetings"]
+                    if m["id"] == job_id
+                )
+                assert row["enhancing"] is True
+                assert client.get(f"/api/meetings/{job_id}").json()["enhancing"] is True
+
+                holding.set()
+                assert self._until(
+                    lambda: client.get(f"/api/meetings/{job_id}/notepad")
+                    .json()["enhanced"]
+                )
+                assert (
+                    client.get(f"/api/meetings/{job_id}").json()["enhancing"] is False
+                )
+        finally:
+            # A still-held LLM call would hang the loop's shutdown grace.
+            holding.set()
 
 
 class TestRecallApi:
