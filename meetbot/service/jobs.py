@@ -255,6 +255,14 @@ class JobManager:
     def active_count(self) -> int:
         return sum(1 for job in self._jobs.values() if not job.status.is_terminal)
 
+    @property
+    def recording_locally(self) -> bool:
+        """Whether this machine is being recorded right now."""
+        return any(
+            job.kind == "local" and not job.status.is_terminal
+            for job in self._jobs.values()
+        )
+
     # -- commands ----------------------------------------------------------
 
     def start(
