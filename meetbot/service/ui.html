@@ -5,85 +5,175 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scribe</title>
 <style>
-  /* Near-monochrome, low chrome. Surfaces are soft grey fills rather than
-     boxes with borders and shadows, and the one colour in the palette is
-     reserved for "this meeting is live" - nothing else earns it. */
+  /* Glass over a quiet field of colour. Every panel is a frosted sheet that
+     lets the glow behind it through, edged with a hairline of light. Two
+     colours carry meaning and nothing else does: the warm spark, which is
+     Scribe listening or thinking, and green, which is live. */
   :root {
-    --bg: #ffffff;      --surface: #f7f7f8;  --surface-2: #efeff1;
-    --ink: #0d0d0d;     --muted: #6e6e80;    --faint: #9b9ba6;
-    --line: #ececf1;
-    --accent: #0d0d0d;  --accent-ink: #ffffff;
-    --live: #12a06a;    --bad: #c0392b;      --warn: #9a6a12;
-    --radius: 12px;
+    color-scheme: light;
+    --base: #eceef4;
+    --glow-1: rgba(255, 159, 107, .42);
+    --glow-2: rgba(146, 132, 255, .32);
+    --glow-3: rgba(84, 196, 222, .24);
+    --glass: rgba(255, 255, 255, .5);
+    --glass-soft: rgba(255, 255, 255, .36);
+    --glass-strong: rgba(255, 255, 255, .8);
+    --glass-edge: rgba(255, 255, 255, .72);
+    --glass-shine: inset 0 1px 0 rgba(255, 255, 255, .9);
+    --field: rgba(255, 255, 255, .6);
+    --chip: rgba(255, 255, 255, .55);
+    --chip-on: rgba(255, 255, 255, .92);
+    --track: rgba(22, 24, 40, .14);
+    --panel-shadow: 0 1px 1px rgba(20, 22, 40, .03), 0 24px 60px -30px rgba(30, 30, 70, .3);
+    --chip-shadow: 0 1px 2px rgba(20, 22, 40, .07), 0 8px 20px -10px rgba(30, 30, 70, .25);
+    --float-shadow: 0 2px 8px rgba(20, 22, 40, .06), 0 36px 90px -28px rgba(30, 30, 70, .42);
+    --ink: #101115;  --muted: #585b6b;  --faint: #8b8e9e;
+    --line: rgba(22, 24, 40, .08);
+    --btn: linear-gradient(180deg, #2c2d34 0%, #121318 100%);
+    --btn-ink: #ffffff;
+    --btn-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 8px 20px -8px rgba(18, 19, 26, .55);
+    --focus: rgba(226, 112, 58, .55);
+    --focus-ring: rgba(226, 112, 58, .15);
+    --spark: #e2703a;  --spark-hi: #ffcfae;
+    --live: #0f9f68;   --bad: #c43b2d;  --warn: #9a6a12;
+    --radius: 20px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d0d0d;    --surface: #171718;  --surface-2: #212124;
-      --ink: #ececf1;   --muted: #9b9ba6;    --faint: #6e6e80;
-      --line: #26262a;
-      --accent: #ececf1; --accent-ink: #0d0d0d;
-      --live: #19c37d;  --bad: #e0705a;      --warn: #d0a154;
+      color-scheme: dark;
+      --base: #07080c;
+      --glow-1: rgba(226, 112, 58, .24);
+      --glow-2: rgba(118, 98, 255, .22);
+      --glow-3: rgba(38, 170, 196, .14);
+      --glass: rgba(24, 25, 32, .5);
+      --glass-soft: rgba(255, 255, 255, .035);
+      --glass-strong: rgba(30, 31, 39, .82);
+      --glass-edge: rgba(255, 255, 255, .085);
+      --glass-shine: inset 0 1px 0 rgba(255, 255, 255, .07);
+      --field: rgba(255, 255, 255, .045);
+      --chip: rgba(255, 255, 255, .06);
+      --chip-on: rgba(255, 255, 255, .12);
+      --track: rgba(255, 255, 255, .16);
+      --panel-shadow: 0 30px 70px -30px rgba(0, 0, 0, .75);
+      --chip-shadow: 0 10px 24px -12px rgba(0, 0, 0, .7);
+      --float-shadow: 0 40px 90px -30px rgba(0, 0, 0, .85);
+      --ink: #f1f2f6;  --muted: #a4a7b6;  --faint: #6f7283;
+      --line: rgba(255, 255, 255, .08);
+      --btn: linear-gradient(180deg, #ffffff 0%, #d8dae3 100%);
+      --btn-ink: #0d0e12;
+      --btn-shadow: inset 0 1px 0 #ffffff, 0 10px 26px -12px rgba(255, 255, 255, .25);
+      --focus: rgba(240, 138, 75, .6);
+      --focus-ring: rgba(240, 138, 75, .18);
+      --spark: #f08a4b;  --spark-hi: #ffe2cd;
+      --live: #22c985;   --bad: #ef7a64;  --warn: #d9ab5c;
     }
   }
+  /* Without backdrop blur, translucent panels only look washed out. */
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    :root { --glass: rgba(248, 248, 251, .96); --glass-strong: rgba(255, 255, 255, .98); }
+    @media (prefers-color-scheme: dark) {
+      :root { --glass: rgba(22, 23, 29, .96); --glass-strong: rgba(30, 31, 39, .98); }
+    }
+  }
+
   * { box-sizing: border-box; }
+  /* A class that sets display beats the browser's own rule for [hidden], so
+     buttons that should be hidden - "Accounts" for a member among them -
+     stayed on screen. */
+  [hidden] { display: none !important; }
   html, body { height: 100%; }
   body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
-          "Helvetica Neue", sans-serif;
+    margin: 0; color: var(--ink); background-color: var(--base);
+    background-image:
+      radial-gradient(1100px 760px at 4% -10%, var(--glow-1), transparent 62%),
+      radial-gradient(1000px 720px at 104% -8%, var(--glow-2), transparent 60%),
+      radial-gradient(1300px 900px at 55% 120%, var(--glow-3), transparent 62%);
+    background-attachment: fixed;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+          Inter, Roboto, "Helvetica Neue", sans-serif;
     -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+  }
+  /* A whisper of grain, so the glow reads as light rather than as a gradient. */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .045 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
   }
   button, input, select, textarea { font: inherit; color: inherit; }
   button { border: 0; background: none; cursor: pointer; }
-  ::selection { background: var(--surface-2); }
+  ::selection { background: color-mix(in srgb, var(--spark) 24%, transparent); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb {
-    background: var(--surface-2); border-radius: 99px;
+    background-color: color-mix(in srgb, var(--ink) 14%, transparent); border-radius: 99px;
     border: 3px solid transparent; background-clip: content-box;
   }
+  ::-webkit-scrollbar-thumb:hover { background-color: color-mix(in srgb, var(--ink) 26%, transparent); }
   ::-webkit-scrollbar-track { background: transparent; }
 
+  /* -- glass ------------------------------------------------------------ */
+  /* A panel: frosted, edged with light. */
+  .glass {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(28px) saturate(170%);
+    backdrop-filter: blur(28px) saturate(170%);
+    border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine), var(--panel-shadow);
+  }
+  /* Something floating above the panels: denser, and further off the page. */
+  .float {
+    background: var(--glass-strong);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    backdrop-filter: blur(40px) saturate(180%);
+    border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine), var(--float-shadow);
+  }
+
   /* -- shell ------------------------------------------------------------ */
-  .app { display: flex; flex-direction: column; height: 100vh; }
+  .app {
+    position: relative; z-index: 1; display: flex; flex-direction: column;
+    height: 100vh; padding: 10px; gap: 10px;
+  }
   .topbar {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 0 16px 0 20px; height: 50px; flex: 0 0 auto; background: var(--bg);
+    padding: 0 8px 0 18px; height: 52px; flex: 0 0 auto; border-radius: 16px;
   }
   .brand {
-    display: flex; align-items: center; gap: 8px;
-    font-weight: 600; font-size: 14.5px; letter-spacing: -0.02em;
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 650; font-size: 15px; letter-spacing: -0.025em;
   }
   .brand .dot {
-    width: 7px; height: 7px; border-radius: 50%; background: var(--ink);
+    width: 11px; height: 11px; border-radius: 50%;
+    background: radial-gradient(circle at 32% 30%, #ffe0cc 0%, var(--spark) 55%, #a8421a 100%);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--spark) 16%, transparent),
+                0 0 16px color-mix(in srgb, var(--spark) 60%, transparent);
   }
   .brand small {
-    font-weight: 400; color: var(--faint); font-size: 12px; letter-spacing: 0;
+    font-weight: 450; color: var(--faint); font-size: 12px; letter-spacing: 0;
   }
   .topbar-right {
     display: flex; align-items: center; gap: 6px; font-size: 13px;
     color: var(--muted);
   }
-  .body { display: flex; flex: 1 1 auto; min-height: 0; }
+  #me { padding: 0 6px; }
+  .body { display: flex; gap: 10px; flex: 1 1 auto; min-height: 0; }
 
-  /* -- sidebar: the grey rail ------------------------------------------- */
+  /* -- sidebar ----------------------------------------------------------- */
   .side {
-    width: 276px; flex: 0 0 276px; background: var(--surface);
-    display: flex; flex-direction: column; min-height: 0;
-    border-radius: 0 var(--radius) 0 0;
+    width: 280px; flex: 0 0 280px; display: flex; flex-direction: column;
+    min-height: 0; border-radius: var(--radius);
   }
-  .side-top { padding: 14px 12px 12px; }
-  .side-list { overflow-y: auto; flex: 1 1 auto; padding: 4px 8px 24px; }
+  .side-top { padding: 14px 12px 12px; border-bottom: 1px solid var(--line); }
+  .side-list { overflow-y: auto; flex: 1 1 auto; padding: 4px 8px 20px; }
   .daygroup {
-    font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .1em; color: var(--faint); padding: 16px 10px 6px;
+    font-size: 10.5px; font-weight: 650; text-transform: uppercase;
+    letter-spacing: .12em; color: var(--faint); padding: 16px 10px 6px;
   }
   .mtg {
-    display: block; width: 100%; text-align: left; border-radius: 10px;
-    padding: 8px 10px; margin-bottom: 1px;
-    transition: background .13s ease;
+    display: block; width: 100%; text-align: left; border-radius: 12px;
+    padding: 8px 11px; margin-bottom: 2px; border: 1px solid transparent;
+    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
   }
-  .mtg:hover { background: var(--surface-2); }
-  .mtg.on { background: var(--surface-2); }
+  .mtg:hover { background: var(--chip); }
+  .mtg.on { background: var(--chip-on); border-color: var(--glass-edge); box-shadow: var(--chip-shadow); }
   .mtg-top { display: flex; align-items: center; gap: 6px; }
   .mtg-name {
     font-weight: 500; font-size: 13.5px; letter-spacing: -0.01em;
@@ -96,23 +186,28 @@
     display: flex; gap: 6px; align-items: center;
   }
 
-  /* A live meeting gets a pulsing dot. Everything else is text. */
+  /* A live meeting gets a glowing, breathing dot. Everything else is text. */
   .pill {
-    font-size: 10.5px; font-weight: 500; color: var(--muted);
-    display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+    font-size: 10.5px; font-weight: 550; color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
   }
   .pill::before {
     content: ""; width: 6px; height: 6px; border-radius: 50%;
     background: var(--faint);
   }
-  .pill.live { color: var(--live); font-weight: 600; }
-  .pill.live::before { background: var(--live); animation: pulse 2s ease-in-out infinite; }
+  .pill.live { color: var(--live); font-weight: 650; }
+  .pill.live::before {
+    background: var(--live);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 20%, transparent),
+                0 0 10px color-mix(in srgb, var(--live) 70%, transparent);
+    animation: pulse 2s ease-in-out infinite;
+  }
   .pill.bad { color: var(--bad); }
   .pill.bad::before { background: var(--bad); }
   .pill.warm { color: var(--warn); }
   .pill.warm::before { background: var(--warn); }
-  @keyframes pulse { 50% { opacity: .3; } }
-  .tick { color: var(--faint); font-size: 9px; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .tick { color: var(--spark); font-size: 9px; }
 
   /* -- controls ---------------------------------------------------------- */
   label.field {
@@ -120,52 +215,66 @@
     margin: 0 0 7px 4px; text-transform: uppercase; letter-spacing: .1em;
   }
   input[type=text], input[type=password], textarea, select {
-    width: 100%; padding: 9px 12px; background: var(--bg); color: var(--ink);
-    border: 1px solid transparent; border-radius: 10px; font-size: 13.5px;
-    transition: border-color .13s ease, background .13s ease;
+    width: 100%; padding: 10px 13px; background: var(--field); color: var(--ink);
+    border: 1px solid var(--glass-edge); border-radius: 12px; font-size: 13.5px;
+    transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
   }
-  .side input[type=text] { background: var(--bg); }
   input::placeholder, textarea::placeholder { color: var(--faint); }
   input:focus, textarea:focus, select:focus {
-    outline: none; border-color: var(--ink);
+    outline: none; border-color: var(--focus); background: var(--chip-on);
+    box-shadow: 0 0 0 4px var(--focus-ring);
   }
-  select {
-    background: var(--surface); border-color: transparent; cursor: pointer;
-    padding-right: 26px;
-  }
-  select:hover { background: var(--surface-2); }
+  select { cursor: pointer; padding-right: 26px; }
+  select:hover { background: var(--chip-on); }
   button.btn {
-    font-weight: 500; font-size: 13.5px; padding: 9px 16px; border-radius: 999px;
-    background: var(--accent); color: var(--accent-ink);
-    transition: opacity .13s ease, background .13s ease;
+    font-weight: 550; font-size: 13.5px; padding: 9px 17px; border-radius: 999px;
+    background: var(--btn); color: var(--btn-ink); box-shadow: var(--btn-shadow);
+    transition: transform .14s ease, box-shadow .18s ease, opacity .18s ease, background .18s ease;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   }
-  button.btn:hover:not(:disabled) { opacity: .85; }
-  button.btn:disabled { opacity: .4; cursor: not-allowed; }
-  button.btn.ghost { background: var(--surface); color: var(--ink); }
-  button.btn.ghost:hover:not(:disabled) { background: var(--surface-2); opacity: 1; }
-  button.btn.quiet { background: transparent; color: var(--muted); }
-  button.btn.quiet:hover:not(:disabled) { background: var(--surface); color: var(--ink); opacity: 1; }
-  button.btn.danger { background: var(--surface); color: var(--bad); }
+  button.btn:hover:not(:disabled) { transform: translateY(-1px); }
+  button.btn:active:not(:disabled) { transform: translateY(0); }
+  button.btn:disabled { opacity: .45; cursor: not-allowed; }
+  button.btn.ghost {
+    background: var(--chip); color: var(--ink); border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine);
+  }
+  button.btn.ghost:hover:not(:disabled), button.btn.ghost.on {
+    background: var(--chip-on); box-shadow: var(--glass-shine), var(--chip-shadow);
+  }
+  button.btn.quiet { background: transparent; color: var(--muted); box-shadow: none; }
+  button.btn.quiet:hover:not(:disabled) { background: var(--chip); color: var(--ink); transform: none; }
+  button.btn.danger {
+    background: var(--chip); color: var(--bad); border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine);
+  }
   button.btn.danger:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--bad) 10%, var(--surface)); opacity: 1;
+    background: color-mix(in srgb, var(--bad) 12%, var(--chip-on));
   }
-  button.btn.sm { padding: 6px 12px; font-size: 12.5px; }
+  button.btn.sm { padding: 6px 13px; font-size: 12.5px; }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .grow { flex: 1 1 auto; }
+  .icon-btn {
+    width: 28px; height: 28px; border-radius: 9px; color: var(--faint);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 18px; line-height: 1; flex: 0 0 auto;
+    transition: background .15s ease, color .15s ease;
+  }
+  .icon-btn:hover { background: var(--chip); color: var(--ink); }
 
   /* A two-way switch, not a pair of buttons: only one of these modes can
      be what you are doing. */
   .segmented {
-    display: flex; gap: 2px; background: var(--bg); border-radius: 999px;
-    padding: 3px; margin-bottom: 12px;
+    display: flex; gap: 3px; background: var(--glass-soft); border-radius: 999px;
+    padding: 3px; margin-bottom: 12px; border: 1px solid var(--glass-edge);
   }
   .segmented button {
     flex: 1 1 0; padding: 7px 10px; border-radius: 999px; font-size: 12.5px;
-    font-weight: 500; color: var(--muted);
-    transition: background .13s ease, color .13s ease;
+    font-weight: 550; color: var(--muted);
+    transition: background .18s ease, color .18s ease, box-shadow .18s ease;
   }
   .segmented button:hover { color: var(--ink); }
-  .segmented button.on { background: var(--ink); color: var(--bg); font-weight: 600; }
+  .segmented button.on { background: var(--btn); color: var(--btn-ink); box-shadow: var(--btn-shadow); }
   .hint {
     font-size: 11.5px; color: var(--faint); line-height: 1.5; margin-top: 9px;
     padding: 0 4px;
@@ -175,6 +284,28 @@
     font-size: 10px; color: var(--faint); text-transform: uppercase;
     letter-spacing: .08em; flex: 0 0 auto;
   }
+
+  /* An on/off preference, small enough to sit beside a heading. */
+  .switch {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 12px;
+    color: var(--muted); cursor: pointer; user-select: none; position: relative;
+  }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .switch .track {
+    width: 28px; height: 16px; border-radius: 99px; background: var(--track);
+    position: relative; transition: background .18s ease, box-shadow .18s ease; flex: 0 0 auto;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+    border-radius: 50%; background: #ffffff; box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+    transition: transform .18s ease;
+  }
+  .switch input:checked + .track {
+    background: var(--spark);
+    box-shadow: 0 0 12px color-mix(in srgb, var(--spark) 40%, transparent);
+  }
+  .switch input:checked + .track::after { transform: translateX(12px); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
 
   details.opts { margin-top: 10px; padding: 0 4px; }
   details.opts summary {
@@ -187,14 +318,24 @@
     display: flex; align-items: flex-start; gap: 8px; font-size: 12px;
     color: var(--muted); margin-top: 10px; line-height: 1.5;
   }
-  .opt input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--ink); }
+  .opt input { margin-top: 2px; flex: 0 0 auto; accent-color: var(--spark); }
+  .muted-app {
+    display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+    margin-top: 6px;
+  }
+  .muted-app span { flex: 1 1 auto; }
 
   /* -- main canvas -------------------------------------------------------- */
-  .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
-  .mhead { padding: 20px 36px 0; flex: 0 0 auto; }
+  /* A container, so the notes split by the room they actually have - which
+     the chat rail changes - rather than by the width of the window. */
+  .main {
+    flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+    container-type: inline-size; border-radius: var(--radius); overflow: hidden;
+  }
+  .mhead { padding: 22px 32px 0; flex: 0 0 auto; }
   .mtitle { display: flex; align-items: center; gap: 10px; }
   .mtitle h2 {
-    margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.03em;
+    margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.035em;
   }
   .mmeta {
     color: var(--faint); font-size: 12px; margin-top: 3px;
@@ -203,39 +344,39 @@
   .mmeta a { color: var(--faint); text-decoration: none; }
   .mmeta a:hover { color: var(--muted); }
   .mmeta .sep { opacity: .5; }
-  .tabs { display: flex; gap: 3px; margin: 16px 0 0; }
-  .tab {
-    padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 450;
-    color: var(--muted); transition: background .13s ease, color .13s ease;
+  .tabs {
+    display: inline-flex; gap: 2px; margin: 16px 0 0; padding: 3px;
+    border-radius: 999px; background: var(--glass-soft); border: 1px solid var(--glass-edge);
   }
-  .tab:hover { background: var(--surface); color: var(--ink); }
-  .tab.on { background: var(--surface); color: var(--ink); font-weight: 550; }
+  .tab {
+    padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 500;
+    color: var(--muted); transition: background .18s ease, color .18s ease, box-shadow .18s ease;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.on { background: var(--chip-on); color: var(--ink); font-weight: 600; box-shadow: var(--chip-shadow); }
   .tab .count { font-size: 11px; color: var(--faint); margin-left: 5px; }
   .pane {
-    flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 36px 48px;
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 32px 40px;
   }
 
   /* -- notes -------------------------------------------------------------- */
   .notebar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-bottom: 18px; }
-  .notebar select { width: auto; min-width: 132px; padding: 7px 12px; font-size: 13px; }
+  .notebar select { width: auto; min-width: 132px; padding: 8px 12px; font-size: 13px; }
   .savestate { font-size: 11.5px; color: var(--faint); min-width: 76px; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 34px; }
-  @media (max-width: 1100px) { .split { grid-template-columns: minmax(0, 1fr); gap: 26px; } }
+  @container (max-width: 880px) { .split { grid-template-columns: minmax(0, 1fr); gap: 26px; } }
   .col-head {
-    font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .1em; color: var(--faint); margin: 0 0 10px 2px;
+    font-size: 10.5px; font-weight: 650; text-transform: uppercase;
+    letter-spacing: .12em; color: var(--faint); margin: 0 0 10px 2px;
     display: flex; align-items: baseline; gap: 7px;
   }
   #tpl-used { text-transform: none; letter-spacing: 0; font-weight: 400; }
-  /* The notepad is a surface, not a box: no border, no shadow, just a soft
-     fill that recedes once you are typing into it. */
+  /* The notepad is a sheet of frosted glass that clears once you type. */
   #notepad {
     width: 100%; min-height: 420px; resize: vertical; padding: 18px 20px;
-    background: var(--surface); border-radius: var(--radius); border: 1px solid transparent;
-    font-size: 14.5px; line-height: 1.75;
+    border-radius: 18px; font-size: 14.5px; line-height: 1.75;
   }
-  #notepad:focus { background: var(--bg); border-color: var(--line); }
-  /* The enhanced notes are a document. They sit on the page unframed, and
+  /* The enhanced notes are a document. They sit on the glass unframed, and
      the line length is capped where prose stops being comfortable. */
   .card { min-height: 420px; }
   #enhanced { max-width: 64ch; }
@@ -243,19 +384,20 @@
     color: var(--faint); font-size: 13px; padding: 30px 2px; line-height: 1.75;
     max-width: 46ch;
   }
-  .placeholder strong { color: var(--muted); font-weight: 500; }
+  .placeholder strong { color: var(--muted); font-weight: 550; }
 
   /* -- rendered markdown --------------------------------------------------- */
   .doc { font-size: 14.5px; line-height: 1.65; }
   .doc .md-h1, .doc .md-h2 {
-    font-size: 15px; font-weight: 620; letter-spacing: -0.02em; margin: 26px 0 9px;
+    font-size: 15px; font-weight: 650; letter-spacing: -0.02em; margin: 26px 0 9px;
   }
   .doc .md-h3, .doc .md-h4 {
-    font-size: 13.5px; font-weight: 600; margin: 20px 0 6px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .06em;
+    font-size: 12.5px; font-weight: 650; margin: 20px 0 6px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .08em;
   }
   .doc .md-h1:first-child, .doc .md-h2:first-child { margin-top: 0; }
   .doc .md-p { margin: 9px 0; }
+  .doc .md-p:first-child { margin-top: 0; }
   .doc .md-list { margin: 9px 0; padding-left: 18px; }
   .doc .md-list li { margin: 6px 0; padding-left: 3px; }
   .doc .md-list li::marker { color: var(--faint); }
@@ -264,32 +406,178 @@
     align-items: flex-start;
   }
   .doc .md-task .box {
-    flex: 0 0 15px; height: 15px; margin-top: 4px; border-radius: 4px;
+    flex: 0 0 15px; height: 15px; margin-top: 4px; border-radius: 5px;
     border: 1.5px solid var(--faint); font-size: 10px; line-height: 13px;
     text-align: center; color: var(--muted); background: transparent;
   }
-  .doc .md-task.done .box { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .doc .md-task.done .box { background: var(--spark); color: #ffffff; border-color: var(--spark); }
   .doc .md-turn { margin: 20px 0 1px; display: flex; gap: 10px; align-items: baseline; }
   .doc .md-time {
-    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
     font-size: 11px; color: var(--faint);
   }
   .doc .md-who { font-weight: 600; font-size: 13.5px; }
   .doc .md-rule { border: 0; border-top: 1px solid var(--line); margin: 26px 0 16px; }
   .doc .md-note { color: var(--faint); font-size: 12px; }
   .doc code {
-    background: var(--surface); padding: 2px 6px; border-radius: 6px;
-    font-size: 12.5px; font-family: ui-monospace, Menlo, Consolas, monospace;
+    background: var(--chip); border: 1px solid var(--glass-edge); padding: 1px 6px;
+    border-radius: 7px; font-size: 12.5px;
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
   }
-  .doc strong { font-weight: 600; }
+  .doc strong { font-weight: 650; }
+
+  /* -- thinking ------------------------------------------------------------- */
+  /* Scribe at work: a spark that turns through its shapes, and a verb with
+     light running across it. The glyphs are text, so they take the colour
+     and the glow; the sequence runs forward and back so it never jumps. */
+  .thinking {
+    display: inline-flex; align-items: center; gap: 9px; font-size: 13.5px;
+    font-weight: 560; letter-spacing: -0.005em; animation: rise .3s ease-out;
+  }
+  .spark {
+    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 18px; height: 18px; color: var(--spark); font-size: 16px; line-height: 1;
+    font-family: "Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", "DejaVu Sans", sans-serif;
+    text-shadow: 0 0 10px color-mix(in srgb, var(--spark) 65%, transparent);
+  }
+  .spark::before { content: "\273B"; animation: spark 1.3s linear infinite; }
+  @keyframes spark {
+    0%   { content: "\00B7"; }
+    12%  { content: "\2722"; }
+    25%  { content: "\2736"; }
+    37%  { content: "\273B"; }
+    50%  { content: "\273D"; }
+    62%  { content: "\273B"; }
+    75%  { content: "\2736"; }
+    87%  { content: "\2722"; }
+  }
+  .thinking-word {
+    display: inline-block;
+    background-image: linear-gradient(100deg, var(--spark) 0%, var(--spark) 38%,
+                      var(--spark-hi) 50%, var(--spark) 62%, var(--spark) 100%);
+    background-size: 250% 100%;
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: shimmer 2.4s linear infinite;
+  }
+  .thinking-word.swap { animation: word-swap .5s cubic-bezier(.2, .75, .25, 1), shimmer 2.4s linear infinite; }
+  @keyframes shimmer { from { background-position: 125% 0; } to { background-position: -125% 0; } }
+  @keyframes word-swap { from { opacity: 0; filter: blur(6px); transform: translateY(5px); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+  button .spark { width: 14px; height: 14px; font-size: 13px; }
+
+  /* -- citations ----------------------------------------------------------- */
+  /* A numbered chip where an answer rests on a transcript line. It warms to
+     the spark on hover and while its source is open. */
+  .cite {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 5px; margin: 0 1px 0 3px;
+    border-radius: 999px; background: var(--chip-on); color: var(--ink);
+    border: 1px solid var(--glass-edge); box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+    font-size: 10px; font-weight: 700; line-height: 1; vertical-align: 1px;
+    font-variant-numeric: tabular-nums; cursor: pointer;
+    transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+  }
+  .cite:hover, .cite.on, .source:hover .cite, .source.on .cite {
+    background: var(--spark); color: #ffffff; border-color: transparent;
+    box-shadow: 0 0 14px color-mix(in srgb, var(--spark) 50%, transparent);
+  }
+  .sources { margin: 10px 0 0 -8px; display: flex; flex-direction: column; gap: 1px; }
+  .source {
+    display: flex; gap: 9px; align-items: baseline; text-align: left;
+    padding: 6px 8px; border-radius: 11px; font-size: 12px;
+    transition: background .15s ease;
+  }
+  .source:hover, .source.on { background: var(--chip); }
+  .source .cite { margin: 0; flex: 0 0 auto; }
+  .source-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .source-where {
+    font-size: 11px; color: var(--faint); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .source-quote {
+    color: var(--muted); line-height: 1.5; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  }
+  .turn-meta { font-size: 11px; color: var(--faint); margin-top: 8px; }
+
+  .citecard {
+    position: fixed; z-index: 30; width: min(400px, calc(100vw - 24px));
+    border-radius: 18px; padding: 14px 16px 12px; font-size: 13px;
+    max-height: min(72vh, 540px); overflow-y: auto; animation: rise .18s ease-out;
+  }
+  .cc-head { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 4px; }
+  .cc-head .cite { margin: 2px 0 0; background: var(--spark); color: #ffffff; border-color: transparent; cursor: default; }
+  .cc-title { flex: 1 1 auto; min-width: 0; }
+  .cc-title strong {
+    display: block; font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cc-title span { font-size: 11.5px; color: var(--faint); }
+  .cc-label {
+    font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .12em;
+    color: var(--faint); margin: 12px 0 3px;
+  }
+  .cc-line {
+    display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 8px;
+    padding: 3px 0; color: var(--muted); line-height: 1.55;
+  }
+  .cc-line .t {
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; font-size: 10.5px;
+    color: var(--faint); padding-top: 2px;
+  }
+  .cc-line b { font-weight: 600; color: var(--ink); margin-right: 6px; }
+  .cc-line.said {
+    background: var(--chip-on); border: 1px solid var(--glass-edge); border-radius: 12px;
+    padding: 8px 9px; margin: 2px -9px; color: var(--ink);
+    box-shadow: inset 3px 0 0 var(--spark);
+  }
+  .cc-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
 
   /* -- transcript ---------------------------------------------------------- */
-  .live-line { margin: 14px 0; display: flex; gap: 12px; align-items: baseline; }
+  .transcript { max-width: 860px; }
+  .live-line {
+    display: flex; gap: 12px; align-items: baseline; margin: 3px -12px;
+    padding: 7px 12px; border-radius: 12px; transition: background .2s ease;
+  }
+  .live-line:hover { background: var(--glass-soft); }
   .live-line .t {
-    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
-    color: var(--faint); flex: 0 0 auto; padding-top: 1px;
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; font-size: 11px;
+    color: var(--faint); flex: 0 0 auto; padding-top: 1px; min-width: 36px;
   }
   .live-line .w { font-weight: 600; flex: 0 0 auto; font-size: 13.5px; }
+  .live-line .x { flex: 1 1 auto; min-width: 0; }
+  /* Where a citation opened the transcript. It stays marked, so the line is
+     still findable after reading around it. */
+  .live-line.cited {
+    background: var(--chip-on); box-shadow: inset 3px 0 0 var(--spark), var(--chip-shadow);
+  }
+  .live-line.flash { animation: flash 2.4s ease-out 1; }
+  @keyframes flash { 0%, 35% { background: color-mix(in srgb, var(--spark) 18%, var(--chip-on)); } }
+  /* A word as it is registered: out of focus, then settling into place. */
+  .w-in {
+    display: inline-block; opacity: 0; filter: blur(8px); transform: translateY(4px);
+    animation: word-in .55s cubic-bezier(.2, .75, .25, 1) forwards;
+    animation-delay: var(--d, 0ms);
+  }
+  @keyframes word-in { to { opacity: 1; filter: blur(0); transform: none; } }
+  /* "Listening" rides along at the foot of a live transcript. */
+  .tx-foot {
+    position: sticky; bottom: 0; display: flex; align-items: center; gap: 12px;
+    padding: 16px 0 2px; pointer-events: none;
+  }
+  .tx-foot .thinking {
+    pointer-events: auto; padding: 8px 15px 8px 11px; border-radius: 999px;
+    background: var(--glass-strong); border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine), var(--chip-shadow);
+    -webkit-backdrop-filter: blur(24px) saturate(170%);
+    backdrop-filter: blur(24px) saturate(170%);
+  }
+  .tx-hint { font-size: 12.5px; color: var(--faint); }
+  .transcript.empty .tx-foot {
+    position: static; flex-direction: column; align-items: flex-start; gap: 10px;
+    padding-top: 8px;
+  }
+  .transcript.empty .tx-hint { padding-left: 6px; }
 
   /* -- ask: a conversation, not a form -------------------------------------- */
   .askwrap {
@@ -299,40 +587,128 @@
   .askfeed { flex: 1 1 auto; }
   .turn { margin-bottom: 26px; display: flex; flex-direction: column; }
   .turn .q {
-    align-self: flex-end; background: var(--surface); border-radius: 16px;
+    align-self: flex-end; background: var(--chip-on); border: 1px solid var(--glass-edge);
+    box-shadow: var(--chip-shadow); border-radius: 18px 18px 6px 18px;
     padding: 9px 15px; font-size: 14px; margin-bottom: 14px; max-width: 80%;
+    white-space: pre-wrap; overflow-wrap: anywhere;
   }
   .turn .a { font-size: 14.5px; line-height: 1.72; }
   /* The composer sits at the bottom of the column, where a chat's does. */
   .askbar {
     position: sticky; bottom: 0; display: flex; gap: 8px; align-items: center;
-    background: var(--surface); border-radius: 999px; padding: 5px 5px 5px 8px;
-    margin-top: 20px;
+    background: var(--glass-strong); border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine), var(--chip-shadow);
+    -webkit-backdrop-filter: blur(24px) saturate(170%);
+    backdrop-filter: blur(24px) saturate(170%);
+    border-radius: 999px; padding: 5px 5px 5px 8px; margin-top: 20px;
   }
   .askbar input {
-    background: transparent; border: 0; padding: 9px 10px; font-size: 14px;
+    background: transparent; border: 0; padding: 9px 10px; font-size: 14px; box-shadow: none;
   }
-  .askbar input:focus { border: 0; outline: none; }
+  .askbar input:focus { border: 0; outline: none; box-shadow: none; background: transparent; }
+  .askbar:focus-within { border-color: var(--focus); box-shadow: 0 0 0 4px var(--focus-ring); }
   .askbar .btn { flex: 0 0 auto; padding: 9px 18px; }
+  .ask-tools { margin-top: 10px; padding: 0 6px; }
   .suggest { display: flex; gap: 7px; flex-wrap: wrap; margin: 4px 0 8px; }
   .suggest button {
-    background: transparent; border: 1px solid var(--line); border-radius: 999px;
-    padding: 7px 14px; font-size: 12.5px; color: var(--muted);
-    transition: background .13s ease, color .13s ease;
+    background: var(--chip); border: 1px solid var(--glass-edge); border-radius: 999px;
+    padding: 7px 14px; font-size: 12.5px; color: var(--muted); text-align: left;
+    transition: background .15s ease, color .15s ease, box-shadow .15s ease;
   }
-  .suggest button:hover { background: var(--surface); color: var(--ink); }
+  .suggest button:hover { background: var(--chip-on); color: var(--ink); box-shadow: var(--chip-shadow); }
+
+  /* -- the chat rail: every meeting at once ---------------------------------- */
+  .chat {
+    width: 372px; flex: 0 0 372px; display: flex; flex-direction: column;
+    min-height: 0; border-radius: var(--radius);
+  }
+  .app.chat-closed .chat { display: none; }
+  .chat-head {
+    display: flex; align-items: center; gap: 10px; padding: 14px 10px 12px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .chat-title {
+    flex: 1 1 auto; min-width: 0; font-weight: 650; font-size: 13.5px;
+    letter-spacing: -0.01em; line-height: 1.3;
+  }
+  .chat-title small {
+    display: block; font-weight: 450; font-size: 11.5px; color: var(--faint);
+    letter-spacing: 0;
+  }
+  .chat-feed { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 18px 12px; }
+  .chat-feed .turn { margin-bottom: 22px; }
+  .chat-feed .turn .q { font-size: 13.5px; margin-bottom: 10px; max-width: 88%; }
+  .chat-feed .turn .a { font-size: 13.5px; line-height: 1.68; }
+  .chat-feed .doc { font-size: 13.5px; }
+  .chat-empty { padding: 22px 2px 8px; }
+  .chat-empty .spark { width: 30px; height: 30px; font-size: 26px; margin-bottom: 10px; }
+  .chat-empty h4 { margin: 0 0 6px; font-size: 16px; font-weight: 650; letter-spacing: -0.025em; }
+  .chat-empty p { margin: 0 0 16px; font-size: 12.5px; color: var(--muted); line-height: 1.65; }
+  .chat-empty .suggest { flex-direction: column; align-items: flex-start; }
+  .chat-foot { padding: 8px 12px 14px; }
+  .composer {
+    display: flex; align-items: flex-end; gap: 6px; background: var(--field);
+    border-radius: 22px; padding: 5px 5px 5px 15px; border: 1px solid var(--glass-edge);
+    box-shadow: var(--glass-shine);
+    transition: border-color .18s ease, box-shadow .18s ease;
+  }
+  .composer:focus-within { border-color: var(--focus); box-shadow: 0 0 0 4px var(--focus-ring); }
+  .composer textarea {
+    flex: 1 1 auto; border: 0; background: transparent; resize: none;
+    padding: 7px 0; font-size: 13.5px; line-height: 1.5; min-height: 34px;
+    max-height: 132px; border-radius: 0; box-shadow: none;
+  }
+  .composer textarea:focus { border: 0; outline: none; box-shadow: none; background: transparent; }
+  .composer .btn { flex: 0 0 auto; padding: 7px 15px; }
+  .chat-note {
+    font-size: 11px; color: var(--faint); padding: 7px 8px 0;
+    display: flex; align-items: center; gap: 8px; min-height: 30px;
+  }
+  @media (max-width: 980px) {
+    .chat {
+      position: fixed; right: 10px; top: 72px; bottom: 10px; z-index: 15;
+      width: min(400px, calc(100vw - 20px));
+      background: var(--glass-strong); box-shadow: var(--glass-shine), var(--float-shadow);
+    }
+  }
+
+  /* -- a call just started ---------------------------------------------------- */
+  .callcard {
+    position: fixed; z-index: 25; top: 72px; left: 50%; transform: translateX(-50%);
+    width: min(480px, calc(100vw - 32px)); border-radius: 20px;
+    padding: 15px 15px 14px 16px; display: flex; gap: 13px; align-items: flex-start;
+    animation: drop .26s cubic-bezier(.2, .75, .25, 1);
+  }
+  @keyframes drop { from { opacity: 0; transform: translate(-50%, -10px) scale(.98); } }
+  .callcard .ring {
+    flex: 0 0 36px; height: 36px; border-radius: 50%; margin-top: 1px;
+    background: color-mix(in srgb, var(--live) 16%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--live) 28%, transparent),
+                0 0 26px color-mix(in srgb, var(--live) 32%, transparent);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .callcard .ring::before {
+    content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--live);
+    box-shadow: 0 0 12px var(--live); animation: pulse 1.6s ease-in-out infinite;
+  }
+  .call-body { flex: 1 1 auto; min-width: 0; }
+  .call-title { font-weight: 650; font-size: 14.5px; letter-spacing: -0.015em; }
+  .call-sub { font-size: 12px; color: var(--faint); margin: 1px 0 10px; }
+  .call-body input[type=text] { margin-bottom: 10px; }
+  .call-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .call-more { font-size: 11.5px; color: var(--faint); margin-left: auto; }
 
   /* -- misc ---------------------------------------------------------------- */
   .banner {
-    margin: 0 20px 8px; padding: 11px 16px; font-size: 12.5px; border-radius: 10px;
+    padding: 11px 16px; font-size: 12.5px; border-radius: 14px;
     display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-    background: var(--surface);
   }
   .banner.bad { color: var(--bad); }
   .banner.warn { color: var(--warn); }
   .banner code {
-    font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px;
-    background: var(--bg); padding: 3px 8px; border-radius: 6px; color: var(--ink);
+    font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace; font-size: 11.5px;
+    background: var(--chip-on); border: 1px solid var(--glass-edge); padding: 3px 8px;
+    border-radius: 7px; color: var(--ink);
   }
   .err {
     color: var(--bad); font-size: 12.5px; margin-top: 10px; line-height: 1.55;
@@ -342,36 +718,39 @@
     justify-content: center; height: 100%; text-align: center; color: var(--muted);
     padding: 40px;
   }
+  .empty-main .spark { width: 48px; height: 48px; font-size: 38px; margin-bottom: 16px; }
   .empty-main h3 {
-    margin: 0 0 10px; font-size: 19px; font-weight: 600; color: var(--ink);
-    letter-spacing: -0.03em;
+    margin: 0 0 10px; font-size: 22px; font-weight: 650; color: var(--ink);
+    letter-spacing: -0.035em;
   }
-  .empty-main p { margin: 0; max-width: 360px; font-size: 13.5px; line-height: 1.7; }
+  .empty-main p { margin: 0; max-width: 380px; font-size: 13.5px; line-height: 1.7; }
   .spin {
     display: inline-block; width: 11px; height: 11px; border-radius: 50%;
-    border: 1.5px solid var(--line); border-top-color: currentColor;
+    border: 1.5px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-top-color: currentColor;
     animation: spin .65s linear infinite; vertical-align: -1px;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) {
     .spin { animation-duration: 2.4s; }
-    .pill.live::before { animation: none; }
+    .pill.live::before, .callcard .ring::before, .spark::before,
+    .thinking, .thinking-word, .thinking-word.swap { animation: none; }
+    .w-in { animation: none; opacity: 1; filter: none; transform: none; }
     * { transition: none !important; }
   }
 
   /* -- modal ---------------------------------------------------------------- */
   .modal-bg {
-    position: fixed; inset: 0; background: rgba(13, 13, 13, .32);
-    backdrop-filter: blur(3px);
+    position: fixed; inset: 0; background: rgba(8, 9, 14, .28);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
     display: flex; align-items: center; justify-content: center; padding: 24px;
     z-index: 20;
   }
   .modal {
-    background: var(--bg); border-radius: 16px; width: 100%; max-width: 520px;
+    border-radius: 22px; width: 100%; max-width: 520px;
     max-height: 82vh; overflow-y: auto; padding: 24px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, .18);
   }
-  .modal h3 { margin: 0 0 4px; font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
+  .modal h3 { margin: 0 0 4px; font-size: 16px; font-weight: 650; letter-spacing: -0.02em; }
   .user-row {
     display: flex; align-items: center; gap: 10px; padding: 11px 0;
     border-bottom: 1px solid var(--line); font-size: 13.5px;
@@ -380,17 +759,23 @@
   .newuser { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 16px; }
   .newuser input, .newuser select {
     width: auto; flex: 1 1 120px; padding: 8px 11px; font-size: 13px;
-    background: var(--surface);
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="topbar">
+<div class="app" id="app">
+  <div class="topbar glass">
     <div class="brand">
       <span class="dot"></span> Scribe <small>meeting notes</small>
     </div>
     <div class="topbar-right">
+      <button class="btn sm ghost" id="chat-toggle" title="Ask across every meeting">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/>
+        </svg>
+        Ask Scribe
+      </button>
       <span id="me"></span>
       <button class="btn sm quiet" id="admin-open" hidden>Accounts</button>
       <form method="post" action="/logout" style="display:inline">
@@ -402,7 +787,7 @@
   <div id="health"></div>
 
   <div class="body">
-    <div class="side">
+    <div class="side glass">
       <div class="side-top">
         <div class="segmented" id="modes">
           <button data-mode="local" class="on">This machine</button>
@@ -416,6 +801,11 @@
             <button class="btn grow" id="record">Start recording</button>
           </div>
           <div class="hint" id="audio-hint">Checking audio&hellip;</div>
+          <details class="opts" id="call-opts" hidden>
+            <summary>Call alerts</summary>
+            <div class="hint" id="call-detail" style="padding:0"></div>
+            <div id="muted-apps"></div>
+          </details>
         </div>
 
         <div id="form-bot" hidden>
@@ -451,11 +841,36 @@
       <div class="side-list" id="meetings"></div>
     </div>
 
-    <div class="main" id="main"></div>
+    <div class="main glass" id="main"></div>
+
+    <aside class="chat glass" id="chat" aria-label="Ask across every meeting">
+      <div class="chat-head">
+        <div class="chat-title">Ask Scribe<small id="chat-scope">Every meeting</small></div>
+        <label class="switch" title="Link each answer to the moment it came from">
+          <input type="checkbox" class="cite-switch" checked>
+          <span class="track"></span><span>Citations</span>
+        </label>
+        <button class="icon-btn" id="chat-close" title="Close" aria-label="Close">&times;</button>
+      </div>
+      <div class="chat-feed" id="chat-feed"></div>
+      <div class="chat-foot">
+        <div class="composer">
+          <textarea id="chat-input" rows="1" autocomplete="off"
+                    placeholder="When did we talk about&hellip;"></textarea>
+          <button class="btn" id="chat-go">Ask</button>
+        </div>
+        <div class="chat-note">
+          <span class="grow">Searches every meeting you can see.</span>
+          <button class="btn sm quiet" id="chat-clear" hidden>Clear</button>
+        </div>
+      </div>
+    </aside>
   </div>
 </div>
 
 <div id="modal-root"></div>
+<div id="citecard-root"></div>
+<div id="call-root"></div>
 
 <script>
 "use strict";
@@ -463,6 +878,20 @@
 /* ------------------------------------------------------------------ state */
 
 const $ = (id) => document.getElementById(id);
+
+/** Per-browser preferences. Storage can be missing or refuse writes (a
+    private window, a locked-down profile), and neither may break the page. */
+const prefs = {
+  get(key, fallback) {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch (_) { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* ignore */ }
+  },
+};
 
 const state = {
   me: null,
@@ -490,6 +919,24 @@ const state = {
      a region when it actually changed. Rebuilding on a timer throws away
      scroll position and text selection. */
   sig: { list: "", head: "", transcript: "", enhanced: "", chat: "" },
+
+  /* The whole transcript of the selected meeting, in the lines citations
+     point at. The meeting payload only carries the newest few. */
+  full: { id: null, count: -1, segments: [], at: 0, loading: false },
+  /* What the transcript tab has painted, so a live meeting's new words can
+     be added where they land instead of repainting everything. */
+  tx: { id: null, texts: [], registeringUntil: 0, lastNewAt: 0 },
+  jump: null,              // { id, start } - a citation waiting to be shown
+  cited: null,             // { id, start } - the line it landed on
+
+  citations: true,         // show sources, or clean prose
+  chatOpen: true,
+  chat: { turns: [], loaded: false, asking: false, pending: "", error: "", sig: "" },
+
+  calls: { enabled: false, detail: "", prompts: [], muted: [], sig: "", settingsSig: "" },
+  callsAnswered: new Set(),
+  callBusy: false,
+  callLink: null,          // { record } or { call } from a notification's link
 };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
@@ -505,6 +952,10 @@ const mmss = (s) => {
 
 const clock = (epoch) => epoch
   ? new Date(epoch * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  : "";
+
+const shortDate = (epoch) => epoch
+  ? new Date(epoch * 1000).toLocaleDateString([], { day: "numeric", month: "short" })
   : "";
 
 /** Day bucket for the sidebar: Today, Yesterday, or a date. */
@@ -538,6 +989,45 @@ const STATUS_PILL = {
   failed: ["bad", "Failed"],
 };
 
+/* ------------------------------------------------------------- thinking */
+
+/** Scribe at work: a turning spark and a verb with light running through it.
+    Given several words it moves on through them while the wait goes on, so a
+    long answer reads as progress rather than as a stall. */
+function thinkingHtml(words) {
+  const list = [].concat(words);
+  return (
+    '<div class="thinking" role="status"' +
+      (list.length > 1 ? ` data-words="${esc(list.join("|"))}" data-step="0"` : "") + ">" +
+      '<span class="spark" aria-hidden="true"></span>' +
+      `<span class="thinking-word" data-word="${esc(list[0])}">${esc(list[0])}&hellip;</span>` +
+    "</div>"
+  );
+}
+
+/** Change the verb with a soft focus-pull rather than a jump cut. */
+function swapWord(label, word) {
+  if (!label || label.dataset.word === word) return;
+  label.dataset.word = word;
+  label.textContent = `${word}…`;
+  label.classList.remove("swap");
+  void label.offsetWidth;          // restart the animation
+  label.classList.add("swap");
+}
+
+/** Move every multi-word thinking indicator on by one word. It stops on the
+    last word rather than looping: once "Writing the answer" is reached, that
+    is simply what is happening. */
+function advanceThinking() {
+  document.querySelectorAll(".thinking[data-words]").forEach((el) => {
+    const words = el.dataset.words.split("|");
+    const step = Number(el.dataset.step || 0);
+    if (step >= words.length - 1) return;
+    el.dataset.step = String(step + 1);
+    swapWord(el.querySelector(".thinking-word"), words[step + 1]);
+  });
+}
+
 /* ------------------------------------------------------------- markdown */
 
 /* Just enough Markdown for what Scribe actually writes: headings, bullets,
@@ -563,12 +1053,14 @@ function renderMarkdown(text) {
   // Bold before italic, so the ** in **bold** is not eaten as two *italics*.
   // The lookarounds keep snake_case identifiers and mid-word asterisks
   // intact - without them "openai/gpt-oss-120b" and file_names_like_this
-  // get mangled.
+  // get mangled. Citation markers go last, so nothing re-reads the pill.
   const inline = (s) => esc(s)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/g, "$1<em>$2</em>")
     .replace(/(^|[^\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])/g, "$1<em>$2</em>")
-    .replace(/`(.+?)`/g, "<code>$1</code>");
+    .replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/\[\^(\d+)\]/g,
+      '<button class="cite" data-n="$1" title="Where this came from">$1</button>');
 
   for (const raw of String(text).split("\n")) {
     const line = raw.trimEnd();
@@ -638,6 +1130,143 @@ const showError = (message) => {
   box.hidden = !message;
 };
 
+/* ----------------------------------------------------------- citations */
+
+const stripMarkers = (text) => String(text || "").replace(/\[\^\d+\]/g, "");
+
+/** Where a source is, in as few words as will find it again. */
+function sourceWhere(c, acrossMeetings) {
+  const parts = acrossMeetings ? [c.meeting_title || "Meeting", shortDate(c.started_at)] : [];
+  parts.push(mmss(c.start), c.speaker);
+  return parts.filter(Boolean).join(" · ");
+}
+
+/** One question and its answer - with its sources, when citations are on. */
+function turnHtml(turn, index, acrossMeetings) {
+  const cites = Array.isArray(turn.citations) ? turn.citations : [];
+  const cited = state.citations && cites.length > 0;
+  const answer = cited ? turn.answer : stripMarkers(turn.answer);
+  return (
+    `<div class="turn" data-turn="${index}">` +
+      `<div class="q">${esc(turn.question)}</div>` +
+      `<div class="a doc">${renderMarkdown(answer)}</div>` +
+      (cited
+        ? '<div class="sources">' + cites.map((c) =>
+            `<button class="source" data-n="${esc(c.n)}">` +
+              `<span class="cite">${esc(c.n)}</span>` +
+              '<span class="source-body">' +
+                `<span class="source-where">${esc(sourceWhere(c, acrossMeetings))}</span>` +
+                `<span class="source-quote">${esc(c.text)}</span>` +
+              "</span>" +
+            "</button>").join("") + "</div>"
+        : "") +
+      (acrossMeetings && turn.searched != null
+        ? `<div class="turn-meta">Searched ${esc(turn.searched)} meeting${turn.searched === 1 ? "" : "s"}</div>`
+        : "") +
+    "</div>"
+  );
+}
+
+/** Open a citation's source from a click anywhere in ``container``. Assigned
+    rather than added, so repainting the same container never stacks handlers. */
+function wireCitations(container, turns, acrossMeetings) {
+  container.onclick = (event) => {
+    const target = event.target.closest("[data-n]");
+    const row = target && target.closest(".turn");
+    if (!row || !container.contains(row)) return;
+    const turn = turns[Number(row.dataset.turn)];
+    const citation = (turn?.citations || []).find((c) => String(c.n) === target.dataset.n);
+    if (citation) openCiteCard(citation, target, acrossMeetings);
+  };
+}
+
+/** The moment behind a citation: what was said, and what led up to it. */
+function openCiteCard(c, anchor, acrossMeetings) {
+  closeCiteCard();
+  const line = (segment, extra) =>
+    `<div class="cc-line${extra ? ` ${extra}` : ""}">` +
+      `<span class="t">${esc(mmss(segment.start))}</span>` +
+      `<span><b>${esc(segment.speaker)}</b>${esc(segment.text)}</span>` +
+    "</div>";
+  const when = [shortDate(c.started_at), mmss(c.start), c.speaker].filter(Boolean).join(" · ");
+  const before = c.before || [];
+  const after = c.after || [];
+  const root = $("citecard-root");
+  root.innerHTML =
+    '<div class="citecard float" role="dialog" aria-label="Source">' +
+      '<div class="cc-head">' +
+        `<span class="cite">${esc(c.n)}</span>` +
+        '<div class="cc-title">' +
+          `<strong>${esc(acrossMeetings ? c.meeting_title || "Meeting" : "This meeting")}</strong>` +
+          `<span>${esc(when)}</span>` +
+        "</div>" +
+        '<button class="icon-btn" data-close aria-label="Close">&times;</button>' +
+      "</div>" +
+      (before.length ? '<div class="cc-label">Leading up to it</div>' + before.map((s) => line(s)).join("") : "") +
+      '<div class="cc-label">What was said</div>' + line(c, "said") +
+      (after.length ? '<div class="cc-label">Right after</div>' + after.map((s) => line(s)).join("") : "") +
+      '<div class="cc-foot"><button class="btn sm" data-open>Open in transcript</button></div>' +
+    "</div>";
+
+  const card = root.firstElementChild;
+  placeCard(card, anchor);
+  anchor.classList.add("on");
+  state.citeAnchor = anchor;
+  card.querySelector("[data-close]").addEventListener("click", closeCiteCard);
+  card.querySelector("[data-open]").addEventListener("click", () => {
+    closeCiteCard();
+    openCitation(c);
+  });
+}
+
+/** Beside the thing clicked, and always wholly on screen. */
+function placeCard(card, anchor) {
+  const rect = anchor.getBoundingClientRect();
+  const margin = 12;
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  const inRail = !!anchor.closest(".chat") && window.innerWidth > 980;
+  let left = inRail ? rect.left - width - 16 : rect.left - 24;
+  let top = inRail ? rect.top - 28 : rect.bottom + 8;
+  if (!inRail && top + height > window.innerHeight - margin) top = rect.top - height - 8;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
+}
+
+function closeCiteCard() {
+  $("citecard-root").innerHTML = "";
+  if (state.citeAnchor) state.citeAnchor.classList.remove("on");
+  state.citeAnchor = null;
+}
+
+/** Jump to the cited line in its meeting's transcript. */
+async function openCitation(c) {
+  if (!state.meetings.some((m) => m.id === c.meeting_id)) {
+    showError("That meeting is no longer in your list.");
+    return;
+  }
+  if (state.selected !== c.meeting_id) await select(c.meeting_id);
+  flushNotes();
+  state.tab = "transcript";
+  state.jump = { id: c.meeting_id, start: c.start };
+  state.sig.head = "";
+  renderMain();
+  // On a narrow screen the rail is a drawer over the very line being shown.
+  if (window.innerWidth <= 980) setChatOpen(false);
+}
+
+function setCitations(on) {
+  state.citations = on;
+  prefs.set("scribe.citations", on);
+  document.querySelectorAll(".cite-switch").forEach((el) => { el.checked = on; });
+  closeCiteCard();
+  state.chat.sig = "";
+  renderChat(false);
+  if (state.tab === "ask") { state.sig.chat = ""; renderAsk(false); }
+}
+
 /* -------------------------------------------------------------- sidebar */
 
 function renderSidebar() {
@@ -651,8 +1280,8 @@ function renderSidebar() {
   const host = $("meetings");
   if (!state.meetings.length) {
     host.innerHTML =
-      '<div class="placeholder">No meetings yet.<br>Paste a Meet link above ' +
-      'to send the bot.</div>';
+      '<div class="placeholder">No meetings yet.<br>Start recording above, or ' +
+      'join a call and Scribe will offer to.</div>';
     return;
   }
 
@@ -694,6 +1323,7 @@ function renderMain() {
     state.sig.head = "empty";
     host.innerHTML =
       '<div class="empty-main">' +
+        '<span class="spark" aria-hidden="true"></span>' +
         "<h3>Take notes, not minutes</h3>" +
         "<p>Start recording, then jot down whatever you can while the call " +
         "runs. Scribe fills in the rest from the transcript &mdash; and " +
@@ -714,6 +1344,7 @@ function renderMain() {
   const rebuild = signature !== state.sig.head;
   if (rebuild) {
     state.sig.head = signature;
+    closeCiteCard();
     // A rebuild throws the textarea away, so rescue anything unsaved first.
     const openBox = $("notepad");
     if (openBox && state.pad && state.saveState === "editing") {
@@ -847,7 +1478,7 @@ function renderNotes(rebuild) {
   const button = $("enhance");
   button.disabled = busy;
   button.innerHTML = busy
-    ? '<span class="spin"></span> Enhancing&hellip;'
+    ? '<span class="spark" aria-hidden="true"></span> Enhancing&hellip;'
     : (pad.enhanced ? "Re-enhance" : "Enhance notes");
 
   const SAVE_TEXT = { editing: "Unsaved", saving: "Saving…", saved: "Saved", error: "Not saved" };
@@ -861,7 +1492,11 @@ function renderNotes(rebuild) {
     // must not jump the reader back to the top.
     const pane = $("pane");
     const scroll = pane ? pane.scrollTop : 0;
-    if (pad.enhanced) {
+    if (busy) {
+      $("tpl-used").textContent = "";
+      host.innerHTML = thinkingHtml(
+        ["Reading your notes", "Checking the transcript", "Filling in the gaps", "Writing it up"]);
+    } else if (pad.enhanced) {
       host.innerHTML = renderMarkdown(pad.enhanced);
       const used = state.templates.find((t) => t.id === pad.template);
       $("tpl-used").textContent = used ? `· ${used.name}` : "";
@@ -948,34 +1583,196 @@ async function runEnhance() {
 
 /* ----------------------------------------------------------- transcript */
 
+/** Fetch the selected meeting's whole transcript into ``state.full``. */
+async function loadTranscript() {
+  const job = state.detail;
+  if (!job || state.full.loading) return;
+  const id = job.id;
+  state.full.loading = true;
+  try {
+    const data = await api(`/api/meetings/${id}/transcript`);
+    if (state.selected === id) {
+      state.full = {
+        id, count: data.utterance_count, segments: data.segments || [],
+        at: Date.now(), loading: false,
+      };
+      if (state.tab === "transcript") renderTranscript(false);
+      return;
+    }
+  } catch (error) {
+    if (!String(error.message).includes("signed out")) console.warn(error);
+  }
+  state.full.loading = false;
+}
+
+/** What the listening indicator says for each stage of a live meeting. */
+const LISTENING = {
+  starting: "Starting",
+  joining: "Joining the call",
+  in_call: "Listening",
+  stopping: "Wrapping up",
+};
+
+/** Words that come into focus one after another. The stagger is capped, so a
+    long line still finishes arriving within about a second. */
+function wordsHtml(text) {
+  let index = 0;
+  return String(text).split(/(\s+)/).map((part) => {
+    if (!part) return "";
+    if (!part.trim()) return " ";
+    const delay = Math.min(index++ * 34, 1100);
+    return `<span class="w-in" style="--d:${delay}ms">${esc(part)}</span>`;
+  }).join("");
+}
+
+function lineHtml(line, cited, animate) {
+  return (
+    `<div class="live-line${cited ? " cited" : ""}" data-start="${esc(line.start)}">` +
+      `<span class="t">${esc(mmss(line.start))}</span>` +
+      `<span class="w">${esc(line.speaker)}</span>` +
+      `<span class="x">${animate ? wordsHtml(line.text) : esc(line.text)}</span>` +
+    "</div>"
+  );
+}
+
 function renderTranscript(rebuild) {
   const pane = $("pane");
-  if (!pane) return;
-  const lines = state.detail?.transcript || [];
-  const signature = `${lines.length}:${lines.length ? lines[lines.length - 1].text.length : 0}`;
-  if (!rebuild && signature === state.sig.transcript) return;
-  state.sig.transcript = signature;
+  const job = state.detail;
+  if (!pane || !job) return;
+  const have = state.full.id === job.id;
+  const live = !["finished", "failed"].includes(job.status);
+  // A finished meeting is read once. A live one is re-read as it grows -
+  // often enough that words land moments after they are registered.
+  const grown = have && live && state.full.count !== (job.utterance_count || 0)
+    && Date.now() - state.full.at > 1500;
+  if (!state.full.loading && (!have || grown)) loadTranscript();
 
-  if (!lines.length) {
+  if (rebuild || !$("tx-lines")) {
     pane.innerHTML =
-      '<div class="placeholder">Nothing transcribed yet.<br>' +
-      "Lines appear here a few seconds after somebody speaks.</div>";
+      '<div class="transcript">' +
+        '<div id="tx-lines"></div>' +
+        '<div class="tx-foot" id="tx-foot" hidden></div>' +
+      "</div>";
+    state.tx = { id: null, texts: [], registeringUntil: 0, lastNewAt: Date.now() };
+    state.sig.transcript = "";
+  }
+
+  const lines = have ? state.full.segments : [];
+  const jump = have && state.jump && state.jump.id === job.id ? state.jump : null;
+  const signature = `${job.id}:${have}:${lines.length}:` +
+    `${lines.length ? lines[lines.length - 1].text.length : 0}`;
+  if (jump || signature !== state.sig.transcript) {
+    state.sig.transcript = signature;
+    paintTranscript(pane, job, lines, have, live, jump);
+  }
+  updateListening(job);
+}
+
+/* A live transcript is painted incrementally: new words come into focus
+   where they land, and nothing already on screen is redrawn - redrawing
+   would restart every animation and lose the reader's place. */
+function paintTranscript(pane, job, lines, have, live, jump) {
+  const host = $("tx-lines");
+  if (!have) {
+    host.innerHTML = live ? "" : '<div class="placeholder"><span class="spin"></span></div>';
     return;
   }
-  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
-  pane.innerHTML =
-    '<div class="doc" style="max-width:840px">' +
-    lines.map((line) =>
-      '<div class="live-line">' +
-        `<span class="t">${esc(mmss(line.start))}</span>` +
-        `<span class="w">${esc(line.speaker)}</span>` +
-        `<span>${esc(line.text)}</span>` +
-      "</div>"
-    ).join("") +
-    "</div>";
+  if (!lines.length) {
+    state.tx.id = job.id;
+    state.tx.texts = [];
+    host.innerHTML = live ? "" :
+      '<div class="placeholder">Nothing was transcribed in this meeting.</div>';
+    return;
+  }
+
+  const atBottom = live && pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
+  const cited = state.cited && state.cited.id === job.id ? state.cited.start : null;
+  const shown = state.tx.id === job.id ? state.tx.texts : null;
+  // Opening a transcript shows it; only what arrives afterwards is animated.
+  const animate = live && shown !== null;
+  const rows = host.querySelectorAll(".live-line");
+  const grows = shown !== null && rows.length === shown.length && shown.length <= lines.length &&
+    shown.every((text, i) =>
+      i === shown.length - 1 ? lines[i].text.startsWith(text) : lines[i].text === text);
+  let added = 0;
+
+  if (grows) {
+    const last = shown.length - 1;
+    if (last >= 0 && lines[last].text !== shown[last]) {
+      const more = lines[last].text.slice(shown[last].length).trim();
+      if (more) {
+        rows[last].querySelector(".x").insertAdjacentHTML("beforeend", " " + wordsHtml(more));
+        added += 1;
+      }
+    }
+    const fresh = lines.slice(shown.length);
+    if (fresh.length) {
+      host.insertAdjacentHTML("beforeend",
+        fresh.map((line) => lineHtml(line, line.start === cited, animate)).join(""));
+      added += fresh.length;
+    }
+  } else {
+    // Something earlier changed - a second channel finalised a line that
+    // belongs before ones already shown. Repaint, animating only what is new.
+    const before = new Set(shown || []);
+    host.innerHTML = lines.map((line) => {
+      const isNew = animate && !before.has(line.text);
+      if (isNew) added += 1;
+      return lineHtml(line, line.start === cited, isNew);
+    }).join("");
+  }
+  state.tx.id = job.id;
+  state.tx.texts = lines.map((line) => line.text);
+  if (added && animate) {
+    state.tx.registeringUntil = Date.now() + 1800;
+    state.tx.lastNewAt = Date.now();
+    setTimeout(() => { if (state.detail && state.tab === "transcript") updateListening(state.detail); }, 1900);
+  }
+
+  if (jump) {
+    // The nearest line rather than an exact match: a live meeting's lines
+    // can merge between the answer being written and it being opened.
+    state.jump = null;
+    const all = [...host.querySelectorAll(".live-line")];
+    let best = all[0];
+    let distance = Infinity;
+    for (const row of all) {
+      const gap = Math.abs(Number(row.dataset.start) - jump.start);
+      if (gap < distance) { best = row; distance = gap; }
+    }
+    all.forEach((row) => row.classList.remove("cited"));
+    best.classList.add("cited", "flash");
+    state.cited = { id: job.id, start: Number(best.dataset.start) };
+    best.scrollIntoView({ block: "center" });
+    return;
+  }
   // Follow a live meeting, but do not yank the page from under someone who
   // has scrolled up to re-read something.
   if (atBottom) pane.scrollTop = pane.scrollHeight;
+}
+
+/** The spark at the foot of a live transcript, and what it says. */
+function updateListening(job) {
+  const foot = $("tx-foot");
+  if (!foot) return;
+  const live = !["finished", "failed"].includes(job.status);
+  const hasLines = !!document.querySelector("#tx-lines .live-line");
+  foot.hidden = !live;
+  foot.parentElement.classList.toggle("empty", live && !hasLines);
+  if (!live) return;
+
+  let word = LISTENING[job.status] || "Listening";
+  if (job.status === "in_call") {
+    const now = Date.now();
+    if (now < state.tx.registeringUntil) word = "Registering";
+    else if (state.tx.lastNewAt && now - state.tx.lastNewAt > 60000) word = "Still listening";
+  }
+  if (!foot.firstElementChild) {
+    foot.innerHTML = thinkingHtml(word) +
+      '<span class="tx-hint">Words appear here a moment after somebody speaks.</span>';
+  }
+  foot.querySelector(".tx-hint").hidden = hasLines;
+  swapWord(foot.querySelector(".thinking-word"), word);
 }
 
 /* ------------------------------------------------------------------ ask */
@@ -987,11 +1784,17 @@ const SUGGESTIONS = [
   "What questions were left unanswered?",
 ];
 
+const citeSwitch = (title) =>
+  `<label class="switch" title="${esc(title)}">` +
+    `<input type="checkbox" class="cite-switch"${state.citations ? " checked" : ""}>` +
+    '<span class="track"></span><span>Citations</span>' +
+  "</label>";
+
 function renderAsk(rebuild) {
   const pane = $("pane");
   if (!pane) return;
   const turns = state.pad?.chat || [];
-  const signature = `${turns.length}:${state.asking}`;
+  const signature = `${turns.length}:${state.asking}:${state.citations}`;
   if (!rebuild && signature === state.sig.chat) return;
   state.sig.chat = signature;
 
@@ -1003,16 +1806,15 @@ function renderAsk(rebuild) {
         (turns.length
           // Oldest first, like a conversation - the newest answer sits
           // directly above the composer you just typed into.
-          ? turns.map((turn) =>
-              '<div class="turn">' +
-                `<div class="q">${esc(turn.question)}</div>` +
-                `<div class="a doc">${renderMarkdown(turn.answer)}</div>` +
-              "</div>").join("")
+          ? turns.map((turn, index) => turnHtml(turn, index, false)).join("")
           : '<div class="placeholder">Answers come only from this meeting’s ' +
-            "transcript and notes.<br>If it wasn’t said, Scribe will say so " +
-            "rather than guess.</div>") +
-        (state.asking ? '<div class="turn"><div class="a doc md-note">' +
-          '<span class="spin"></span> Reading the meeting&hellip;</div></div>' : "") +
+            "transcript and notes, and link to the lines they came from.<br>" +
+            "If it wasn’t said, Scribe will say so rather than guess.</div>") +
+        (state.asking
+          ? '<div class="turn">' +
+              thinkingHtml(["Reading the meeting", "Finding the lines", "Writing the answer"]) +
+            "</div>"
+          : "") +
         '<div class="err" id="ask-error" hidden></div>' +
       "</div>" +
       (turns.length ? "" :
@@ -1022,13 +1824,16 @@ function renderAsk(rebuild) {
       '<div class="askbar">' +
         '<input type="text" id="ask-input" class="grow" placeholder="Ask anything about this meeting…" autocomplete="off">' +
         `<button class="btn" id="ask-go"${state.asking ? " disabled" : ""}>` +
-        (state.asking ? '<span class="spin"></span>' : "Ask") + "</button>" +
+        (state.asking ? '<span class="spark" aria-hidden="true"></span>' : "Ask") + "</button>" +
       "</div>" +
-      (turns.length
-        ? '<div class="row" style="justify-content:flex-end;margin-top:8px">' +
-          '<button class="btn sm quiet" id="ask-clear">Clear</button></div>' : "") +
+      '<div class="row ask-tools">' +
+        citeSwitch("Link each answer to the lines it came from") +
+        '<span class="grow"></span>' +
+        (turns.length ? '<button class="btn sm quiet" id="ask-clear">Clear</button>' : "") +
+      "</div>" +
     "</div>";
 
+  wireCitations(pane, turns, false);
   const input = $("ask-input");
   input.value = draft;
   input.addEventListener("keydown", (event) => {
@@ -1080,6 +1885,116 @@ async function clearChat() {
   } catch (error) { showError(error.message); }
 }
 
+/* ------------------------------------------------------ ask every meeting */
+
+const CHAT_SUGGESTIONS = [
+  "What did I commit to this week?",
+  "When did we last talk about deadlines?",
+  "Which meeting mentioned the budget?",
+];
+
+function setChatOpen(open, { focus = false } = {}) {
+  state.chatOpen = open;
+  prefs.set("scribe.chatOpen", open);
+  $("app").classList.toggle("chat-closed", !open);
+  $("chat-toggle").classList.toggle("on", open);
+  if (!open) closeCiteCard();
+  if (open && !state.chat.loaded) loadChat();
+  if (open && focus) $("chat-input").focus();
+}
+
+async function loadChat() {
+  try {
+    const data = await api("/api/chat");
+    state.chat.turns = data.chat || [];
+  } catch (error) {
+    if (String(error.message).includes("signed out")) return;
+    state.chat.error = error.message;
+  }
+  state.chat.loaded = true;
+  renderChat(true);
+}
+
+function renderChat(scrollToEnd) {
+  const feed = $("chat-feed");
+  const chat = state.chat;
+  const signature = `${chat.loaded}:${chat.turns.length}:${chat.asking}:${state.citations}:${chat.error}`;
+  if (signature === chat.sig) return;
+  chat.sig = signature;
+  const scroll = feed.scrollTop;
+
+  if (!chat.loaded) {
+    feed.innerHTML = '<div class="placeholder"><span class="spin"></span></div>';
+    return;
+  }
+  feed.innerHTML =
+    (chat.turns.length
+      ? chat.turns.map((turn, index) => turnHtml(turn, index, true)).join("")
+      : chat.asking ? "" :
+        '<div class="chat-empty">' +
+          '<span class="spark" aria-hidden="true"></span>' +
+          "<h4>Ask across every meeting</h4>" +
+          "<p>Find what was said, who said it, and in which meeting. Every " +
+          "answer links back to the moment it came from.</p>" +
+          '<div class="suggest">' +
+          CHAT_SUGGESTIONS.map((q) => `<button data-q="${esc(q)}">${esc(q)}</button>`).join("") +
+          "</div>" +
+        "</div>") +
+    (chat.asking
+      ? '<div class="turn">' +
+          `<div class="q">${esc(chat.pending)}</div>` +
+          thinkingHtml(["Searching your meetings", "Reading transcripts",
+                        "Finding the moment", "Writing the answer"]) +
+        "</div>"
+      : "") +
+    (chat.error ? `<div class="err">${esc(chat.error)}</div>` : "");
+
+  wireCitations(feed, chat.turns, true);
+  feed.querySelectorAll(".suggest button").forEach((el) => {
+    el.addEventListener("click", () => askEverything(el.dataset.q));
+  });
+  $("chat-clear").hidden = !chat.turns.length;
+  $("chat-go").disabled = chat.asking;
+  feed.scrollTop = scrollToEnd ? feed.scrollHeight : scroll;
+}
+
+async function askEverything(preset) {
+  const input = $("chat-input");
+  const question = String(preset ?? input.value).trim();
+  if (!question || state.chat.asking) return;
+  state.chat.asking = true;
+  state.chat.pending = question;
+  state.chat.error = "";
+  input.value = "";
+  autoGrow(input);
+  renderChat(true);
+  try {
+    const turn = await api("/api/chat", { method: "POST", body: JSON.stringify({ question }) });
+    state.chat.turns.push(turn);
+  } catch (error) {
+    state.chat.error = error.message;
+    // Hand the question back rather than making them type it again.
+    if (!input.value) { input.value = question; autoGrow(input); }
+  } finally {
+    state.chat.asking = false;
+    renderChat(true);
+  }
+}
+
+async function clearEverythingChat() {
+  try {
+    await api("/api/chat", { method: "DELETE" });
+    state.chat.turns = [];
+    state.chat.error = "";
+    renderChat(true);
+  } catch (error) { showError(error.message); }
+}
+
+const autoGrow = (el) => {
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
+};
+
 /* -------------------------------------------------------------- summary */
 
 async function renderSummary(rebuild) {
@@ -1092,6 +2007,161 @@ async function renderSummary(rebuild) {
   } catch (error) {
     pane.innerHTML = `<div class="err">${esc(error.message)}</div>`;
   }
+}
+
+/* ----------------------------------------------------------- call alerts */
+
+async function pollCalls() {
+  if (!state.me || state.me.role !== "admin") return;
+  try {
+    const data = await api("/api/calls");
+    Object.assign(state.calls, {
+      enabled: !!data.enabled, detail: data.detail || "",
+      prompts: data.prompts || [], muted: data.muted || [],
+    });
+  } catch (_) { return; }
+  followCallLink();
+  renderCallCard();
+  renderCallSettings();
+}
+
+/** A notification's "Start recording" opens the page with the call's id.
+    Only a call still waiting here is acted on - the id is random and lives
+    only in the notification and behind the login, so a link from anywhere
+    else matches nothing. */
+function followCallLink() {
+  const link = state.callLink;
+  if (!link) return;
+  state.callLink = null;
+  const prompt = state.calls.prompts.find((p) => p.id === (link.record || link.call));
+  if (!prompt) {
+    showError("That call has already ended, or was answered somewhere else.");
+    return;
+  }
+  if (link.record) recordCall(prompt, prompt.title);
+}
+
+function renderCallCard() {
+  const root = $("call-root");
+  const waiting = state.calls.prompts.filter((p) => !state.callsAnswered.has(p.id));
+  const prompt = waiting[0];
+  document.title = prompt ? "● Call detected · Scribe" : "Scribe";
+  const signature = prompt
+    ? `${prompt.id}:${prompt.title}:${waiting.length}:${state.callBusy}` : "";
+  if (signature === state.calls.sig) return;
+  state.calls.sig = signature;
+  if (!prompt) { root.innerHTML = ""; return; }
+
+  // A relabelled prompt (the tab finished loading) must not wipe a name the
+  // person has already started typing.
+  const typed = root.querySelector(".call-name");
+  const keep = typed && typed.dataset.id === prompt.id && typed.dataset.edited ? typed.value : null;
+  const heading = `${prompt.service || prompt.app} call detected`;
+  const since = prompt.since ? ` since ${clock(prompt.since)}` : "";
+  root.innerHTML =
+    '<div class="callcard float" role="alertdialog" aria-label="Call detected">' +
+      '<span class="ring" aria-hidden="true"></span>' +
+      '<div class="call-body">' +
+        `<div class="call-title">${esc(heading)}</div>` +
+        `<div class="call-sub">${esc(prompt.app)} is using your microphone${esc(since)}. ` +
+          "Record it here &mdash; nothing joins the call.</div>" +
+        `<input type="text" class="call-name" data-id="${esc(prompt.id)}" ` +
+          `value="${esc(keep ?? prompt.title)}" aria-label="Name this recording" autocomplete="off">` +
+        '<div class="call-actions">' +
+          `<button class="btn sm" data-act="record"${state.callBusy ? " disabled" : ""}>` +
+            (state.callBusy ? '<span class="spin"></span> Starting' : "Start recording") + "</button>" +
+          '<button class="btn sm ghost" data-act="dismiss">Not now</button>' +
+          `<button class="btn sm quiet" data-act="mute">Don’t ask for ${esc(prompt.app)}</button>` +
+          (waiting.length > 1 ? `<span class="call-more">+${waiting.length - 1} more</span>` : "") +
+        "</div>" +
+      "</div>" +
+    "</div>";
+  if (keep !== null) root.querySelector(".call-name").dataset.edited = "1";
+
+  const name = root.querySelector(".call-name");
+  name.addEventListener("input", () => { name.dataset.edited = "1"; });
+  name.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") recordCall(prompt, name.value.trim());
+  });
+  root.querySelector('[data-act="record"]').addEventListener("click",
+    () => recordCall(prompt, name.value.trim()));
+  root.querySelector('[data-act="dismiss"]').addEventListener("click", () => dismissCall(prompt));
+  root.querySelector('[data-act="mute"]').addEventListener("click", () => muteCallApp(prompt.app_id));
+}
+
+async function recordCall(prompt, title) {
+  if (state.callBusy || state.sending) return;
+  state.callBusy = true;
+  state.calls.sig = "";
+  renderCallCard();
+  try {
+    const job = await api("/api/recordings", {
+      method: "POST",
+      body: JSON.stringify({ title: title || prompt.title, call_id: prompt.id }),
+    });
+    state.callsAnswered.add(prompt.id);
+    await poll();
+    await select(job.id);
+  } catch (error) {
+    showError(error.message);
+  } finally {
+    state.callBusy = false;
+    state.calls.sig = "";
+    renderCallCard();
+  }
+}
+
+async function dismissCall(prompt) {
+  state.callsAnswered.add(prompt.id);
+  renderCallCard();
+  try {
+    await api(`/api/calls/${encodeURIComponent(prompt.id)}/dismiss`, { method: "POST" });
+  } catch (_) { /* it ended on its own; nothing to undo */ }
+}
+
+async function muteCallApp(appId) {
+  try {
+    const data = await api("/api/calls/mute", {
+      method: "POST", body: JSON.stringify({ app_id: appId }),
+    });
+    state.calls.muted = data.muted || [];
+    state.calls.prompts = state.calls.prompts.filter((p) => p.app_id !== appId);
+  } catch (error) { showError(error.message); }
+  renderCallCard();
+  renderCallSettings();
+}
+
+async function unmuteCallApp(appId) {
+  try {
+    const data = await api("/api/calls/unmute", {
+      method: "POST", body: JSON.stringify({ app_id: appId }),
+    });
+    state.calls.muted = data.muted || [];
+  } catch (error) { showError(error.message); }
+  renderCallSettings();
+}
+
+function renderCallSettings() {
+  const box = $("call-opts");
+  const admin = !!state.me && state.me.role === "admin";
+  box.hidden = !admin;
+  if (!admin) return;
+  const signature = JSON.stringify([state.calls.enabled, state.calls.detail, state.calls.muted]);
+  if (signature === state.calls.settingsSig) return;
+  state.calls.settingsSig = signature;
+  $("call-detail").textContent = state.calls.enabled
+    ? "When any app starts using your microphone - Meet, WhatsApp, Zoom, " +
+      "Teams, anything - Scribe offers to record it."
+    : state.calls.detail;
+  const list = $("muted-apps");
+  list.innerHTML = state.calls.muted.map((m) =>
+    '<div class="muted-app">' +
+      `<span>Not asking for ${esc(m.app)}</span>` +
+      `<button class="btn sm quiet" data-unmute="${esc(m.app_id)}">Ask again</button>` +
+    "</div>").join("");
+  list.querySelectorAll("[data-unmute]").forEach((el) => {
+    el.addEventListener("click", () => unmuteCallApp(el.dataset.unmute));
+  });
 }
 
 /* --------------------------------------------------------------- health */
@@ -1117,7 +2187,7 @@ function renderHealth() {
     : `checked ${mins} minutes ago`;
 
   host.innerHTML =
-    `<div class="banner ${report.stale ? "warn" : "bad"}">` +
+    `<div class="banner glass ${report.stale ? "warn" : "bad"}">` +
       `<strong>${esc(first.name)}:</strong> <span>${esc(first.detail)}</span>` +
       (first.fix ? `<code>${esc(first.fix)}</code>` : "") +
       (report.stale
@@ -1143,12 +2213,15 @@ function renderHealth() {
 async function select(jobId) {
   if (jobId === state.selected) return;
   flushNotes();
+  closeCiteCard();
   state.selected = jobId;
   state.detail = null;
   state.pad = null;
   state.padLoadedFor = null;
   state.saveState = "";
   state.tab = "notes";
+  state.cited = null;
+  state.tx = { id: null, texts: [], registeringUntil: 0, lastNewAt: 0 };
   state.sig = { list: state.sig.list, head: "", transcript: "", enhanced: "", chat: "" };
   state.sig.list = "";
   renderSidebar();
@@ -1262,6 +2335,19 @@ async function poll() {
     for (const job of state.meetings) {
       if (["finished", "failed"].includes(job.status)) state.stopping.delete(job.id);
     }
+    const total = state.meetings.length;
+    $("chat-scope").textContent = total
+      ? `${total} meeting${total === 1 ? "" : "s"}` : "No meetings yet";
+    pollCalls();
+    // The open meeting can vanish from the list - most often because the
+    // server restarted, and a recording that was live comes back under its
+    // past-run id. Asking for the old id every two seconds forever helps
+    // nobody, so move to one that exists.
+    if (state.selected && !state.meetings.some((j) => j.id === state.selected)) {
+      state.selected = null;
+      state.detail = null;
+      state.sig.head = "";
+    }
     if (!state.selected && state.meetings.length) {
       await select(state.meetings[0].id);
       return;
@@ -1287,7 +2373,7 @@ async function openAdmin() {
   const close = () => { root.innerHTML = ""; };
   const draw = (users) => {
     root.innerHTML =
-      '<div class="modal-bg"><div class="modal">' +
+      '<div class="modal-bg"><div class="modal float">' +
         "<h3>Accounts</h3>" +
         '<p class="md-note" style="margin:0 0 12px">Admins see every meeting. ' +
         "Members see only the ones they started.</p>" +
@@ -1299,7 +2385,7 @@ async function openAdmin() {
               `<button class="btn sm danger" data-del="${esc(u.username)}">Remove</button>`) +
           "</div>").join("") +
         '<div class="newuser">' +
-          '<input id="nu-name" placeholder="username" autocapitalize="none" spellcheck="false">' +
+          '<input id="nu-name" type="text" placeholder="username" autocapitalize="none" spellcheck="false">' +
           '<input id="nu-pass" type="password" placeholder="password (min 8)">' +
           '<select id="nu-role"><option value="member">Member</option>' +
           '<option value="admin">Admin</option></select>' +
@@ -1344,6 +2430,13 @@ async function openAdmin() {
 /* ------------------------------------------------------------------ init */
 
 async function init() {
+  // A notification's link carries the call it is about. Read it once and
+  // take it out of the address bar, so a reload does not act on it again.
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("record")) state.callLink = { record: params.get("record") };
+  else if (params.get("call")) state.callLink = { call: params.get("call") };
+  if (state.callLink) history.replaceState(null, "", window.location.pathname);
+
   try {
     const [me, config, templates] = await Promise.all([
       api("/api/me"), api("/api/config"), api("/api/templates"),
@@ -1382,6 +2475,43 @@ async function init() {
   });
   checkAudio();
   $("admin-open").addEventListener("click", openAdmin);
+
+  // The chat rail: open by default where there is room for it.
+  state.citations = prefs.get("scribe.citations", true) !== false;
+  document.querySelectorAll(".cite-switch").forEach((el) => { el.checked = state.citations; });
+  document.addEventListener("change", (event) => {
+    if (event.target.classList && event.target.classList.contains("cite-switch")) {
+      setCitations(event.target.checked);
+    }
+  });
+  $("chat-toggle").addEventListener("click", () => setChatOpen(!state.chatOpen, { focus: true }));
+  $("chat-close").addEventListener("click", () => setChatOpen(false));
+  $("chat-clear").addEventListener("click", clearEverythingChat);
+  $("chat-go").addEventListener("click", () => askEverything());
+  const chatInput = $("chat-input");
+  chatInput.addEventListener("input", () => autoGrow(chatInput));
+  chatInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      askEverything();
+    }
+  });
+  setChatOpen(prefs.get("scribe.chatOpen", window.innerWidth >= 1200) === true);
+  renderChat(false);
+
+  // A source card closes on Escape, on a click elsewhere, and when what it
+  // points at scrolls away underneath it.
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeCiteCard(); });
+  document.addEventListener("mousedown", (event) => {
+    const card = document.querySelector(".citecard");
+    if (card && !card.contains(event.target) && !event.target.closest("[data-n]")) closeCiteCard();
+  });
+  document.addEventListener("scroll", (event) => {
+    const card = document.querySelector(".citecard");
+    if (card && !card.contains(event.target)) closeCiteCard();
+  }, true);
+  window.addEventListener("resize", closeCiteCard);
+
   // A refresh mid-sentence should not lose the last thing typed.
   window.addEventListener("beforeunload", () => {
     if (state.saveState !== "editing" || !state.selected) return;
@@ -1398,6 +2528,7 @@ async function init() {
   await poll();
   renderMain();
   setInterval(poll, 2000);
+  setInterval(advanceThinking, 2600);
 }
 
 init();

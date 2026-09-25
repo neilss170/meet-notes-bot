@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Sequence
 
 from meetbot.analysis.llm import LLMClient, LLMError
 from meetbot.analysis.summarize import CHUNK_CHARS, chunk_transcript
@@ -47,14 +47,6 @@ logger = logging.getLogger(__name__)
 #: before enhancing. Lower than the summariser's threshold because the
 #: enhancement prompt also carries the notes and the template guidance.
 MAX_SINGLE_PASS_CHARS = 90_000
-
-#: Transcript characters handed to a single :func:`answer_question` call.
-#: Questions are asked interactively, so latency matters more here than the
-#: last few minutes of a very long meeting.
-ASK_TRANSCRIPT_CHARS = 60_000
-
-#: Prior question/answer pairs replayed as context for a follow-up.
-ASK_HISTORY_TURNS = 6
 
 
 class NotepadError(RuntimeError):
@@ -407,102 +399,15 @@ def enhance_notes(
     return enhanced
 
 
-_ASK_SYSTEM = (
-    "You answer questions about one meeting, using its transcript and the "
-    "notes taken on it.\n\n"
-    "Answer only from what you were given. If the meeting did not cover it, "
-    "say so plainly in one sentence - do not reason outwards from what was "
-    "said into what was probably meant, and do not fall back on general "
-    "knowledge. 'That did not come up' is a good answer.\n\n"
-    "The transcript comes from automatic speech recognition and contains "
-    "misheard words and generic labels like 'Speaker 0'. Quote it when a "
-    "specific phrase is the answer, and say when a quote looks garbled.\n\n"
-    "Be brief and direct. Answer in prose for a question about what happened, "
-    "and in a short list when the question asks for several things. No "
-    "preamble - do not restate the question before answering it."
-)
-
-
-def answer_question(
-    utterances: Sequence[Utterance],
-    question: str,
-    client: LLMClient,
-    *,
-    notes: str = "",
-    history: Sequence[dict[str, Any]] = (),
-    transcript_chars: int = ASK_TRANSCRIPT_CHARS,
-) -> str:
-    """Answer a question about the meeting.
-
-    Args:
-        utterances: The meeting's utterances, in chronological order.
-        question: What was asked.
-        client: An :class:`~meetbot.analysis.llm.LLMClient`.
-        notes: The finished notes, if any. Passed alongside the transcript
-            because they carry real names and corrected spellings that the
-            transcript does not.
-        history: Prior turns as ``{"question": ..., "answer": ...}`` dicts,
-            oldest first. Only the last :data:`ASK_HISTORY_TURNS` are used,
-            so a long conversation does not crowd out the transcript.
-        transcript_chars: Transcript characters to include.
-
-    Returns:
-        The answer as plain text or short Markdown.
-
-    Raises:
-        NotepadError: If the question is empty, there is nothing to search,
-            or the model call fails.
-    """
-    question = question.strip()
-    if not question:
-        raise NotepadError("Ask a question first.")
-    if not utterances and not notes.strip():
-        raise NotepadError(
-            "There is nothing to search - this meeting has no transcript and "
-            "no notes yet."
-        )
-
-    parts: list[str] = []
-    if notes.strip():
-        parts.append(f"--- NOTES ON THE MEETING ---\n{notes.strip()}")
-    if utterances:
-        parts.append(
-            "--- TRANSCRIPT ---\n"
-            + render_for_llm(utterances, max_chars=transcript_chars)
-        )
-
-    recent = list(history)[-ASK_HISTORY_TURNS:]
-    if recent:
-        replay = "\n\n".join(
-            f"Q: {turn.get('question', '')}\nA: {turn.get('answer', '')}"
-            for turn in recent
-        )
-        parts.append(f"--- EARLIER IN THIS CONVERSATION ---\n{replay}")
-
-    parts.append(f"--- QUESTION ---\n{question}")
-
-    try:
-        answer = client.complete_text(
-            system=_ASK_SYSTEM, user="\n\n".join(parts), max_tokens=2000
-        )
-    except LLMError as exc:
-        raise NotepadError(f"The question could not be answered: {exc}") from exc
-
-    answer = answer.strip()
-    if not answer:
-        raise NotepadError("The model returned an empty answer.")
-    return answer
-
+# Questions about a meeting are answered by :mod:`meetbot.analysis.recall`,
+# which cites the transcript lines behind each answer.
 
 __all__ = [
-    "ASK_HISTORY_TURNS",
-    "ASK_TRANSCRIPT_CHARS",
     "DEFAULT_TEMPLATE",
     "MAX_SINGLE_PASS_CHARS",
     "TEMPLATES",
     "NotepadError",
     "Template",
-    "answer_question",
     "enhance_notes",
     "get_template",
 ]

@@ -32,6 +32,8 @@ import json
 import logging
 import os
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,15 +50,23 @@ CHAT_FILE = "chat.jsonl"
 #: client cannot fill the disk with a single PUT.
 MAX_NOTES_CHARS = 200_000
 
-#: Questions kept per meeting. Older turns fall off the front.
+#: Questions kept per conversation. Older turns fall off the front.
 MAX_CHAT_TURNS = 200
+
+#: Windows will not replace a file that another handle has open - a save
+#: landing at the same moment, a request reading the notes, an indexer or a
+#: virus scanner - and says "Access is denied". It clears within milliseconds,
+#: so a replace that hits it is retried rather than failed. Two threads saving
+#: together hit it about once in forty writes.
+_REPLACE_ATTEMPTS = 10
+_REPLACE_BACKOFF_S = 0.02
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, text: str) -> None:
     """Replace ``path`` with ``text`` in one step.
 
     The temporary file is created in the destination directory so the final
@@ -76,13 +86,115 @@ def _atomic_write(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(handle.name, path)
+        for attempt in range(_REPLACE_ATTEMPTS):
+            try:
+                os.replace(handle.name, path)
+                break
+            except PermissionError:
+                if attempt == _REPLACE_ATTEMPTS - 1:
+                    raise
+                time.sleep(_REPLACE_BACKOFF_S * (attempt + 1))
     except BaseException:
         # Leaving .notes.md.xxxx.tmp files behind would accumulate in a
         # directory the user browses, so clean up on any failure path.
         with contextlib.suppress(OSError):
             os.unlink(handle.name)
         raise
+
+
+_LOCKS_GUARD = threading.Lock()
+_DIRECTORY_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _lock_for(directory: Path) -> threading.RLock:
+    """The one lock for a meeting directory, however many Notepads point at it.
+
+    The service makes a fresh :class:`Notepad` per request, so the lock cannot
+    live on the instance. Without it an autosave and the save that "Enhance"
+    sends first both rewrite ``notepad.json`` from the same stale read, and
+    one of the two updates is lost.
+    """
+    key = os.path.normcase(os.path.abspath(directory))
+    with _LOCKS_GUARD:
+        return _DIRECTORY_LOCKS.setdefault(key, threading.RLock())
+
+
+class ChatLog:
+    """Questions and their answers, one JSON record per line, oldest first.
+
+    The same shape serves the questions asked about one meeting and the ones
+    asked across all of them. Appends rather than rewriting, and compacts
+    only once the history has grown past its cap.
+    """
+
+    def __init__(self, path: Path, *, max_turns: int | None = None) -> None:
+        self.path = Path(path)
+        self._max_turns = max_turns
+
+    @property
+    def max_turns(self) -> int:
+        return self._max_turns if self._max_turns is not None else MAX_CHAT_TURNS
+
+    def read(self) -> list[dict[str, Any]]:
+        """Every turn, oldest first.
+
+        Malformed lines are skipped rather than aborting the read, for the
+        same reason the transcript reader does it.
+        """
+        if not self.path.exists():
+            return []
+        turns: list[dict[str, Any]] = []
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(record, dict) and "question" in record:
+                        turns.append(record)
+        except OSError:
+            logger.debug("Could not read chat at %s", self.path, exc_info=True)
+            return []
+        return turns
+
+    def append(self, question: str, answer: str, **extra: Any) -> dict[str, Any]:
+        """Record one question, its answer, and anything kept alongside them.
+
+        Args:
+            question: What was asked.
+            answer: What came back.
+            **extra: JSON-serialisable fields stored with the turn - the
+                citations behind an answer, for instance.
+        """
+        record = {
+            "question": question,
+            "answer": answer,
+            **extra,
+            "asked_at": _utc_now_iso(),
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with _lock_for(self.path.parent):
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
+
+            turns = self.read()
+            if len(turns) > self.max_turns:
+                kept = turns[-self.max_turns :]
+                atomic_write(
+                    self.path,
+                    "".join(json.dumps(t, ensure_ascii=False) + "\n" for t in kept),
+                )
+        return record
+
+    def clear(self) -> None:
+        """Forget every turn."""
+        with contextlib.suppress(OSError):
+            self.path.unlink()
 
 
 @dataclass(frozen=True)
@@ -116,8 +228,9 @@ class Notepad:
         Args:
             text: The full note body. Truncated to :data:`MAX_NOTES_CHARS`.
         """
-        _atomic_write(self.notes_path, text[:MAX_NOTES_CHARS])
-        self.update_meta(notes_updated_at=_utc_now_iso())
+        with _lock_for(self.directory):
+            atomic_write(self.notes_path, text[:MAX_NOTES_CHARS])
+            self.update_meta(notes_updated_at=_utc_now_iso())
 
     def read_enhanced(self) -> str:
         """The model's notes, or ``""`` if enhancement has not been run."""
@@ -125,11 +238,12 @@ class Notepad:
 
     def write_enhanced(self, text: str, *, template: str = "") -> None:
         """Replace the enhanced notes and record how they were produced."""
-        _atomic_write(self.enhanced_path, text)
-        fields: dict[str, Any] = {"enhanced_at": _utc_now_iso()}
-        if template:
-            fields["template"] = template
-        self.update_meta(**fields)
+        with _lock_for(self.directory):
+            atomic_write(self.enhanced_path, text)
+            fields: dict[str, Any] = {"enhanced_at": _utc_now_iso()}
+            if template:
+                fields["template"] = template
+            self.update_meta(**fields)
 
     @property
     def has_notes(self) -> bool:
@@ -163,10 +277,11 @@ class Notepad:
 
     def update_meta(self, **fields: Any) -> dict[str, Any]:
         """Merge ``fields`` into the metadata and persist it."""
-        meta = self.read_meta()
-        meta.update(fields)
-        _atomic_write(self.directory / META_FILE, json.dumps(meta, indent=2))
-        return meta
+        with _lock_for(self.directory):
+            meta = self.read_meta()
+            meta.update(fields)
+            atomic_write(self.directory / META_FILE, json.dumps(meta, indent=2))
+            return meta
 
     @property
     def template(self) -> str:
@@ -176,64 +291,21 @@ class Notepad:
 
     # -- chat --------------------------------------------------------------
 
+    @property
+    def chat(self) -> ChatLog:
+        return ChatLog(self.directory / CHAT_FILE)
+
     def read_chat(self) -> list[dict[str, Any]]:
-        """Every question asked about this meeting, oldest first.
+        """Every question asked about this meeting, oldest first."""
+        return self.chat.read()
 
-        Malformed lines are skipped rather than aborting the read, for the
-        same reason the transcript reader does it.
-        """
-        path = self.directory / CHAT_FILE
-        if not path.exists():
-            return []
-        turns: list[dict[str, Any]] = []
-        try:
-            with path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(record, dict) and "question" in record:
-                        turns.append(record)
-        except OSError:
-            logger.debug("Could not read chat in %s", self.directory, exc_info=True)
-            return []
-        return turns
-
-    def append_chat(self, question: str, answer: str) -> dict[str, Any]:
-        """Record one question and its answer.
-
-        Appends rather than rewriting, then compacts only when the history has
-        grown past :data:`MAX_CHAT_TURNS`.
-        """
-        record = {
-            "question": question,
-            "answer": answer,
-            "asked_at": _utc_now_iso(),
-        }
-        path = self.directory / CHAT_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-            handle.flush()
-
-        turns = self.read_chat()
-        if len(turns) > MAX_CHAT_TURNS:
-            kept = turns[-MAX_CHAT_TURNS:]
-            _atomic_write(
-                path,
-                "".join(json.dumps(t, ensure_ascii=False) + "\n" for t in kept),
-            )
-        return record
+    def append_chat(self, question: str, answer: str, **extra: Any) -> dict[str, Any]:
+        """Record one question and its answer. See :meth:`ChatLog.append`."""
+        return self.chat.append(question, answer, **extra)
 
     def clear_chat(self) -> None:
         """Forget every question asked about this meeting."""
-        path = self.directory / CHAT_FILE
-        with contextlib.suppress(OSError):
-            path.unlink()
+        self.chat.clear()
 
     # -- internals ---------------------------------------------------------
 
@@ -252,5 +324,7 @@ __all__ = [
     "MAX_NOTES_CHARS",
     "META_FILE",
     "NOTES_FILE",
+    "ChatLog",
     "Notepad",
+    "atomic_write",
 ]

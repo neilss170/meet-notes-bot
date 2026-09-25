@@ -5,56 +5,118 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · Scribe</title>
 <style>
+  /* The same glass as the app: one frosted card over a soft field of colour. */
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --ink: #1f2328; --muted: #656d76;
-    --line: #d8dee4; --accent: #1a73e8; --bad: #cf222e;
+    color-scheme: light;
+    --base: #eceef4;
+    --glow-1: rgba(255, 159, 107, .42);
+    --glow-2: rgba(146, 132, 255, .32);
+    --glow-3: rgba(84, 196, 222, .24);
+    --glass: rgba(255, 255, 255, .55);
+    --glass-edge: rgba(255, 255, 255, .72);
+    --shine: inset 0 1px 0 rgba(255, 255, 255, .9);
+    --shadow: 0 2px 8px rgba(20, 22, 40, .06), 0 40px 90px -30px rgba(30, 30, 70, .45);
+    --field: rgba(255, 255, 255, .62);
+    --field-on: rgba(255, 255, 255, .92);
+    --ink: #101115; --muted: #585b6b; --faint: #8b8e9e;
+    --line: rgba(22, 24, 40, .08);
+    --btn: linear-gradient(180deg, #2c2d34 0%, #121318 100%);
+    --btn-ink: #ffffff;
+    --btn-shadow: inset 0 1px 0 rgba(255, 255, 255, .16), 0 10px 24px -10px rgba(18, 19, 26, .6);
+    --focus: rgba(226, 112, 58, .55);
+    --focus-ring: rgba(226, 112, 58, .15);
+    --spark: #e2703a;
+    --bad: #c43b2d;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e;
-      --line: #30363d; --accent: #58a6ff; --bad: #f85149;
+      color-scheme: dark;
+      --base: #07080c;
+      --glow-1: rgba(226, 112, 58, .24);
+      --glow-2: rgba(118, 98, 255, .22);
+      --glow-3: rgba(38, 170, 196, .14);
+      --glass: rgba(26, 27, 34, .55);
+      --glass-edge: rgba(255, 255, 255, .085);
+      --shine: inset 0 1px 0 rgba(255, 255, 255, .07);
+      --shadow: 0 40px 90px -30px rgba(0, 0, 0, .85);
+      --field: rgba(255, 255, 255, .05);
+      --field-on: rgba(255, 255, 255, .1);
+      --ink: #f1f2f6; --muted: #a4a7b6; --faint: #6f7283;
+      --line: rgba(255, 255, 255, .08);
+      --btn: linear-gradient(180deg, #ffffff 0%, #d8dae3 100%);
+      --btn-ink: #0d0e12;
+      --btn-shadow: inset 0 1px 0 #ffffff, 0 12px 28px -12px rgba(255, 255, 255, .25);
+      --focus: rgba(240, 138, 75, .6);
+      --focus-ring: rgba(240, 138, 75, .18);
+      --spark: #f08a4b;
+      --bad: #ef7a64;
     }
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
-    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    margin: 0; min-height: 100vh; color: var(--ink); background-color: var(--base);
+    background-image:
+      radial-gradient(1100px 760px at 4% -10%, var(--glow-1), transparent 62%),
+      radial-gradient(1000px 720px at 104% -8%, var(--glow-2), transparent 60%),
+      radial-gradient(1300px 900px at 55% 120%, var(--glow-3), transparent 62%);
+    background-attachment: fixed;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
     display: flex; align-items: center; justify-content: center; padding: 24px;
   }
   .card {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    padding: 30px 28px; width: 100%; max-width: 380px;
+    width: 100%; max-width: 384px; padding: 34px 30px 26px; border-radius: 26px;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(32px) saturate(170%);
+    backdrop-filter: blur(32px) saturate(170%);
+    border: 1px solid var(--glass-edge);
+    box-shadow: var(--shine), var(--shadow);
   }
-  h1 { font-size: 21px; margin: 0 0 3px; letter-spacing: -0.01em; }
-  .sub { color: var(--muted); font-size: 13px; margin-bottom: 22px; }
+  .mark {
+    width: 14px; height: 14px; border-radius: 50%; margin-bottom: 20px;
+    background: radial-gradient(circle at 32% 30%, #ffe0cc 0%, var(--spark) 55%, #a8421a 100%);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--spark) 16%, transparent),
+                0 0 22px color-mix(in srgb, var(--spark) 60%, transparent);
+  }
+  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.035em; font-weight: 650; }
+  .sub { color: var(--muted); font-size: 13.5px; margin-bottom: 24px; }
   label {
-    display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px;
+    display: block; font-size: 11px; font-weight: 650; margin: 0 0 7px 2px;
+    color: var(--faint); text-transform: uppercase; letter-spacing: .1em;
   }
   input {
-    width: 100%; padding: 10px 12px; font-size: 15px; font-family: inherit;
-    color: var(--ink); background: var(--bg); border: 1px solid var(--line);
-    border-radius: 7px; margin-bottom: 15px;
+    width: 100%; padding: 11px 14px; font-size: 15px; font-family: inherit;
+    color: var(--ink); background: var(--field); border: 1px solid var(--glass-edge);
+    border-radius: 13px; margin-bottom: 16px;
+    transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
   }
-  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input:focus {
+    outline: none; border-color: var(--focus); background: var(--field-on);
+    box-shadow: 0 0 0 4px var(--focus-ring);
+  }
   button {
-    width: 100%; font: inherit; font-weight: 600; padding: 11px; margin-top: 3px;
-    border: 1px solid transparent; border-radius: 7px; cursor: pointer;
-    background: var(--accent); color: #fff;
+    width: 100%; font: inherit; font-weight: 600; padding: 12px; margin-top: 4px;
+    border: 0; border-radius: 999px; cursor: pointer;
+    background: var(--btn); color: var(--btn-ink); box-shadow: var(--btn-shadow);
+    transition: transform .14s ease;
   }
+  button:hover { transform: translateY(-1px); }
   .err {
-    color: var(--bad); font-size: 13px; margin-bottom: 15px;
-    border-left: 3px solid var(--bad); padding-left: 10px;
+    color: var(--bad); font-size: 13px; margin-bottom: 16px; padding: 10px 13px;
+    border-radius: 13px; background: color-mix(in srgb, var(--bad) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--bad) 22%, transparent);
   }
   .note {
-    color: var(--muted); font-size: 12px; margin: 20px 0 0;
-    border-top: 1px solid var(--line); padding-top: 14px;
+    color: var(--faint); font-size: 12px; margin: 22px 0 0; line-height: 1.6;
+    border-top: 1px solid var(--line); padding-top: 16px;
   }
 </style>
 </head>
 <body>
   <form class="card" method="post" action="/login">
+    <div class="mark" aria-hidden="true"></div>
     <h1>Scribe</h1>
-    <div class="sub">Sign in to send the bot to a meeting.</div>
+    <div class="sub">Sign in to your meeting notes.</div>
 
     <!--ERROR-->
 
