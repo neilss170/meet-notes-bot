@@ -1849,6 +1849,252 @@ class TestSpeakerNames:
             ).status_code == 401
 
 
+class TestVoiceCommands:
+    """Saying it out loud, without touching the page.
+
+    The recogniser itself is replaced: these tests are about what the service
+    does when it is told something, not about whether Windows can hear. That
+    is proved in test_voice.py, by having Windows speak to itself.
+    """
+
+    @pytest.fixture
+    def rig(self, service_config, monkeypatch):
+        import meetbot.capture.local as local_module
+        from meetbot.service import app as app_module
+
+        monkeypatch.setattr(local_module, "capture_available", lambda: (True, "ok"))
+        monkeypatch.setattr(app_module, "voice_available", lambda: (True, "ready"))
+
+        async def recording(config, *, on_output_dir=None, on_stop=None, **kwargs):
+            directory = config.output_dir / "spoken"
+            directory.mkdir(parents=True, exist_ok=True)
+            if on_output_dir is not None:
+                on_output_dir(directory)
+            release = asyncio.Event()
+            if on_stop is not None:
+                on_stop(release.set)
+            await release.wait()
+            return MeetingRun(
+                output_dir=directory,
+                transcript_jsonl=directory / "transcript.jsonl",
+                utterance_count=2,
+            )
+
+        monkeypatch.setattr(jobs_module, "run_local_meeting", recording)
+
+        listeners: list = []
+
+        class FakeListener:
+            """Stands in for the microphone, and remembers being switched on."""
+
+            def __init__(self, on_command, **kwargs) -> None:
+                self.on_command = on_command
+                self.started = False
+                listeners.append(self)
+
+            def start(self) -> bool:
+                self.started = True
+                return True
+
+            def stop(self) -> None:
+                self.started = False
+
+            @property
+            def listening(self) -> bool:
+                return self.started
+
+            @property
+            def detail(self) -> str:
+                return "Listening for \"Scribe, start recording\"."
+
+        monkeypatch.setattr(app_module, "VoiceListener", FakeListener)
+        config = dataclasses.replace(service_config, voice_commands=True)
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield client, listeners[0]
+
+    @staticmethod
+    def _say(listener, kind: str, text: str, title: str = "") -> None:
+        """Speak, the way the listener's own thread would."""
+        from meetbot.capture.voice import VoiceCommand
+
+        listener.on_command(VoiceCommand(kind, text, 0.95, title))
+
+    @staticmethod
+    def _until(check, timeout: float = 10.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            value = check()
+            if value:
+                return value
+            time.sleep(0.05)
+        return None
+
+    def _recording(self, client):
+        """The live local recording, once there is one."""
+        return self._until(
+            lambda: next(
+                (
+                    meeting
+                    for meeting in client.get("/api/meetings").json()["meetings"]
+                    if meeting["kind"] == "local"
+                    and meeting["status"] not in ("finished", "failed")
+                ),
+                None,
+            )
+        )
+
+    def test_the_microphone_is_opened_when_voice_commands_are_on(self, rig) -> None:
+        _, listener = rig
+        assert listener.started is True
+
+    def test_saying_start_begins_a_recording(self, rig) -> None:
+        client, listener = rig
+        self._say(listener, "start", "scribe start recording")
+        assert self._recording(client) is not None, "nothing started recording"
+
+    def test_a_recording_started_by_voice_belongs_to_an_admin(self, rig) -> None:
+        """Nobody is signed in when you speak to the room."""
+        client, listener = rig
+        self._say(listener, "start", "scribe start recording")
+        meeting = self._recording(client)
+        assert meeting is not None
+        owner = client.app.state.users.get(meeting["owner"])
+        assert owner is not None and owner.is_admin
+
+    def test_it_does_not_start_a_second_recording_over_the_first(self, rig) -> None:
+        client, listener = rig
+        self._say(listener, "start", "scribe start recording")
+        assert self._recording(client) is not None
+        self._say(listener, "start", "scribe start recording")
+        time.sleep(0.4)
+        live = [
+            meeting
+            for meeting in client.get("/api/meetings").json()["meetings"]
+            if meeting["status"] not in ("finished", "failed")
+        ]
+        assert len(live) == 1
+
+    def test_saying_stop_ends_the_recording(self, rig) -> None:
+        client, listener = rig
+        self._say(listener, "start", "scribe start recording")
+        meeting = self._recording(client)
+        assert meeting is not None
+
+        self._say(listener, "stop", "scribe stop recording")
+
+        assert self._until(
+            lambda: client.get(f"/api/meetings/{meeting['id']}").json()["status"]
+            in ("finished", "failed")
+        ), "it kept recording"
+
+    def test_marking_a_moment_lands_in_the_transcript(self, rig) -> None:
+        from meetbot.transcript.store import MeetingMeta, TranscriptStore, Utterance
+
+        client, listener = rig
+        self._say(listener, "start", "scribe start recording")
+        meeting = self._recording(client)
+        assert meeting is not None
+        job = client.app.state.manager.get(meeting["id"])
+        assert self._until(lambda: job.output_dir) is not None
+        store = TranscriptStore(job.output_dir / "transcript.jsonl")
+        store.write_meta(MeetingMeta(meet_url="", bot_name="Scribe (local capture)"))
+        store.append(Utterance("You", "This is the bit that matters.", 0.0, 4.0))
+        store.close()
+
+        self._say(listener, "mark", "scribe mark this")
+
+        marks = self._until(
+            lambda: client.get(f"/api/meetings/{meeting['id']}/transcript")
+            .json()["marks"]
+        )
+        assert marks, "the moment was not recorded"
+
+    def test_naming_the_meeting_renames_it(self, rig) -> None:
+        client, listener = rig
+        self._say(listener, "start", "scribe start recording")
+        meeting = self._recording(client)
+        assert meeting is not None
+
+        self._say(listener, "name", "scribe call this the finance sync", "Finance sync")
+
+        renamed = self._until(
+            lambda: client.get(f"/api/meetings/{meeting['id']}").json()["title"]
+            == "Finance sync"
+        )
+        assert renamed, "the recording kept its old name"
+        # Written down too, so a restart does not forget it.
+        job = client.app.state.manager.get(meeting["id"])
+        raw = (job.output_dir / "transcript.jsonl").read_text(encoding="utf-8")
+        assert "Finance sync" in raw
+
+    def test_the_page_can_see_what_it_is_listening_for(self, rig) -> None:
+        client, listener = rig
+        payload = client.get("/api/voice").json()
+        assert payload["enabled"] is True
+        assert payload["listening"] is True
+        assert "start recording" in payload["detail"]
+        assert payload["phrases"]["start"] == "scribe start recording"
+
+        self._say(listener, "mark", "scribe mark this")
+        heard = self._until(lambda: client.get("/api/voice").json()["heard"])
+        assert heard and heard["kind"] == "mark"
+
+    def test_a_member_is_not_told_about_the_microphone(self, rig) -> None:
+        """What is said in somebody's room is their business."""
+        client, _ = rig
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        payload = other.get("/api/voice").json()
+        assert payload["enabled"] is False
+        assert payload["listening"] is False
+        assert payload["heard"] is None
+
+    def test_scribe_listening_is_not_mistaken_for_a_call(
+        self, service_config, monkeypatch
+    ) -> None:
+        """Listening holds the microphone, and Scribe watches for exactly that.
+
+        Without telling the watcher which program the recogniser runs in,
+        turning voice commands on makes Scribe offer to record the call it
+        thinks somebody has just joined - itself.
+        """
+        from meetbot.capture import calls as calls_module
+        from meetbot.capture.calls import MicSession
+        from meetbot.capture.voice import recogniser_executable
+
+        monkeypatch.setattr(calls_module, "GRACE_S", 0.0)
+        listening = MicSession(recogniser_executable().replace("\\", "#"), 1, False)
+        monkeypatch.setattr(calls_module, "read_mic_sessions", lambda: [listening])
+
+        config = dataclasses.replace(
+            service_config, voice_commands=True, call_alerts=True
+        )
+        app = create_app(config)
+        assert app.state.calls.poll() == []
+        assert app.state.calls.pending() == []
+
+    def test_voice_is_off_unless_it_is_asked_for(
+        self, service_config, monkeypatch
+    ) -> None:
+        """An always-open microphone is agreed to, not discovered."""
+        assert service_config.voice_commands is False
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            payload = client.get("/api/voice").json()
+        assert payload["enabled"] is False
+        assert "VOICE_COMMANDS" in payload["detail"]
+
+
 class TestRecallApi:
     """Questions across every meeting, and the citations behind every answer."""
 

@@ -394,6 +394,10 @@
   }
   .placeholder strong { color: var(--muted); font-weight: 550; }
 
+  /* A moment somebody asked, out loud, to be able to find again. */
+  .live-line.marked { box-shadow: inset 2px 0 0 var(--spark); border-radius: 10px; }
+  .live-line.marked .t::after { content: " \25C6"; color: var(--spark); }
+
   /* -- who was speaking ---------------------------------------------------- */
   .speakerbar {
     display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
@@ -838,6 +842,11 @@
             <div class="hint" id="call-detail" style="padding:0"></div>
             <div id="muted-apps"></div>
           </details>
+          <details class="opts" id="voice-opts" hidden>
+            <summary>Voice commands</summary>
+            <div class="hint" id="voice-detail" style="padding:0"></div>
+            <div class="hint" id="voice-heard" style="padding:0"></div>
+          </details>
         </div>
 
         <div id="form-bot" hidden>
@@ -946,6 +955,8 @@ const state = {
   /* Which voice is being named right now, if any, and what went wrong. */
   naming: null,
   namingError: "",
+  /* What Scribe is listening for, and the last thing it heard. */
+  voice: { enabled: false, listening: false, detail: "", phrases: {}, heard: null, sig: "" },
   asking: false,
   sending: false,
   stopping: new Set(),
@@ -957,7 +968,8 @@ const state = {
 
   /* The whole transcript of the selected meeting, in the lines citations
      point at. The meeting payload only carries the newest few. */
-  full: { id: null, count: -1, segments: [], speakers: [], at: 0, loading: false },
+  full: { id: null, count: -1, segments: [], speakers: [], marks: [],
+          at: 0, loading: false },
   /* What the transcript tab has painted, so a live meeting's new words can
      be added where they land instead of repainting everything. */
   tx: { id: null, texts: [], registeringUntil: 0, lastNewAt: 0 },
@@ -1307,7 +1319,7 @@ function setCitations(on) {
 function renderSidebar() {
   const signature = JSON.stringify(state.meetings.map((j) => [
     j.id, j.status, j.utterance_count, j.has_enhanced, j.has_notes, j.kind,
-    j.enhancing, j.id === state.selected,
+    j.enhancing, meetingName(j), j.id === state.selected,
   ]));
   if (signature === state.sig.list) return;
   state.sig.list = signature;
@@ -1380,6 +1392,7 @@ function renderMain() {
      whatever was being typed into it. They are written in place below. */
   const signature = JSON.stringify([
     job.id, job.status, state.tab, job.has_summary, state.stopping.has(job.id),
+    meetingName(job),
   ]);
   const rebuild = signature !== state.sig.head;
   if (rebuild) {
@@ -1637,7 +1650,8 @@ async function loadTranscript() {
     if (state.selected === id) {
       state.full = {
         id, count: data.utterance_count, segments: data.segments || [],
-        speakers: data.speakers || [], at: Date.now(), loading: false,
+        speakers: data.speakers || [], marks: data.marks || [],
+        at: Date.now(), loading: false,
       };
       if (state.tab === "transcript") renderTranscript(false);
       return;
@@ -1686,8 +1700,12 @@ function renderTranscript(rebuild) {
   const live = !["finished", "failed"].includes(job.status);
   // A finished meeting is read once. A live one is re-read as it grows -
   // often enough that words land moments after they are registered.
-  const grown = have && live && state.full.count !== (job.utterance_count || 0)
-    && Date.now() - state.full.at > 1500;
+  // Re-read when the transcript has grown - or when a moment was marked,
+  // which changes nothing else about the meeting and would otherwise never
+  // reach the page.
+  const changed = have && (state.full.count !== (job.utterance_count || 0) ||
+    (state.full.marks || []).length !== (job.mark_count || 0));
+  const grown = changed && live && Date.now() - state.full.at > 1500;
   if (!state.full.loading && (!have || grown)) loadTranscript();
 
   if (rebuild || !$("tx-lines")) {
@@ -1704,11 +1722,13 @@ function renderTranscript(rebuild) {
   const lines = have ? state.full.segments : [];
   const jump = have && state.jump && state.jump.id === job.id ? state.jump : null;
   const signature = `${job.id}:${have}:${lines.length}:` +
-    `${lines.length ? lines[lines.length - 1].text.length : 0}`;
+    `${lines.length ? lines[lines.length - 1].text.length : 0}:` +
+    `${(state.full.marks || []).length}`;
   if (jump || signature !== state.sig.transcript) {
     state.sig.transcript = signature;
     paintTranscript(pane, job, lines, have, live, jump);
   }
+  markMoments();
   renderSpeakers(job);
   updateListening(job);
 }
@@ -1794,6 +1814,31 @@ function paintTranscript(pane, job, lines, have, live, jump) {
   // Follow a live meeting, but do not yank the page from under someone who
   // has scrolled up to re-read something.
   if (atBottom) pane.scrollTop = pane.scrollHeight;
+}
+
+/** Put the marks somebody asked for onto the lines nearest them.
+
+    The nearest line rather than an exact one: "mark this" is said a beat
+    after the thing worth marking, and the timestamp is whatever the
+    recording had reached. */
+function markMoments() {
+  const host = $("tx-lines");
+  if (!host) return;
+  host.querySelectorAll(".live-line.marked").forEach((row) => {
+    row.classList.remove("marked");
+  });
+  const marks = state.full.marks || [];
+  const rows = [...host.querySelectorAll(".live-line")];
+  if (!marks.length || !rows.length) return;
+  for (const at of marks) {
+    let best = rows[0];
+    let distance = Infinity;
+    for (const row of rows) {
+      const gap = Math.abs(Number(row.dataset.start) - at);
+      if (gap < distance) { best = row; distance = gap; }
+    }
+    best.classList.add("marked");
+  }
 }
 
 /* Diarization can only say that two different people spoke. One person who
@@ -2145,6 +2190,44 @@ async function pollCalls() {
   followCallLink();
   renderCallCard();
   renderCallSettings();
+  pollVoice();
+}
+
+/* An open microphone is worth being able to see. The page says what Scribe is
+   listening for and what it last heard, so "it did not hear me" and "it is not
+   listening" stop looking like the same thing. */
+async function pollVoice() {
+  try {
+    const data = await api("/api/voice");
+    Object.assign(state.voice, {
+      enabled: !!data.enabled, listening: !!data.listening,
+      detail: data.detail || "", phrases: data.phrases || {}, heard: data.heard || null,
+    });
+  } catch (_) { return; }
+  renderVoice();
+}
+
+function renderVoice() {
+  const box = $("voice-opts");
+  if (!box) return;
+  const voice = state.voice;
+  box.hidden = !voice.enabled && !voice.detail;
+  const signature = `${voice.enabled}:${voice.listening}:${voice.detail}:` +
+    `${voice.heard ? voice.heard.at : ""}`;
+  if (signature === voice.sig) return;
+  voice.sig = signature;
+
+  const said = Object.values(voice.phrases || {});
+  $("voice-detail").innerHTML = voice.listening
+    ? esc(voice.detail) + (said.length
+        ? "<br>Also: " + said.slice(1).map((phrase) => `&ldquo;${esc(phrase)}&rdquo;`).join(", ")
+        : "")
+    : esc(voice.detail);
+  const heard = voice.heard;
+  $("voice-heard").innerHTML = heard
+    ? `Last heard &ldquo;${esc(heard.text)}&rdquo; ` +
+      `<span class="src">${Math.round((heard.confidence || 0) * 100)}%</span>`
+    : "";
 }
 
 /** A notification's "Start recording" opens the page with the call's id.

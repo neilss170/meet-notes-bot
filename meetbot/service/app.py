@@ -22,6 +22,7 @@ import contextlib
 import dataclasses
 import logging
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -53,6 +54,13 @@ from meetbot.capture.calls import (
     detection_available,
     show_toast,
 )
+from meetbot.capture.voice import (
+    PHRASES,
+    VoiceCommand,
+    VoiceListener,
+    recogniser_executable,
+    voice_available,
+)
 from meetbot.config import Config, ConfigError
 from meetbot.runner import anonymised_utterances
 from meetbot.service.auth import (
@@ -79,10 +87,13 @@ from meetbot.service.jobs import JobManager, JobStatus, MeetingJob, load_past_ru
 from meetbot.transcript.notes import ChatLog, Notepad
 from meetbot.transcript.format import format_timestamp
 from meetbot.transcript.store import (
+    MARK_EVENT,
     SPEAKER_NAMES_EVENT,
-    TranscriptStore,
+    TITLE_EVENT,
     Utterance,
+    append_event,
     apply_speaker_names,
+    read_marks,
     read_meta,
     read_speaker_names,
     read_utterances,
@@ -209,7 +220,17 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     state_dir = Path(config.service_state_dir).expanduser()
     users = UserStore(state_dir / "users.json")
     secret = load_or_create_secret(state_dir / "session.key")
-    calls = CallWatcher(state_dir / "call-alerts.json")
+    # Listening means holding the microphone, and the call watcher works by
+    # executable: without telling it about the recogniser, Scribe would spot
+    # its own listener and offer to record the call it thinks has started.
+    own = None
+    if config.voice_commands:
+        own = (
+            sys.executable,
+            getattr(sys, "_base_executable", ""),
+            recogniser_executable(),
+        )
+    calls = CallWatcher(state_dir / "call-alerts.json", own_executables=own)
 
     #: Job ids with an LLM call in flight, so a double-click cannot spend the
     #: free-tier quota twice on the same meeting - and so the page can say
@@ -301,6 +322,82 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 await asyncio.to_thread(show_toast, prompt, base)
             await asyncio.sleep(POLL_INTERVAL_S)
 
+    def _live_local_job() -> MeetingJob | None:
+        """The recording happening on this machine right now, if any."""
+        for job in manager.list():
+            if job.kind == "local" and not job.status.is_terminal:
+                return job
+        return None
+
+    def _voice_owner() -> str:
+        """Who a recording started by voice belongs to.
+
+        Nobody is signed in when somebody speaks to the room, so it goes to
+        the first admin - the account already trusted with call alerts, and
+        on a one-person machine the only account there is.
+        """
+        for user in users.list():
+            if user.is_admin:
+                return user.username
+        return ""
+
+    async def _voice_act(command: VoiceCommand) -> None:
+        """Do the thing that was asked out loud."""
+        job = _live_local_job()
+        if command.kind == "start":
+            if job is not None:
+                logger.info("Voice: already recording, so nothing to start")
+                return
+            from meetbot.capture.local import capture_available
+
+            ready, detail = await asyncio.to_thread(capture_available)
+            if not ready:
+                # Spoken into the air with nobody looking at the page, so the
+                # log is the only place this can be said.
+                logger.warning("Voice: cannot record - %s", detail)
+                return
+            started = manager.start_local(title="", owner=_voice_owner())
+            logger.info("Voice: started recording %s", started.id)
+            return
+
+        if job is None:
+            logger.info("Voice: nothing is recording, ignoring %r", command.kind)
+            return
+        # The file rather than the artifact: a recording named a second after
+        # it starts has not written its first line yet, and the name should
+        # still be kept. Appending beside the recorder is safe because every
+        # record is one short line written in append mode and flushed.
+        path = job.output_dir / "transcript.jsonl" if job.output_dir else None
+        if command.kind == "stop":
+            await manager.stop(job.id)
+            logger.info("Voice: stopping %s", job.id)
+        elif command.kind == "mark" and path is not None:
+            at = float(job.read_progress().get("duration_s") or 0.0)
+            await asyncio.to_thread(
+                append_event, path, MARK_EVENT, at=at, said=command.text
+            )
+            logger.info("Voice: marked %s at %.1fs", job.id, at)
+        elif command.kind == "name" and command.title:
+            # Both fields: a local recording is shown by its title and
+            # restored from disk by the URL field it was written with.
+            job.title = command.title
+            job.meet_url = command.title
+            if path is not None:
+                await asyncio.to_thread(
+                    append_event, path, TITLE_EVENT, title=command.title
+                )
+            logger.info("Voice: named %s %r", job.id, command.title)
+
+    def _voice_heard(command: VoiceCommand) -> None:
+        """Take a command off the listener's thread and onto the loop."""
+        app.state.voice_heard = {**command.to_dict(), "at": time.time()}
+        loop = getattr(app.state, "loop", None)
+        if loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(_voice_act(command), loop)
+
+    voice = VoiceListener(_voice_heard)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         created = bootstrap_admin(users)
@@ -329,7 +426,17 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         watching = None
         if config.call_alerts and detection_available()[0]:
             watching = asyncio.create_task(_watch_calls())
+        # Commands arrive on the listener's own thread and have to be carried
+        # back here, so the loop has to be reachable from it.
+        app.state.loop = asyncio.get_running_loop()
+        if config.voice_commands:
+            heard, why = await asyncio.to_thread(voice_available)
+            if heard:
+                await asyncio.to_thread(voice.start)
+            else:
+                logger.warning("Voice commands are on but unavailable: %s", why)
         yield
+        await asyncio.to_thread(voice.stop)
         if watching is not None:
             watching.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -722,6 +829,30 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         await asyncio.to_thread(calls.unmute, request.app_id.strip())
         return {"muted": calls.muted()}
 
+    @app.get("/api/voice")
+    async def voice_status(user: User = Depends(current_user)) -> dict[str, Any]:
+        """What Scribe is listening for, and the last thing it heard.
+
+        Admin-only, like call alerts: an open microphone in somebody's room
+        is their business and nobody else's.
+        """
+        if not user.is_admin:
+            return {"enabled": False, "listening": False, "detail": "", "heard": None}
+        if not config.voice_commands:
+            return {
+                "enabled": False,
+                "listening": False,
+                "detail": "Voice commands are off (VOICE_COMMANDS=false).",
+                "heard": None,
+            }
+        return {
+            "enabled": True,
+            "listening": voice.listening,
+            "detail": voice.detail,
+            "phrases": {kind: said[0] for kind, said in PHRASES.items()},
+            "heard": getattr(app.state, "voice_heard", None),
+        }
+
     # -- notepad -----------------------------------------------------------
 
     def _utterances_of(job: MeetingJob) -> list[Utterance]:
@@ -735,6 +866,16 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             logger.warning("Could not read the transcript for job %s", job.id)
             return []
         return apply_speaker_names(utterances, read_speaker_names(path))
+
+    def _marks_of(job: MeetingJob) -> list[float]:
+        """Moments somebody asked to be able to find again."""
+        path = job.artifact("transcript.jsonl")
+        if path is None:
+            return []
+        try:
+            return read_marks(path)
+        except (OSError, ValueError):
+            return []
 
     def _speakers_of(job: MeetingJob) -> list[dict[str, str]]:
         """Every voice in the meeting: the label stored, and what to call it.
@@ -756,14 +897,6 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             {"id": label, "name": named.get(label, label)}
             for label in speakers(recorded)
         ]
-
-    def _write_speaker_names(path: Path, names: dict[str, str]) -> None:
-        """Append the mapping; never rewrite what was already recorded."""
-        store = TranscriptStore(path, append=True)
-        try:
-            store.append_event(SPEAKER_NAMES_EVENT, names=names)
-        finally:
-            store.close()
 
     def _title_of(job: MeetingJob) -> str:
         """What a meeting is called - the same rule the page uses."""
@@ -876,6 +1009,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             "segments": [s.to_dict() for s in segment_utterances(utterances)],
             "utterance_count": len(utterances),
             "speakers": await asyncio.to_thread(_speakers_of, job),
+            "marks": await asyncio.to_thread(_marks_of, job),
         }
 
     @app.put("/api/meetings/{job_id}/speakers")
@@ -920,7 +1054,9 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         if not names:
             raise HTTPException(status_code=400, detail="Say who was speaking.")
         try:
-            await asyncio.to_thread(_write_speaker_names, path, names)
+            await asyncio.to_thread(
+                append_event, path, SPEAKER_NAMES_EVENT, names=names
+            )
         except OSError as exc:
             raise HTTPException(
                 status_code=500, detail=f"Could not save the names: {exc}"
