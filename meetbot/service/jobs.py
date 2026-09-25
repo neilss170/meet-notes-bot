@@ -39,7 +39,7 @@ from meetbot.config import Config, validate_meet_url
 from meetbot.local_runner import run_local_meeting
 from meetbot.runner import MeetingRun, run_meeting
 from meetbot.transcript.notes import Notepad
-from meetbot.transcript.store import iter_records
+from meetbot.transcript.store import MARK_EVENT, iter_records, read_title
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,7 @@ class MeetingJob:
             "utterance_count": 0,
             "speakers": [],
             "duration_s": 0.0,
+            "mark_count": 0,
         }
         if self.output_dir is None:
             return progress
@@ -134,6 +135,7 @@ class MeetingJob:
 
         transcript: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
+        marks = 0
         speakers: list[str] = []
         last_end = 0.0
         try:
@@ -156,6 +158,11 @@ class MeetingJob:
                     events.append(
                         {"kind": record.get("kind", ""), "at": record.get("at", "")}
                     )
+                    if record.get("kind") == MARK_EVENT:
+                        # Counted so the page can tell that a moment was
+                        # marked: nothing else about the meeting changed,
+                        # and without this it would never re-read it.
+                        marks += 1
         except (OSError, ValueError):
             logger.debug("Could not read progress for job %s", self.id, exc_info=True)
             return progress
@@ -169,6 +176,7 @@ class MeetingJob:
         progress["utterance_count"] = len(transcript)
         progress["speakers"] = speakers
         progress["duration_s"] = last_end
+        progress["mark_count"] = marks
         return progress
 
     @property
@@ -534,6 +542,12 @@ def load_past_runs(manager: JobManager, output_dir: Path, limit: int = 50) -> in
                     if "local" in str(record.get("bot_name", "")).lower():
                         kind = "local"
                     break
+        # A meeting can have been renamed after its header was written -
+        # by voice, mid-call - and the latest name is what it is known by.
+        with contextlib.suppress(OSError, ValueError):
+            renamed = read_title(transcript)
+            if renamed:
+                meet_url = renamed
         job = MeetingJob(
             id=f"past-{path.name}",
             meet_url=meet_url or path.name,

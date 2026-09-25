@@ -18,6 +18,7 @@ never cost you the rest of the meeting.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -283,6 +284,58 @@ def apply_speaker_names(
         replace(u, speaker=mapping[u.speaker]) if u.speaker in mapping else u
         for u in utterances
     ]
+
+
+#: Event kind marking a moment somebody wanted to find again.
+MARK_EVENT = "mark"
+
+#: Event kind carrying a new title for the meeting.
+TITLE_EVENT = "renamed"
+
+
+def append_event(path: Path, kind: str, **details: Any) -> None:
+    """Add one event to a transcript that has already been written.
+
+    Naming a speaker, marking a moment and retitling a meeting all happen
+    after the fact, and not one of them is worth rewriting the file for: the
+    format is append-only precisely so that a process killed mid-meeting
+    cannot lose what was said.
+    """
+    store = TranscriptStore(path, append=True)
+    try:
+        store.append_event(kind, **details)
+    finally:
+        store.close()
+
+
+def read_title(path: Path) -> str:
+    """The most recent title the meeting was given, or ``""``.
+
+    Latest wins, for the same reason the speaker mapping does: renaming is
+    somebody correcting themselves, and the correction is the answer.
+    """
+    title = ""
+    for record in iter_records(path):
+        if record.get("type") != "event" or record.get("kind") != TITLE_EVENT:
+            continue
+        details = record.get("details")
+        if isinstance(details, dict) and isinstance(details.get("title"), str):
+            title = details["title"].strip() or title
+    return title
+
+
+def read_marks(path: Path) -> list[float]:
+    """Seconds into the meeting that somebody asked to be able to find again."""
+    marks: list[float] = []
+    for record in iter_records(path):
+        if record.get("type") != "event" or record.get("kind") != MARK_EVENT:
+            continue
+        details = record.get("details")
+        if not isinstance(details, dict):
+            continue
+        with contextlib.suppress(TypeError, ValueError):
+            marks.append(float(details.get("at")))
+    return sorted(marks)
 
 
 def read_meta(path: Path) -> dict[str, Any] | None:

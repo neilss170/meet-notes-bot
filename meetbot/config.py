@@ -226,6 +226,12 @@ class Config:
     #: off on a metered key; tests turn it off unless they are testing it.
     auto_notes: bool = True
 
+    #: Listen for spoken commands - "Scribe, start recording" and the
+    #: rest - through the speech recogniser built into Windows. Off unless
+    #: asked for: it holds the microphone the whole time Scribe runs, which
+    #: is a thing to agree to rather than to discover.
+    voice_commands: bool = False
+
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
@@ -424,6 +430,7 @@ def load_config(
         preflight_on_start=_env_bool(env, "PREFLIGHT_ON_START", True),
         call_alerts=_env_bool(env, "CALL_ALERTS", True),
         auto_notes=_env_bool(env, "AUTO_NOTES", True),
+        voice_commands=_env_bool(env, "VOICE_COMMANDS", False),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
