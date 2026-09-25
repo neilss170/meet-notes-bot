@@ -213,6 +213,13 @@ class Config:
     #: the code under test.
     preflight_on_start: bool = True
 
+    #: Notice when a call starts on this machine - any app taking the
+    #: microphone - and offer to record it, in the page and as a Windows
+    #: notification. It reads the per-app microphone state Windows already
+    #: keeps for its own privacy indicator, and opens no audio. Tests turn it
+    #: off so a suite run during a call does not raise notifications.
+    call_alerts: bool = True
+
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
@@ -409,6 +416,7 @@ def load_config(
             _env_str(env, "SERVICE_STATE_DIR", "~/.meetbot")
         ).expanduser(),
         preflight_on_start=_env_bool(env, "PREFLIGHT_ON_START", True),
+        call_alerts=_env_bool(env, "CALL_ALERTS", True),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
