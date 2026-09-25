@@ -121,6 +121,9 @@ def served(tmp_path: Path, monkeypatch):
         service_state_dir=tmp_path / "state",
         preflight_on_start=False,
         call_alerts=True,
+        # A recording stopped in one of these tests would otherwise be written
+        # up mid-assertion by the canned model.
+        auto_notes=False,
     )
     app = create_app(config)
     port = free_port()

@@ -220,16 +220,30 @@ class MeetingJob:
 class JobManager:
     """Owns every running and completed meeting job in this process."""
 
-    def __init__(self, base_config: Config) -> None:
+    def __init__(
+        self,
+        base_config: Config,
+        *,
+        on_finished: Callable[[MeetingJob], None] | None = None,
+    ) -> None:
         """Create a manager.
 
         Args:
             base_config: Settings every job inherits - keys, model choices,
                 output directory. Per-job values (the meeting URL, the bridge
                 port) are overlaid at start time.
+            on_finished: Called with each job as it reaches a terminal state.
+                Only jobs this manager actually ran reach it, which is what
+                makes it safe to hang work off: meetings restored from disk by
+                :func:`load_past_runs` are finished before they are
+                registered and never fire it.
         """
         self._base = base_config
         self._jobs: dict[str, MeetingJob] = {}
+        #: Public so it can also be wired after construction, which the
+        #: service does: writing a meeting up needs helpers built later than
+        #: the manager itself.
+        self.on_finished = on_finished
 
     # -- queries -----------------------------------------------------------
 
@@ -380,6 +394,21 @@ class JobManager:
         if kind == "joined" and job.status is JobStatus.JOINING:
             job.status = JobStatus.IN_CALL
 
+    def _finished(self, job: MeetingJob) -> None:
+        """Tell whoever is listening that ``job`` is over.
+
+        Anything the listener raises is logged and swallowed. The recording is
+        already on disk by the time this runs, so a listener that fails must
+        not turn a completed meeting into a crashed task - and whatever it was
+        going to do can still be done by hand.
+        """
+        if self.on_finished is None:
+            return
+        try:
+            self.on_finished(job)
+        except Exception:  # noqa: BLE001 - a listener must not fail the job
+            logger.exception("Job %s: the finished callback failed", job.id)
+
     async def _run_local(
         self,
         job: MeetingJob,
@@ -427,6 +456,7 @@ class JobManager:
             job.finished_at = time.time()
             if not job.status.is_terminal:
                 job.status = JobStatus.FAILED
+            self._finished(job)
 
     async def _run(self, job: MeetingJob, config: Config) -> None:
         """Drive one meeting to completion, recording the outcome on the job."""
@@ -468,6 +498,7 @@ class JobManager:
                 # which should not happen; failing loudly beats a job that
                 # sits in a live state forever.
                 job.status = JobStatus.FAILED
+            self._finished(job)
 
 
 def load_past_runs(manager: JobManager, output_dir: Path, limit: int = 50) -> int:

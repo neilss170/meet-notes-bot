@@ -84,6 +84,9 @@ def served(tmp_path: Path, monkeypatch):
         preflight_on_start=False,
         # Reads the real microphone state and raises real notifications.
         call_alerts=False,
+        # This fixture's meeting is already finished, and these tests are about
+        # the notepad rather than the automatic write-up.
+        auto_notes=False,
     )
     app = create_app(config)
 

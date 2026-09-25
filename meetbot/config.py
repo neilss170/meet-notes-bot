@@ -220,6 +220,12 @@ class Config:
     #: off so a suite run during a call does not raise notifications.
     call_alerts: bool = True
 
+    #: Write a meeting up as soon as it ends, rather than waiting for somebody
+    #: to press "Enhance notes". A notetaker that has to be asked is a text
+    #: editor. Costs one LLM call per finished meeting, so it can be turned
+    #: off on a metered key; tests turn it off unless they are testing it.
+    auto_notes: bool = True
+
     # --- Transcription ----------------------------------------------------
     deepgram_api_key: str = ""
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
@@ -417,6 +423,7 @@ def load_config(
         ).expanduser(),
         preflight_on_start=_env_bool(env, "PREFLIGHT_ON_START", True),
         call_alerts=_env_bool(env, "CALL_ALERTS", True),
+        auto_notes=_env_bool(env, "AUTO_NOTES", True),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),
         deepgram_language=_env_str(env, "DEEPGRAM_LANGUAGE", "en-US"),
