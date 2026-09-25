@@ -82,6 +82,8 @@ def served(tmp_path: Path, monkeypatch):
         service_state_dir=tmp_path / "state",
         # The startup checks open a real Deepgram stream and call the LLM.
         preflight_on_start=False,
+        # Reads the real microphone state and raises real notifications.
+        call_alerts=False,
     )
     app = create_app(config)
 

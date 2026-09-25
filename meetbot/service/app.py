@@ -18,10 +18,13 @@ in front of the service keeps them off the wire.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -34,8 +37,21 @@ from meetbot.analysis.notepad import (
     DEFAULT_TEMPLATE,
     TEMPLATES,
     NotepadError,
-    answer_question,
     enhance_notes,
+)
+from meetbot.analysis.recall import (
+    MeetingSource,
+    RecallAnswer,
+    RecallError,
+    answer_about_meeting,
+    answer_across_meetings,
+    segment_utterances,
+)
+from meetbot.capture.calls import (
+    POLL_INTERVAL_S,
+    CallWatcher,
+    detection_available,
+    show_toast,
 )
 from meetbot.config import Config, ConfigError
 from meetbot.runner import anonymised_utterances
@@ -60,11 +76,12 @@ from meetbot.preflight import (
 )
 from meetbot.profile import sweep_stale_profiles
 from meetbot.service.jobs import JobManager, MeetingJob, load_past_runs
-from meetbot.transcript.notes import Notepad
+from meetbot.transcript.notes import ChatLog, Notepad
 from meetbot.transcript.format import format_timestamp
 from meetbot.transcript.store import (
     Utterance,
     apply_speaker_names,
+    read_meta,
     read_speaker_names,
     read_utterances,
 )
@@ -114,6 +131,9 @@ class RecordRequest(BaseModel):
     microphone_index: int | None = Field(
         None, description="Microphone to capture; negative to record none"
     )
+    call_id: str | None = Field(
+        None, description="The call alert this recording answers, if any"
+    )
     anonymise_analysis: bool | None = None
 
 
@@ -130,9 +150,15 @@ class EnhanceRequest(BaseModel):
 
 
 class AskRequest(BaseModel):
-    """A question about one meeting."""
+    """A question about one meeting, or about all of them."""
 
     question: str
+
+
+class MuteAppRequest(BaseModel):
+    """Stop, or resume, offering to record calls from one app."""
+
+    app_id: str
 
 
 class CreateUserRequest(BaseModel):
@@ -149,12 +175,19 @@ class PasswordRequest(BaseModel):
     password: str
 
 
-def create_app(config: Config) -> FastAPI:
-    """Build the service around a validated base configuration."""
+def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
+    """Build the service around a validated base configuration.
+
+    Args:
+        config: Settings every meeting inherits.
+        public_url: Where the page is served, for the links in call
+            notifications. Learned from the page's own requests if omitted.
+    """
     manager = JobManager(config)
     state_dir = Path(config.service_state_dir).expanduser()
     users = UserStore(state_dir / "users.json")
     secret = load_or_create_secret(state_dir / "session.key")
+    calls = CallWatcher(state_dir / "call-alerts.json")
 
     async def _refresh_health() -> Preflight:
         """Re-run the checks and remember the answer."""
@@ -200,6 +233,30 @@ def create_app(config: Config) -> FastAPI:
             app.state.health_at = time.time()
         return result
 
+    async def _watch_calls() -> None:
+        """Offer to record each call as it starts, for the life of the service."""
+        failing = False
+        while True:
+            try:
+                fresh = await asyncio.to_thread(
+                    calls.poll, recording=manager.recording_locally
+                )
+                failing = False
+            except Exception:  # noqa: BLE001 - one bad read must not end the watch
+                if not failing:
+                    logger.warning("Could not read the microphone state", exc_info=True)
+                failing = True
+                fresh = []
+            for prompt in fresh:
+                logger.info("Call detected: %s (%s)", prompt.title, prompt.app)
+                base = (
+                    public_url
+                    or getattr(app.state, "base_url", "")
+                    or "http://127.0.0.1:8080/"
+                )
+                await asyncio.to_thread(show_toast, prompt, base)
+            await asyncio.sleep(POLL_INTERVAL_S)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         created = bootstrap_admin(users)
@@ -225,7 +282,14 @@ def create_app(config: Config) -> FastAPI:
         restored = load_past_runs(manager, config.output_dir)
         if restored:
             logger.info("Loaded %d past meeting(s) from %s", restored, config.output_dir)
+        watching = None
+        if config.call_alerts and detection_available()[0]:
+            watching = asyncio.create_task(_watch_calls())
         yield
+        if watching is not None:
+            watching.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watching
         # Leaving calls cleanly matters more than a fast shutdown: a bot left
         # behind sits in someone's meeting until they remove it.
         if manager.active_count:
@@ -537,7 +601,7 @@ def create_app(config: Config) -> FastAPI:
         overrides = {
             key: value
             for key, value in request.model_dump(
-                exclude={"title", "loopback_index", "microphone_index"}
+                exclude={"title", "loopback_index", "microphone_index", "call_id"}
             ).items()
             if value is not None
         }
@@ -551,7 +615,63 @@ def create_app(config: Config) -> FastAPI:
             )
         except (ValueError, ConfigError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if request.call_id:
+            calls.mark_handled(request.call_id)
         return job.to_dict()
+
+    # -- call alerts -------------------------------------------------------
+
+    @app.get("/api/calls")
+    async def list_calls(
+        request: Request, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Calls that have started on this machine and not been answered.
+
+        Admins only. Which apps this machine is using is its owner's business:
+        a member signed in from elsewhere should not learn that the host has
+        just joined a WhatsApp call.
+        """
+        # The notification's links have to point back at wherever the page
+        # is actually being served from.
+        app.state.base_url = str(request.base_url)
+        if not user.is_admin:
+            return {"enabled": False, "detail": "", "prompts": [], "muted": []}
+        enabled, detail = detection_available()
+        if not config.call_alerts:
+            enabled, detail = False, "Call alerts are off (CALL_ALERTS=false)."
+        return {
+            "enabled": enabled,
+            "detail": detail,
+            "prompts": [p.to_dict() for p in calls.pending()] if enabled else [],
+            "muted": calls.muted(),
+        }
+
+    @app.post("/api/calls/{prompt_id}/dismiss")
+    async def dismiss_call(
+        prompt_id: str, _: User = Depends(admin_only)
+    ) -> dict[str, Any]:
+        """Not this call. The next call from the same app still asks."""
+        if not calls.dismiss(prompt_id):
+            raise HTTPException(status_code=404, detail="That call has already ended.")
+        return {"dismissed": True}
+
+    @app.post("/api/calls/mute")
+    async def mute_call_app(
+        request: MuteAppRequest, _: User = Depends(admin_only)
+    ) -> dict[str, Any]:
+        """Never offer to record calls from this app."""
+        app_id = request.app_id.strip()
+        if not app_id:
+            raise HTTPException(status_code=400, detail="Say which app to mute.")
+        await asyncio.to_thread(calls.mute, app_id)
+        return {"muted": calls.muted()}
+
+    @app.post("/api/calls/unmute")
+    async def unmute_call_app(
+        request: MuteAppRequest, _: User = Depends(admin_only)
+    ) -> dict[str, Any]:
+        await asyncio.to_thread(calls.unmute, request.app_id.strip())
+        return {"muted": calls.muted()}
 
     # -- notepad -----------------------------------------------------------
 
@@ -566,6 +686,38 @@ def create_app(config: Config) -> FastAPI:
             logger.warning("Could not read the transcript for job %s", job.id)
             return []
         return apply_speaker_names(utterances, read_speaker_names(path))
+
+    def _title_of(job: MeetingJob) -> str:
+        """What a meeting is called - the same rule the page uses."""
+        if job.kind == "local":
+            return job.title or "Untitled recording"
+        code = re.search(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", job.meet_url or "")
+        return code.group(0) if code else (job.meet_url or "Meeting")
+
+    def _source_of(job: MeetingJob) -> MeetingSource:
+        """A meeting as recall reads it: real names, and when it happened."""
+        utterances = _utterances_of(job)
+        started_at = job.created_at
+        path = job.artifact("transcript.jsonl")
+        if path is not None:
+            # A restored run's created_at is its directory's modification
+            # time - when it finished. The header knows when it started.
+            with contextlib.suppress(OSError, KeyError, TypeError, ValueError):
+                meta = read_meta(path) or {}
+                started_at = datetime.fromisoformat(str(meta["started_at"])).timestamp()
+        alias: dict[str, str] = {}
+        if config.anonymise_analysis and utterances:
+            alias = {
+                real.speaker: stand_in.speaker
+                for real, stand_in in zip(utterances, anonymised_utterances(utterances))
+            }
+        return MeetingSource(
+            id=job.id,
+            title=_title_of(job),
+            started_at=started_at,
+            utterances=utterances,
+            speaker_alias=alias,
+        )
 
     def _notepad_of(job: MeetingJob) -> Notepad:
         """The job's notepad, or a 409 explaining why there isn't one yet."""
@@ -633,6 +785,23 @@ def create_app(config: Config) -> FastAPI:
             "enhanced": pad.read_enhanced(),
             "template": pad.template or DEFAULT_TEMPLATE,
             "chat": pad.read_chat(),
+        }
+
+    @app.get("/api/meetings/{job_id}/transcript")
+    async def get_transcript(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """The whole transcript, in the same lines citations point at.
+
+        The meeting payload carries only the newest lines, to keep polling
+        cheap. This is what the Transcript tab reads, and where a citation
+        opens.
+        """
+        job = _visible_job(job_id, user)
+        utterances = await asyncio.to_thread(_utterances_of, job)
+        return {
+            "segments": [s.to_dict() for s in segment_utterances(utterances)],
+            "utterance_count": len(utterances),
         }
 
     @app.put("/api/meetings/{job_id}/notes")
@@ -719,21 +888,18 @@ def create_app(config: Config) -> FastAPI:
         return {"enhanced": enhanced, "template": template}
 
     def _ask_sync(
-        utterances: list[Utterance],
-        question: str,
-        notes: str,
-        history: list[dict[str, Any]],
-    ) -> str:
+        job: MeetingJob, question: str, notes: str, history: list[dict[str, Any]]
+    ) -> RecallAnswer:
         """Blocking question call, run in a worker thread."""
-        return answer_question(
-            utterances, question, _client(), notes=notes, history=history
+        return answer_about_meeting(
+            _source_of(job), question, _client(), notes=notes, history=history
         )
 
     @app.post("/api/meetings/{job_id}/ask")
     async def ask(
         job_id: str, request: AskRequest, user: User = Depends(current_user)
     ) -> dict[str, Any]:
-        """Answer a question about this meeting."""
+        """Answer a question about this meeting, citing the lines behind it."""
         _require_llm()
         question = request.question.strip()
         if not question:
@@ -748,22 +914,19 @@ def create_app(config: Config) -> FastAPI:
             )
         in_flight.add(key)
         try:
-            utterances = _utterances_of(job)
             # The enhanced notes are better context than the raw ones: same
             # real names, with the ASR errors already resolved.
             notes = pad.read_enhanced() or pad.read_notes()
             history = pad.read_chat()
-            for_llm = (
-                anonymised_utterances(utterances)
-                if config.anonymise_analysis
-                else utterances
+            result = await asyncio.to_thread(_ask_sync, job, question, notes, history)
+            turn = await asyncio.to_thread(
+                pad.append_chat,
+                question,
+                result.answer,
+                citations=[c.to_dict() for c in result.citations],
             )
-            answer = await asyncio.to_thread(
-                _ask_sync, for_llm, question, notes, history
-            )
-            turn = await asyncio.to_thread(pad.append_chat, question, answer)
-        except NotepadError as exc:
-            # Covers "nothing to search" as well as an unusable model reply,
+        except RecallError as exc:
+            # Covers "nothing to search" as well as an empty model reply,
             # both of which the asker can act on.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except LLMError as exc:
@@ -778,6 +941,79 @@ def create_app(config: Config) -> FastAPI:
     ) -> dict[str, Any]:
         """Forget every question asked about this meeting."""
         _notepad_of(_visible_job(job_id, user)).clear_chat()
+        return {"cleared": True}
+
+    # -- asking every meeting ----------------------------------------------
+
+    def _chat_of(user: User) -> ChatLog:
+        # Usernames are limited to [a-z0-9._-] and start with a letter or
+        # digit, so one is safe to use as a file name as it stands.
+        return ChatLog(state_dir / "chats" / f"{user.username}.jsonl")
+
+    def _ask_everything_sync(
+        jobs: list[MeetingJob], question: str, history: list[dict[str, Any]]
+    ) -> RecallAnswer:
+        """Blocking cross-meeting question, run in a worker thread."""
+        sources = [_source_of(job) for job in jobs]
+        return answer_across_meetings(sources, question, _client(), history=history)
+
+    @app.get("/api/chat")
+    async def get_everything_chat(
+        user: User = Depends(current_user),
+    ) -> dict[str, Any]:
+        """This account's questions across every meeting, oldest first."""
+        return {
+            "chat": await asyncio.to_thread(_chat_of(user).read),
+            "meetings": len(manager.visible_to(user.username, user.is_admin)),
+        }
+
+    @app.post("/api/chat")
+    async def ask_everything(
+        request: AskRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Answer a question from every meeting this account can see.
+
+        Only those: a member's question is searched against the meetings
+        they started and nothing else, exactly as their list shows.
+        """
+        _require_llm()
+        question = request.question.strip()
+        if not question:
+            raise HTTPException(status_code=400, detail="Ask a question first.")
+        key = f"chat:{user.username}"
+        if key in in_flight:
+            raise HTTPException(
+                status_code=409, detail="Still answering the last question."
+            )
+        in_flight.add(key)
+        log = _chat_of(user)
+        try:
+            jobs = manager.visible_to(user.username, user.is_admin)
+            history = await asyncio.to_thread(log.read)
+            result = await asyncio.to_thread(
+                _ask_everything_sync, jobs, question, history
+            )
+            turn = await asyncio.to_thread(
+                log.append,
+                question,
+                result.answer,
+                citations=[c.to_dict() for c in result.citations],
+                searched=result.searched,
+            )
+        except RecallError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except LLMError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        finally:
+            in_flight.discard(key)
+        return turn
+
+    @app.delete("/api/chat")
+    async def clear_everything_chat(
+        user: User = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Forget every question this account asked across meetings."""
+        await asyncio.to_thread(_chat_of(user).clear)
         return {"cleared": True}
 
     # -- accounts (admin) --------------------------------------------------
@@ -825,12 +1061,14 @@ def create_app(config: Config) -> FastAPI:
 
     app.state.manager = manager
     app.state.users = users
+    app.state.calls = calls
     return app
 
 
 __all__ = [
     "ARTIFACTS",
     "AskRequest",
+    "MuteAppRequest",
     "RecordRequest",
     "CreateUserRequest",
     "EnhanceRequest",

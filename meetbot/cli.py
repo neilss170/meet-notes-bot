@@ -903,7 +903,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
     uvicorn.run(
-        create_app(config),
+        create_app(config, public_url=url),
         host=args.host,
         port=args.port,
         log_level=(args.log_level or "info").lower(),

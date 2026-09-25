@@ -63,6 +63,9 @@ def service_config(tmp_path: Path) -> Config:
         # reasons that say nothing about the code; the readiness behaviour
         # is covered by setting app.state.health directly instead.
         preflight_on_start=False,
+        # The watcher reads the real microphone state and raises Windows
+        # notifications; a suite run during a call must do neither.
+        call_alerts=False,
     )
 
 
@@ -485,6 +488,24 @@ class TestUiRendering:
         assert "function renderMarkdown" in ui
         for token in ("md-h", "md-list", "md-task", "md-turn"):
             assert token in ui, token
+
+    def test_a_meeting_that_vanished_is_let_go(self) -> None:
+        """After a restart a live job's id is gone; the page must not chase it.
+
+        Seen for real: a tab left open across a restart asked for the old id
+        every two seconds, forever, and got a 404 every time.
+        """
+        ui = self._ui()
+        assert "!state.meetings.some((j) => j.id === state.selected)" in ui
+
+    def test_the_hidden_attribute_always_hides(self) -> None:
+        """A class that sets display beats the browser's own [hidden] rule.
+
+        Buttons became inline-flex, after which "Clear" and the admin-only
+        "Accounts" stayed on screen with hidden set.
+        """
+        ui = self._ui()
+        assert "[hidden] { display: none !important; }" in ui
 
 
 class TestMarkdownRendering:
@@ -1330,3 +1351,354 @@ class TestNotepadApi:
         assert "Enhanced" in client.get(
             f"/api/meetings/{job_id}/artifact/enhanced.md"
         ).text
+
+
+def _finished_meeting(
+    app,
+    output_dir: Path,
+    *,
+    owner: str,
+    name: str,
+    lines: list[tuple[str, str]],
+    title: str = "",
+) -> str:
+    """A finished meeting in its own directory, registered with the service.
+
+    ``_stub_runner`` sends every job to the same directory, which is useless
+    for proving that one account's question never reads another's meeting.
+    """
+    from meetbot.service.jobs import MeetingJob
+    from meetbot.transcript.store import MeetingMeta, TranscriptStore, Utterance
+
+    directory = output_dir / name
+    store = TranscriptStore(directory / "transcript.jsonl")
+    store.write_meta(MeetingMeta(meet_url=title or MEET_URL, bot_name="Scribe"))
+    for i, (speaker, text) in enumerate(lines):
+        store.append(Utterance(speaker, text, i * 20.0, i * 20.0 + 5.0))
+    store.close()
+    job = MeetingJob(
+        id=f"job-{name}",
+        meet_url=title or MEET_URL,
+        kind="local" if title else "bot",
+        title=title,
+        owner=owner,
+        status=JobStatus.FINISHED,
+        created_at=time.time() - 600,
+        finished_at=time.time() - 300,
+        output_dir=directory,
+    )
+    app.state.manager._jobs[job.id] = job
+    return job.id
+
+
+def _signed_in_as(app, username: str, role: Role = Role.MEMBER):
+    app.state.users.add(username, ADMIN_PASSWORD, role)
+    other = TestClient(app)
+    other.post("/login", data={"username": username, "password": ADMIN_PASSWORD})
+    return other
+
+
+class _CitingLLM:
+    """Cites whichever prompt line contains ``phrase``, the way a model would."""
+
+    model = "citing-model"
+
+    def __init__(self, phrase: str) -> None:
+        self.phrase = phrase
+        self.prompts: list[str] = []
+
+    def complete_text(self, *, system: str, user: str, max_tokens: int = 0) -> str:
+        import re
+
+        self.prompts.append(user)
+        found = re.search(r"\[(S\d+)\][^\n]*" + re.escape(self.phrase), user)
+        return f"Here [{found.group(1)}]." if found else "I couldn't find that."
+
+    def complete_json(self, **_kwargs) -> dict:
+        return {}
+
+
+class TestRecallApi:
+    """Questions across every meeting, and the citations behind every answer."""
+
+    @pytest.fixture
+    def client(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+            yield client
+
+    @staticmethod
+    def _llm(monkeypatch, llm):
+        from meetbot.service import app as app_module
+
+        monkeypatch.setattr(app_module, "build_client", lambda *a, **k: llm)
+        return llm
+
+    # -- every meeting -----------------------------------------------------
+
+    def test_an_answer_cites_the_meeting_it_came_from(
+        self, client, service_config, monkeypatch
+    ) -> None:
+        llm = self._llm(monkeypatch, _CitingLLM("capped at forty thousand"))
+        _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="standup",
+            title="Standup", lines=[("Speaker 0", "The API work is two weeks behind.")],
+        )
+        finance = _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="finance",
+            title="Finance sync",
+            lines=[("Speaker 1", "The marketing budget is capped at forty thousand.")],
+        )
+
+        response = client.post("/api/chat", json={"question": "What is the budget?"})
+        assert response.status_code == 200, response.text
+        turn = response.json()
+        [citation] = turn["citations"]
+        assert citation["meeting_id"] == finance
+        assert citation["meeting_title"] == "Finance sync"
+        assert citation["text"] == "The marketing budget is capped at forty thousand."
+        assert "[^1]" in turn["answer"]
+        assert turn["searched"] == 2
+        assert "two weeks behind" in llm.prompts[0], "every meeting should be read"
+
+        chat = client.get("/api/chat").json()
+        assert [t["question"] for t in chat["chat"]] == ["What is the budget?"]
+        assert chat["chat"][0]["citations"] == turn["citations"]
+
+    def test_a_member_is_only_searched_against_their_own_meetings(
+        self, client, service_config, monkeypatch
+    ) -> None:
+        """The chat must not become a way round per-meeting visibility."""
+        llm = self._llm(monkeypatch, _CitingLLM("anything"))
+        _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="board",
+            title="Board", lines=[("Speaker 0", "Confidential: we are acquiring Contoso.")],
+        )
+        _finished_meeting(
+            client.app, service_config.output_dir, owner="priya", name="mine",
+            title="Priya's standup", lines=[("Speaker 0", "My tickets are done.")],
+        )
+        priya = _signed_in_as(client.app, "priya")
+        response = priya.post("/api/chat", json={"question": "Are we acquiring anyone?"})
+        assert response.status_code == 200, response.text
+        assert "Contoso" not in llm.prompts[-1]
+        assert "My tickets are done." in llm.prompts[-1]
+        assert response.json()["searched"] == 1
+
+    def test_each_account_keeps_its_own_conversation(
+        self, client, service_config, monkeypatch
+    ) -> None:
+        self._llm(monkeypatch, _CitingLLM("x"))
+        _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="m",
+            lines=[("Speaker 0", "Hello.")],
+        )
+        client.post("/api/chat", json={"question": "neil's private question"})
+        priya = _signed_in_as(client.app, "priya")
+        assert priya.get("/api/chat").json()["chat"] == []
+
+    def test_the_conversation_can_be_cleared(
+        self, client, service_config, monkeypatch
+    ) -> None:
+        self._llm(monkeypatch, _CitingLLM("x"))
+        _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="m",
+            lines=[("Speaker 0", "Hello.")],
+        )
+        client.post("/api/chat", json={"question": "q"})
+        assert client.delete("/api/chat").status_code == 200
+        assert client.get("/api/chat").json()["chat"] == []
+
+    def test_nothing_to_search_is_refused_before_the_model(
+        self, client, monkeypatch
+    ) -> None:
+        llm = self._llm(monkeypatch, _CitingLLM("x"))
+        response = client.post("/api/chat", json={"question": "anything?"})
+        assert response.status_code == 400
+        assert "nothing to search" in response.json()["detail"]
+        assert llm.prompts == []
+
+    def test_a_provider_failure_is_a_bad_gateway(
+        self, client, service_config, monkeypatch
+    ) -> None:
+        from meetbot.analysis.llm import LLMError
+        from tests.conftest import FakeLLMClient
+
+        failing = FakeLLMClient()
+        failing.text_error = LLMError("rate limit hit")
+        self._llm(monkeypatch, failing)
+        _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="m",
+            lines=[("Speaker 0", "Hello.")],
+        )
+        response = client.post("/api/chat", json={"question": "q"})
+        assert response.status_code == 502
+        assert "rate limit" in response.json()["detail"]
+
+    def test_the_chat_needs_a_session(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as anon:
+            assert anon.get("/api/chat").status_code == 401
+            assert anon.post("/api/chat", json={"question": "q"}).status_code == 401
+
+    # -- one meeting -------------------------------------------------------
+
+    def test_asking_one_meeting_returns_citations_and_keeps_them(
+        self, client, service_config, monkeypatch
+    ) -> None:
+        self._llm(monkeypatch, _CitingLLM("two weeks behind"))
+        job_id = _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="standup",
+            lines=[
+                ("Speaker 0", "Where are we on the API?"),
+                ("Speaker 1", "The API work is two weeks behind."),
+            ],
+        )
+        response = client.post(
+            f"/api/meetings/{job_id}/ask", json={"question": "How late is it?"}
+        )
+        assert response.status_code == 200, response.text
+        turn = response.json()
+        [citation] = turn["citations"]
+        assert citation["speaker"] == "Speaker 1"
+        assert citation["start"] == 20.0
+        assert citation["before"][0]["text"] == "Where are we on the API?"
+        stored = client.get(f"/api/meetings/{job_id}/notepad").json()["chat"][0]
+        assert stored["citations"] == turn["citations"]
+
+    def test_the_whole_transcript_is_served_in_citable_lines(
+        self, client, service_config
+    ) -> None:
+        job_id = _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="m",
+            lines=[("Speaker 0", "First."), ("Speaker 1", "Second.")],
+        )
+        payload = client.get(f"/api/meetings/{job_id}/transcript").json()
+        assert [s["text"] for s in payload["segments"]] == ["First.", "Second."]
+        assert payload["segments"][1]["start"] == 20.0
+        assert payload["utterance_count"] == 2
+
+    def test_another_members_transcript_stays_hidden(
+        self, client, service_config
+    ) -> None:
+        job_id = _finished_meeting(
+            client.app, service_config.output_dir, owner="neil", name="m",
+            lines=[("Speaker 0", "Confidential.")],
+        )
+        priya = _signed_in_as(client.app, "priya")
+        response = priya.get(f"/api/meetings/{job_id}/transcript")
+        assert response.status_code == 404
+        assert "Confidential" not in response.text
+
+
+class TestCallAlertsApi:
+    """The offer to record a call, as the page sees it."""
+
+    WHATSAPP = "5319275A.WhatsAppDesktop_cv1g1gvanyjgm"
+
+    @pytest.fixture
+    def rig(self, service_config, monkeypatch):
+        from meetbot.capture import calls as calls_module
+        from meetbot.service import app as app_module
+
+        sessions: list = []
+        toasts: list = []
+        monkeypatch.setattr(calls_module, "read_mic_sessions", lambda: list(sessions))
+        monkeypatch.setattr(calls_module, "visible_window_titles", lambda: [])
+        monkeypatch.setattr(calls_module, "GRACE_S", 0.0)
+        monkeypatch.setattr(app_module, "POLL_INTERVAL_S", 0.02)
+        monkeypatch.setattr(app_module, "detection_available", lambda: (True, "watching"))
+        monkeypatch.setattr(
+            app_module, "show_toast", lambda prompt, base: toasts.append(prompt) or True
+        )
+        _stub_runner(monkeypatch)
+        config = dataclasses.replace(service_config, call_alerts=True)
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+            yield client, sessions, toasts
+
+    def _start_call(self, sessions: list) -> None:
+        from meetbot.capture.calls import MicSession
+
+        filetime = int(time.time() * 10_000_000) + 116_444_736_000_000_000
+        sessions.append(MicSession(self.WHATSAPP, filetime, True))
+
+    @staticmethod
+    def _offered(client, count: int = 1) -> list[dict]:
+        for _ in range(250):
+            prompts = client.get("/api/calls").json()["prompts"]
+            if len(prompts) >= count:
+                return prompts
+            time.sleep(0.02)
+        raise AssertionError("the call was never offered")
+
+    def test_a_call_is_offered_and_announced_once(self, rig) -> None:
+        client, sessions, toasts = rig
+        self._start_call(sessions)
+        [prompt] = self._offered(client)
+        assert prompt["app"] == "WhatsApp"
+        assert prompt["title"] == "WhatsApp call"
+        time.sleep(0.3)  # many more polls
+        assert [t.id for t in toasts] == [prompt["id"]], "one notification per call"
+
+    def test_a_member_learns_nothing_about_the_hosts_calls(self, rig) -> None:
+        client, sessions, _ = rig
+        self._start_call(sessions)
+        [prompt] = self._offered(client)
+        priya = _signed_in_as(client.app, "priya")
+        payload = priya.get("/api/calls").json()
+        assert payload["prompts"] == []
+        assert payload["enabled"] is False
+        assert priya.post(f"/api/calls/{prompt['id']}/dismiss").status_code == 403
+        assert priya.post("/api/calls/mute", json={"app_id": self.WHATSAPP}).status_code == 403
+
+    def test_dismissing_a_call_hides_it(self, rig) -> None:
+        client, sessions, _ = rig
+        self._start_call(sessions)
+        [prompt] = self._offered(client)
+        assert client.post(f"/api/calls/{prompt['id']}/dismiss").status_code == 200
+        assert client.get("/api/calls").json()["prompts"] == []
+        assert client.post("/api/calls/no-such-call/dismiss").status_code == 404
+
+    def test_muting_an_app_is_remembered_and_reversible(self, rig) -> None:
+        client, sessions, _ = rig
+        self._start_call(sessions)
+        [prompt] = self._offered(client)
+        muted = client.post("/api/calls/mute", json={"app_id": prompt["app_id"]}).json()
+        assert muted["muted"] == [{"app_id": self.WHATSAPP, "app": "WhatsApp"}]
+        assert client.get("/api/calls").json()["prompts"] == []
+        client.post("/api/calls/unmute", json={"app_id": self.WHATSAPP})
+        assert client.get("/api/calls").json()["muted"] == []
+
+    def test_recording_the_call_ends_the_offer(self, rig, monkeypatch) -> None:
+        import meetbot.capture.local as local_module
+
+        client, sessions, _ = rig
+        monkeypatch.setattr(local_module, "capture_available", lambda: (True, "ok"))
+
+        async def recording(config, **kwargs):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(jobs_module, "run_local_meeting", recording)
+        self._start_call(sessions)
+        [prompt] = self._offered(client)
+        response = client.post(
+            "/api/recordings", json={"title": prompt["title"], "call_id": prompt["id"]}
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["title"] == "WhatsApp call"
+        assert client.get("/api/calls").json()["prompts"] == []
+
+    def test_alerts_can_be_switched_off(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+            payload = client.get("/api/calls").json()
+            assert payload["enabled"] is False
+            assert "CALL_ALERTS" in payload["detail"]

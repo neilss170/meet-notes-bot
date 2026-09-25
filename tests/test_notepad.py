@@ -12,11 +12,9 @@ import pytest
 
 from meetbot.analysis.llm import LLMError
 from meetbot.analysis.notepad import (
-    ASK_HISTORY_TURNS,
     DEFAULT_TEMPLATE,
     TEMPLATES,
     NotepadError,
-    answer_question,
     enhance_notes,
     get_template,
 )
@@ -162,68 +160,8 @@ class TestEnhanceNotes:
         assert "00:42:10" in prompt
 
 
-# --- ask -------------------------------------------------------------------
-
-
-class TestAnswerQuestion:
-    def test_answers_from_the_transcript(self, utterances) -> None:
-        client = FakeLLMClient(text_responses=["Two weeks behind."])
-        answer = answer_question(utterances, "How is the API work?", client)
-        assert answer == "Two weeks behind."
-        prompt = client.text_calls[0]["user"]
-        assert "How is the API work?" in prompt
-        assert "two weeks behind" in prompt.lower()
-
-    def test_the_notes_are_included_as_context(self, utterances) -> None:
-        """They carry real names and corrected spellings the transcript lacks."""
-        client = FakeLLMClient(text_responses=["ok"])
-        answer_question(utterances, "q", client, notes="Priya owns the migration")
-        assert "Priya owns the migration" in client.text_calls[0]["user"]
-
-    def test_history_is_replayed_for_follow_ups(self, utterances) -> None:
-        client = FakeLLMClient(text_responses=["ok"])
-        answer_question(
-            utterances, "and who owns it?", client,
-            history=[{"question": "what slipped?", "answer": "the API work"}],
-        )
-        prompt = client.text_calls[0]["user"]
-        assert "what slipped?" in prompt
-        assert "the API work" in prompt
-
-    def test_history_is_capped_so_it_cannot_crowd_out_the_transcript(
-        self, utterances
-    ) -> None:
-        history = [
-            {"question": f"q{i}", "answer": f"a{i}"} for i in range(ASK_HISTORY_TURNS * 3)
-        ]
-        client = FakeLLMClient(text_responses=["ok"])
-        answer_question(utterances, "latest", client, history=history)
-        prompt = client.text_calls[0]["user"]
-        assert "q0" not in prompt, "the oldest turns should have fallen off"
-        assert f"q{len(history) - 1}" in prompt
-
-    def test_an_empty_question_is_rejected(self, utterances) -> None:
-        with pytest.raises(NotepadError, match="Ask a question"):
-            answer_question(utterances, "   ", FakeLLMClient())
-
-    def test_nothing_to_search_is_an_error(self) -> None:
-        with pytest.raises(NotepadError, match="nothing to search"):
-            answer_question([], "anything?", FakeLLMClient())
-
-    def test_notes_alone_are_enough_to_search(self) -> None:
-        client = FakeLLMClient(text_responses=["yes"])
-        assert answer_question([], "q", client, notes="some notes") == "yes"
-
-    def test_a_provider_failure_becomes_a_notepad_error(self, utterances) -> None:
-        client = FakeLLMClient()
-        client.text_error = LLMError("model retired")
-        with pytest.raises(NotepadError, match="model retired"):
-            answer_question(utterances, "q", client)
-
-    def test_an_empty_answer_is_an_error(self, utterances) -> None:
-        client = FakeLLMClient(text_responses=[""])
-        with pytest.raises(NotepadError, match="empty answer"):
-            answer_question(utterances, "q", client)
+# Questions about a meeting are covered in test_recall.py, beside the
+# citations they now carry.
 
 
 # --- storage ---------------------------------------------------------------
@@ -320,6 +258,34 @@ class TestNotepadStorage:
         assert pad.read_notes() == "café — naïve → résumé"
         pad.append_chat("¿qué?", "sí")
         assert pad.read_chat()[0]["answer"] == "sí"
+
+    def test_saves_landing_together_do_not_fail(self, pad: Notepad) -> None:
+        """An autosave and the save "Enhance" sends first can arrive together.
+
+        On Windows a replace onto a file another handle has open fails with
+        "Access is denied". Two threads saving at once hit it about once in
+        forty writes, and it reached the page as a 500 from the notes route.
+        """
+        import threading
+
+        failures: list[BaseException] = []
+
+        def save_repeatedly(tag: str) -> None:
+            for i in range(150):
+                try:
+                    pad.write_notes(f"{tag}{i}")
+                    pad.read_notes()
+                except OSError as exc:
+                    failures.append(exc)
+
+        threads = [threading.Thread(target=save_repeatedly, args=(t,)) for t in "ab"]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert failures == []
+        assert pad.read_notes() in {"a149", "b149"}
+        assert "notes_updated_at" in pad.read_meta()
 
     def test_the_chat_file_is_one_json_object_per_line(self, pad: Notepad) -> None:
         pad.append_chat("q", "a")
