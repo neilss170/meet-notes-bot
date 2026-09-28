@@ -380,6 +380,14 @@ class JobManager:
             job._task.cancel()
         return True
 
+    def forget(self, job_id: str) -> bool:
+        """Stop listing a meeting. Whether its files go is the caller's call.
+
+        Deliberately does not stop anything: a running job that vanished from
+        the list would keep recording with nothing left to stop it by.
+        """
+        return self._jobs.pop(job_id, None) is not None
+
     async def shutdown(self) -> None:
         """Stop every running job and wait for them to unwind."""
         for job in list(self._jobs.values()):
@@ -542,17 +550,23 @@ def load_past_runs(manager: JobManager, output_dir: Path, limit: int = 50) -> in
                     if "local" in str(record.get("bot_name", "")).lower():
                         kind = "local"
                     break
-        # A meeting can have been renamed after its header was written -
-        # by voice, mid-call - and the latest name is what it is known by.
+        # A meeting can have been renamed after its header was written - by
+        # voice mid-call, or from the page a week later - and the latest name
+        # is what it is known by.
+        renamed = ""
         with contextlib.suppress(OSError, ValueError):
             renamed = read_title(transcript)
-            if renamed:
-                meet_url = renamed
+        if renamed and kind == "local":
+            # A local recording has no URL worth keeping: it is restored by
+            # the same field it is shown by.
+            meet_url = renamed
         job = MeetingJob(
             id=f"past-{path.name}",
             meet_url=meet_url or path.name,
             kind=kind,
-            title=meet_url if kind == "local" else "",
+            # A bot meeting keeps its link and carries the name alongside it,
+            # or renaming one would destroy the only way back into the call.
+            title=renamed or (meet_url if kind == "local" else ""),
             status=JobStatus.FINISHED,
             created_at=path.stat().st_mtime,
             finished_at=path.stat().st_mtime,

@@ -162,6 +162,8 @@
     min-height: 0; border-radius: var(--radius);
   }
   .side-top { padding: 14px 12px 12px; border-bottom: 1px solid var(--line); }
+  .side-find { padding: 9px 12px; border-bottom: 1px solid var(--line); }
+  .side-find input { width: 100%; padding: 8px 11px; font-size: 12.5px; }
   .side-list { overflow-y: auto; flex: 1 1 auto; padding: 4px 8px 20px; }
   .daygroup {
     font-size: 10.5px; font-weight: 650; text-transform: uppercase;
@@ -388,6 +390,17 @@
      the line length is capped where prose stops being comfortable. */
   .card { min-height: 420px; }
   #enhanced { max-width: 64ch; }
+  /* The meeting's name is editable in place: click it, type, press Enter. */
+  h2.renamable { cursor: text; }
+  h2.renamable:hover {
+    text-decoration: underline dotted var(--faint); text-underline-offset: 5px;
+  }
+  .title-edit {
+    font-family: inherit; font-size: 19px; font-weight: 650;
+    letter-spacing: -0.03em; line-height: 1.3; padding: 2px 9px;
+    flex: 0 1 auto; width: 300px; max-width: 52%;
+  }
+
   .placeholder {
     color: var(--faint); font-size: 13px; padding: 30px 2px; line-height: 1.75;
     max-width: 46ch;
@@ -879,6 +892,10 @@
 
         <div class="err" id="error" hidden></div>
       </div>
+      <div class="side-find">
+        <input type="text" id="mtg-find" placeholder="Search meetings"
+               autocomplete="off" spellcheck="false">
+      </div>
       <div class="side-list" id="meetings"></div>
     </div>
 
@@ -941,6 +958,8 @@ const state = {
   defaultTemplate: "general",
   health: null,
   meetings: [],
+  filter: "",              // what the search box is narrowing the list to
+  renaming: false,         // the title is an input right now - leave it alone
   selected: null,          // job id
   detail: null,            // full job payload for `selected`
   pad: null,               // { notes, enhanced, template, chat, ready }
@@ -1020,7 +1039,8 @@ function dayGroup(epoch) {
 /** What to call a meeting. A local recording has whatever title you typed;
     a bot meeting has only its Meet code - there is no calendar to ask. */
 function meetingName(job) {
-  if (job.kind === "local") return job.title || "Untitled recording";
+  if (job.title) return job.title;
+  if (job.kind === "local") return "Untitled recording";
   const url = job.meet_url || "";
   const match = url.match(/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
   if (match) return match[1];
@@ -1317,10 +1337,19 @@ function setCitations(on) {
 /* -------------------------------------------------------------- sidebar */
 
 function renderSidebar() {
-  const signature = JSON.stringify(state.meetings.map((j) => [
+  /* Plain substring matching over the name and the day it is filed under -
+     no ranking, no server round trip. "Ask" searches what was said; this
+     finds the meeting you already know the name of. */
+  const find = (state.filter || "").trim().toLowerCase();
+  const shown = find
+    ? state.meetings.filter((job) =>
+        `${meetingName(job)} ${dayGroup(job.created_at)}`.toLowerCase().includes(find))
+    : state.meetings;
+
+  const signature = JSON.stringify([find, shown.map((j) => [
     j.id, j.status, j.utterance_count, j.has_enhanced, j.has_notes, j.kind,
     j.enhancing, meetingName(j), j.id === state.selected,
-  ]));
+  ])]);
   if (signature === state.sig.list) return;
   state.sig.list = signature;
 
@@ -1331,10 +1360,17 @@ function renderSidebar() {
       'join a call and Scribe will offer to.</div>';
     return;
   }
+  if (!shown.length) {
+    host.innerHTML =
+      `<div class="placeholder">Nothing called &ldquo;${esc(find)}&rdquo;.<br><br>` +
+      "Looking for something that was <em>said</em>? Ask the rail on the right " +
+      "&mdash; it searches every transcript.</div>";
+    return;
+  }
 
   const parts = [];
   let group = null;
-  for (const job of state.meetings) {
+  for (const job of shown) {
     const bucket = dayGroup(job.created_at);
     if (bucket !== group) { group = bucket; parts.push(`<div class="daygroup">${esc(bucket)}</div>`); }
     const [tone, label] = STATUS_PILL[job.status] || ["", job.status];
@@ -1394,7 +1430,9 @@ function renderMain() {
     job.id, job.status, state.tab, job.has_summary, state.stopping.has(job.id),
     meetingName(job),
   ]);
-  const rebuild = signature !== state.sig.head;
+  /* Never while the title is an input: a rebuild would replace it mid-word,
+     which is the notepad bug wearing a different hat. */
+  const rebuild = signature !== state.sig.head && !state.renaming;
   if (rebuild) {
     state.sig.head = signature;
     closeCiteCard();
@@ -1412,13 +1450,14 @@ function renderMain() {
     host.innerHTML =
       '<div class="mhead">' +
         '<div class="mtitle">' +
-          `<h2>${esc(meetingName(job))}</h2>` +
+          `<h2 id="m-title" class="renamable" title="Click to rename">` +
+            `${esc(meetingName(job))}</h2>` +
           `<span class="pill ${tone}">${esc(label)}</span>` +
           '<span class="grow"></span>' +
           (live
             ? `<button class="btn sm danger" id="stop"${state.stopping.has(job.id) ? " disabled" : ""}>` +
               `${state.stopping.has(job.id) ? "Stopping&hellip;" : "Stop &amp; write notes"}</button>`
-            : "") +
+            : '<button class="btn sm ghost" id="del">Delete</button>') +
         "</div>" +
         '<div class="mmeta">' +
           `<span>${esc(clock(job.created_at))}</span><span class="sep">&middot;</span>` +
@@ -1451,6 +1490,10 @@ function renderMain() {
     });
     const stop = $("stop");
     if (stop) stop.addEventListener("click", () => stopMeeting(job.id));
+    const heading = $("m-title");
+    if (heading) heading.addEventListener("click", startRename);
+    const remove = $("del");
+    if (remove) remove.addEventListener("click", () => confirmDelete(job));
 
     // The pane is new, so whatever was painted into it is gone.
     state.sig.enhanced = state.sig.transcript = state.sig.chat = "";
@@ -2524,6 +2567,106 @@ async function checkAudio() {
   }
 }
 
+/** Rename the open meeting in place: click the title, type, press Enter.
+
+    The poll loop is told to leave the header alone while this is open - see
+    renderMain - because a rebuild two seconds in would take the input away
+    mid-word. */
+function startRename() {
+  const heading = $("m-title");
+  const job = state.detail;
+  if (!heading || !job || state.renaming) return;
+  state.renaming = true;
+
+  const was = meetingName(job);
+  const box = document.createElement("input");
+  box.id = "m-title-input";
+  box.className = "title-edit";
+  box.value = was;
+  box.maxLength = 120;
+  box.setAttribute("aria-label", "Meeting name");
+  heading.replaceWith(box);
+  box.focus();
+  box.select();
+
+  const finish = async (save) => {
+    if (!state.renaming) return;
+    state.renaming = false;
+    const wanted = box.value.trim();
+    if (save && wanted && wanted !== was) {
+      try {
+        const updated = await api(`/api/meetings/${job.id}/title`, {
+          method: "PUT", body: JSON.stringify({ title: wanted }),
+        });
+        for (const row of state.meetings) {
+          if (row.id === job.id) { row.title = updated.title; row.meet_url = updated.meet_url; }
+        }
+        if (state.detail && state.detail.id === job.id) {
+          state.detail.title = updated.title;
+          state.detail.meet_url = updated.meet_url;
+        }
+      } catch (error) {
+        showError(error.message);
+      }
+    }
+    state.sig.head = "";
+    state.sig.list = "";
+    renderSidebar();
+    renderMain();
+  };
+
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); finish(true); }
+    else if (event.key === "Escape") { event.preventDefault(); finish(false); }
+  });
+  // Clicking away commits, the way the notepad saves - losing a rename to a
+  // stray click would be a small, avoidable annoyance.
+  box.addEventListener("blur", () => finish(true));
+}
+
+/** Ask before deleting a meeting, and say plainly what goes with it. */
+function confirmDelete(job) {
+  const root = $("modal-root");
+  const close = () => { root.innerHTML = ""; };
+  root.innerHTML =
+    '<div class="modal-bg"><div class="modal float">' +
+      "<h3>Delete this meeting?</h3>" +
+      '<p class="md-note" style="margin:6px 0 0">' +
+        `<strong>${esc(meetingName(job))}</strong> &mdash; the recording, its ` +
+        "transcript, the notes and everything ever asked about it. " +
+        "This cannot be undone.</p>" +
+      '<div class="err" id="del-error" hidden></div>' +
+      '<div class="row" style="margin-top:20px;justify-content:flex-end">' +
+        '<button class="btn ghost sm" id="del-no">Keep it</button>' +
+        '<button class="btn sm danger" id="del-yes">Delete</button>' +
+      "</div>" +
+    "</div></div>";
+
+  $("del-no").addEventListener("click", close);
+  root.querySelector(".modal-bg").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) close();
+  });
+  $("del-yes").addEventListener("click", async () => {
+    $("del-yes").disabled = true;
+    try {
+      await api(`/api/meetings/${job.id}`, { method: "DELETE" });
+      close();
+      state.selected = null;
+      state.detail = null;
+      state.pad = null;
+      state.sig.list = "";
+      state.sig.head = "";
+      await poll();
+      renderMain();
+    } catch (error) {
+      const box = $("del-error");
+      box.textContent = error.message;
+      box.hidden = false;
+      $("del-yes").disabled = false;
+    }
+  });
+}
+
 async function stopMeeting(jobId) {
   state.stopping.add(jobId);
   state.sig.head = "";
@@ -2733,6 +2876,14 @@ async function init() {
 
   await poll();
   renderMain();
+  const findBox = $("mtg-find");
+  if (findBox) {
+    findBox.addEventListener("input", () => {
+      state.filter = findBox.value;
+      renderSidebar();
+    });
+  }
+
   setInterval(poll, 2000);
   setInterval(advanceThinking, 2600);
 }
