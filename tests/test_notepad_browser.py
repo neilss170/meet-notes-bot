@@ -117,7 +117,12 @@ def served(tmp_path: Path, monkeypatch):
     app.state.manager._jobs[job.id] = job
 
     try:
-        yield {"url": f"http://127.0.0.1:{port}", "dir": run_dir, "llm": llm}
+        yield {
+            "url": f"http://127.0.0.1:{port}",
+            "dir": run_dir,
+            "llm": llm,
+            "app": app,
+        }
     finally:
         server.should_exit = True
         thread.join(timeout=10)
@@ -277,6 +282,104 @@ class TestNotepadInTheBrowser:
                 assert (served["dir"] / "notes.md").read_text(
                     encoding="utf-8"
                 ) == typed
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+
+class TestFindingAndNamingInTheBrowser:
+    """Two things a list of meetings has to do once there are more than five."""
+
+    @staticmethod
+    def _second_meeting(served) -> None:
+        """An older meeting, so the first one stays selected."""
+        served["app"].state.manager._jobs["other-meeting"] = MeetingJob(
+            id="other-meeting",
+            meet_url="Budget planning",
+            kind="local",
+            title="Budget planning",
+            owner="neil",
+            status=JobStatus.FINISHED,
+            created_at=time.time() - 1200,
+            finished_at=time.time() - 1100,
+        )
+
+    async def test_the_search_box_narrows_the_list(self, served) -> None:
+        from playwright.async_api import async_playwright
+
+        self._second_meeting(served)
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                # However many the fixture ends up listing - it registers one
+                # meeting and the server restores another from disk.
+                await page.wait_for_function(
+                    "document.querySelectorAll('.mtg').length > 1", timeout=30_000
+                )
+                listed = await page.locator(".mtg").count()
+
+                await page.fill("#mtg-find", "budget")
+                await page.wait_for_function(
+                    "document.querySelectorAll('.mtg').length === 1", timeout=10_000
+                )
+                assert "Budget planning" in await page.text_content("#meetings")
+
+                await page.fill("#mtg-find", "nothing like this")
+                await page.wait_for_function(
+                    "document.querySelector('#meetings')"
+                    ".textContent.includes('Nothing called')",
+                    timeout=10_000,
+                )
+
+                # Clearing it brings everything back.
+                await page.fill("#mtg-find", "")
+                await page.wait_for_function(
+                    f"document.querySelectorAll('.mtg').length === {listed}",
+                    timeout=10_000,
+                )
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+    async def test_renaming_from_the_page_sticks_to_the_transcript(
+        self, served
+    ) -> None:
+        from meetbot.transcript.store import read_title
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await page.click("#m-title")
+                await page.fill("#m-title-input", "Roadmap review")
+                await page.press("#m-title-input", "Enter")
+
+                await page.wait_for_function(
+                    "document.querySelector('.mtg-name')"
+                    ".textContent.includes('Roadmap review')",
+                    timeout=20_000,
+                )
+                assert "Roadmap review" in await page.text_content("#m-title")
+                # The transcript is the only thing here that outlives the
+                # process, so that is where the name has to land.
+                assert read_title(served["dir"] / "transcript.jsonl") == "Roadmap review"
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+    async def test_a_half_typed_name_survives_the_poll_loop(self, served) -> None:
+        """The notepad bug wearing a different hat: the page rebuilds the
+        header every time the elapsed clock ticks, which would take the input
+        away mid-word."""
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await page.click("#m-title")
+                await page.fill("#m-title-input", "half typed na")
+                await page.wait_for_timeout(5_000)
+                assert await page.input_value("#m-title-input") == "half typed na"
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()

@@ -22,6 +22,7 @@ import contextlib
 import dataclasses
 import logging
 import re
+import shutil
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -111,6 +112,11 @@ LOGIN_PATH = Path(__file__).parent / "login.html"
 #: request half an hour later.
 HEALTH_STALE_AFTER_S = 300.0
 
+#: Longest meeting name kept. Room for a sentence, short enough that the
+#: list stays readable and a runaway client cannot write a novel into every
+#: transcript it can reach.
+MAX_TITLE_CHARS = 120
+
 #: How long shutdown waits for notes that are still being written. Stopping
 #: the service stops any live recording, which starts its write-up - and the
 #: notes for the call somebody has just ended are the ones they are waiting
@@ -159,6 +165,12 @@ class RecordRequest(BaseModel):
         None, description="The call alert this recording answers, if any"
     )
     anonymise_analysis: bool | None = None
+
+
+class TitleRequest(BaseModel):
+    """A new name for a meeting."""
+
+    title: str = Field("", description="What to call it from now on")
 
 
 class NotesRequest(BaseModel):
@@ -378,14 +390,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             )
             logger.info("Voice: marked %s at %.1fs", job.id, at)
         elif command.kind == "name" and command.title:
-            # Both fields: a local recording is shown by its title and
-            # restored from disk by the URL field it was written with.
-            job.title = command.title
-            job.meet_url = command.title
-            if path is not None:
-                await asyncio.to_thread(
-                    append_event, path, TITLE_EVENT, title=command.title
-                )
+            await _rename(job, command.title)
             logger.info("Voice: named %s %r", job.id, command.title)
 
     def _voice_heard(command: VoiceCommand) -> None:
@@ -673,6 +678,74 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         stopped = await manager.stop(job_id)
         return {"stopped": stopped, **_payload(job, include_progress=False)}
 
+    async def _rename(job: MeetingJob, title: str) -> str:
+        """Give a meeting a name, and make it stick.
+
+        Both fields for a local recording: it is shown by its title and
+        restored from disk by the URL field it was written with. The
+        transcript is given the new name too, because that file is the only
+        thing here that outlives the process - a rename kept in memory would
+        last until the next restart and no longer.
+        """
+        title = title.strip()[:MAX_TITLE_CHARS]
+        job.title = title
+        if job.kind == "local":
+            job.meet_url = title
+        path = job.output_dir / "transcript.jsonl" if job.output_dir else None
+        # Appending creates the file when the meeting has not written one yet.
+        # Naming a recording in its first ten seconds - which is exactly when
+        # somebody says "Scribe, call this the finance sync" - must not be the
+        # case that gets dropped.
+        if path is not None and path.parent.exists():
+            await asyncio.to_thread(append_event, path, TITLE_EVENT, title=title)
+        return title
+
+    @app.put("/api/meetings/{job_id}/title")
+    async def rename_meeting(
+        job_id: str, request: TitleRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Call a meeting what it actually was.
+
+        "abc-defg-hij" and "Untitled recording" are what the machine knows.
+        Neither is what anybody looks for a week later.
+        """
+        job = _visible_job(job_id, user)
+        if not request.title.strip():
+            raise HTTPException(status_code=400, detail="Give the meeting a name.")
+        await _rename(job, request.title)
+        return _payload(job, include_progress=False)
+
+    @app.delete("/api/meetings/{job_id}")
+    async def delete_meeting(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Delete a meeting: transcript, notes, audio notes, the lot.
+
+        Irreversible, and meant to be - a recording of somebody talking is
+        exactly the kind of thing a person should be able to destroy
+        properly. A meeting still recording is refused rather than deleted
+        from under its own recorder.
+        """
+        job = _visible_job(job_id, user)
+        if not job.status.is_terminal:
+            raise HTTPException(
+                status_code=409,
+                detail="This meeting is still recording. Stop it first.",
+            )
+        directory = job.output_dir
+        if directory is not None:
+            # The path comes from the runner rather than from the request,
+            # but a delete earns one more check: nothing outside the
+            # recordings directory is ever removed.
+            root = Path(config.output_dir).expanduser().resolve()
+            with contextlib.suppress(OSError):
+                resolved = Path(directory).resolve()
+                if resolved.is_relative_to(root) and resolved != root:
+                    await asyncio.to_thread(shutil.rmtree, resolved, True)
+        manager.forget(job_id)
+        logger.info("Deleted meeting %s", job_id)
+        return {"deleted": True}
+
     @app.get("/api/meetings/{job_id}/artifact/{name}", response_class=PlainTextResponse)
     async def get_artifact(
         job_id: str, name: str, user: User = Depends(current_user)
@@ -900,8 +973,10 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
 
     def _title_of(job: MeetingJob) -> str:
         """What a meeting is called - the same rule the page uses."""
+        if job.title:
+            return job.title
         if job.kind == "local":
-            return job.title or "Untitled recording"
+            return "Untitled recording"
         code = re.search(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", job.meet_url or "")
         return code.group(0) if code else (job.meet_url or "Meeting")
 

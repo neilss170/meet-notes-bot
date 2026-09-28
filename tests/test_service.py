@@ -514,7 +514,10 @@ class TestUiRendering:
         # The poll keeps the local copy while it is being edited.
         assert 'state.saveState === "editing"' in ui
         # The pane rebuild signature must not contain the volatile figures.
-        head = ui[ui.index("const signature = JSON.stringify(["):]
+        # Read renderMain's own: the sidebar builds a signature too, and that
+        # one is allowed to move with the counts - it has nothing to type in.
+        main = ui[ui.index("function renderMain("):]
+        head = main[main.index("const signature = JSON.stringify(["):]
         head = head[: head.index("]);")]
         assert "elapsed_s" not in head, "the elapsed clock must not rebuild the pane"
         assert "utterance_count" not in head, "the count must not rebuild the pane"
@@ -2093,6 +2096,182 @@ class TestVoiceCommands:
             payload = client.get("/api/voice").json()
         assert payload["enabled"] is False
         assert "VOICE_COMMANDS" in payload["detail"]
+
+
+class TestRenamingAndDeleting:
+    """Calling a meeting what it was, and getting rid of one for good."""
+
+    @pytest.fixture
+    def client(self, service_config, monkeypatch):
+        _stub_runner(monkeypatch, utterances=2)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as signed_out:
+            signed_out.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            signed_out.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield signed_out
+
+    @staticmethod
+    def _meeting(client) -> str:
+        """A finished meeting with a transcript on disk."""
+        from meetbot.transcript.store import MeetingMeta, TranscriptStore, Utterance
+
+        job_id = client.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+        for _ in range(80):
+            if client.get(f"/api/meetings/{job_id}").json()["status"] in (
+                "finished",
+                "failed",
+            ):
+                break
+        job = client.app.state.manager.get(job_id)
+        assert job.output_dir is not None, "the run never reported its directory"
+        store = TranscriptStore(job.output_dir / "transcript.jsonl")
+        store.write_meta(MeetingMeta(meet_url=MEET_URL, bot_name="Scribe"))
+        store.append(Utterance("Speaker 0", "We are two weeks behind.", 0.0, 3.0))
+        store.close()
+        return job_id
+
+    # -- renaming ----------------------------------------------------------
+
+    def test_a_meeting_can_be_called_what_it_actually_was(self, client) -> None:
+        job_id = self._meeting(client)
+        response = client.put(
+            f"/api/meetings/{job_id}/title", json={"title": "Roadmap review"}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["title"] == "Roadmap review"
+        listed = client.get("/api/meetings").json()["meetings"]
+        assert next(m for m in listed if m["id"] == job_id)["title"] == "Roadmap review"
+
+    def test_a_rename_outlives_the_process(self, client) -> None:
+        """Kept in memory it would last until the next restart and no longer."""
+        from meetbot.service.jobs import JobManager, load_past_runs
+        from meetbot.transcript.store import read_title
+
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/title", json={"title": "Roadmap review"})
+        directory = client.app.state.manager.get(job_id).output_dir
+        assert read_title(directory / "transcript.jsonl") == "Roadmap review"
+
+        # What a restart does: read the same directories back off disk.
+        restored = JobManager(client.app.state.manager._base)
+        load_past_runs(restored, directory.parent)
+        assert [j.title for j in restored.list()] == ["Roadmap review"]
+
+    def test_renaming_a_bot_meeting_keeps_the_way_back_into_the_call(
+        self, client
+    ) -> None:
+        """The name is not the link. Writing one over the other loses the call."""
+        from meetbot.service.jobs import JobManager, load_past_runs
+
+        job_id = self._meeting(client)
+        client.put(f"/api/meetings/{job_id}/title", json={"title": "Roadmap review"})
+        directory = client.app.state.manager.get(job_id).output_dir
+
+        restored = JobManager(client.app.state.manager._base)
+        load_past_runs(restored, directory.parent)
+        job = restored.list()[0]
+        assert job.title == "Roadmap review"
+        assert job.meet_url == MEET_URL, "the Meet link was overwritten by the name"
+
+    def test_a_name_that_is_only_spaces_is_refused(self, client) -> None:
+        job_id = self._meeting(client)
+        response = client.put(f"/api/meetings/{job_id}/title", json={"title": "   "})
+        assert response.status_code == 400
+        assert "name" in response.json()["detail"].lower()
+
+    def test_an_absurd_name_is_cut_rather_than_refused(self, client) -> None:
+        """Refusing a long name helps nobody; a novel per transcript does not."""
+        from meetbot.service.app import MAX_TITLE_CHARS
+
+        job_id = self._meeting(client)
+        response = client.put(f"/api/meetings/{job_id}/title", json={"title": "x" * 500})
+        assert response.status_code == 200
+        assert len(response.json()["title"]) == MAX_TITLE_CHARS
+
+    def test_renaming_needs_a_session(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as anon:
+            assert (
+                anon.put("/api/meetings/x/title", json={"title": "n"}).status_code == 401
+            )
+
+    def test_a_member_cannot_rename_someone_elses_meeting(self, client) -> None:
+        job_id = self._meeting(client)
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        assert (
+            other.put(
+                f"/api/meetings/{job_id}/title", json={"title": "mine now"}
+            ).status_code
+            == 404
+        )
+
+    # -- deleting ----------------------------------------------------------
+
+    def test_deleting_takes_the_recording_with_it(self, client) -> None:
+        job_id = self._meeting(client)
+        directory = client.app.state.manager.get(job_id).output_dir
+        assert (directory / "transcript.jsonl").exists()
+
+        assert client.delete(f"/api/meetings/{job_id}").status_code == 200
+
+        assert not directory.exists(), "the transcript is still on disk"
+        assert client.get(f"/api/meetings/{job_id}").status_code == 404
+        listed = client.get("/api/meetings").json()["meetings"]
+        assert all(m["id"] != job_id for m in listed)
+
+    def test_a_meeting_still_recording_is_not_deleted(
+        self, service_config, monkeypatch
+    ) -> None:
+        """Deleting the directory from under the recorder helps nobody."""
+        _stub_runner(monkeypatch, block=True)
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as client:
+            client.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            client.post("/login", data={"username": "neil", "password": ADMIN_PASSWORD})
+            job_id = client.post("/api/meetings", json={"meet_url": MEET_URL}).json()["id"]
+            for _ in range(80):
+                if client.get(f"/api/meetings/{job_id}").json()["status"] == "joining":
+                    break
+                time.sleep(0.02)
+
+            response = client.delete(f"/api/meetings/{job_id}")
+
+            assert response.status_code == 409
+            assert "still recording" in response.json()["detail"].lower()
+            assert client.get(f"/api/meetings/{job_id}").status_code == 200
+
+    def test_a_delete_never_reaches_outside_the_recordings_directory(
+        self, client, tmp_path
+    ) -> None:
+        """The path comes from the runner, not the request - but a delete earns
+        the check anyway."""
+        job_id = self._meeting(client)
+        elsewhere = tmp_path / "not-a-recording"
+        elsewhere.mkdir()
+        (elsewhere / "precious.txt").write_text("keep me", encoding="utf-8")
+        client.app.state.manager.get(job_id).output_dir = elsewhere
+
+        assert client.delete(f"/api/meetings/{job_id}").status_code == 200
+
+        assert (elsewhere / "precious.txt").exists(), "it deleted unrelated files"
+        assert client.get(f"/api/meetings/{job_id}").status_code == 404
+
+    def test_deleting_needs_a_session(self, service_config, monkeypatch) -> None:
+        _stub_runner(monkeypatch)
+        with TestClient(create_app(service_config)) as anon:
+            assert anon.delete("/api/meetings/x").status_code == 401
+
+    def test_a_member_cannot_delete_someone_elses_meeting(self, client) -> None:
+        job_id = self._meeting(client)
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        assert other.delete(f"/api/meetings/{job_id}").status_code == 404
+        assert client.get(f"/api/meetings/{job_id}").status_code == 200
 
 
 class TestRecallApi:
