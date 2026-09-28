@@ -320,6 +320,32 @@ watch the transcript build up live, stop it early, and read the notes from any
 past meeting. The bot still runs on this machine; the UI is just the control
 surface.
 
+#### Not even a command prompt
+
+A notetaker you have to remember to start from a terminal is one that is not
+running when the call begins, which is the only moment it is worth anything.
+
+```bash
+python -m meetbot shortcut            # a Scribe icon on the Desktop
+python -m meetbot shortcut --startup  # ...and start it when you sign in
+python -m meetbot shortcut --remove   # take both away again
+```
+
+The icon runs `meetbot launch`, which is safe to press twice: when Scribe is
+already listening it opens the page rather than starting a second server that
+cannot bind the port. The Startup entry runs `serve` instead, because signing
+in should not throw a browser window at you.
+
+Both run under `pythonw.exe`, so no console window appears. The server's
+output goes to `scribe-server.log` beside the recordings, which is also where
+the admin password printed on the very first run can be read back.
+
+Windows only so far: it asks Windows where the Desktop and Startup folders
+actually are, because a machine signed into OneDrive has its Desktop
+redirected and a shortcut written to `%USERPROFILE%\Desktop` never appears.
+Elsewhere, `meetbot serve --open` is the same thing with a terminal, and your
+desktop environment's own startup applications list will run it at sign-in.
+
 #### The notepad
 
 The transcript answers *what was said*. It cannot know what **you** thought
