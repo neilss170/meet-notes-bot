@@ -426,12 +426,22 @@ Things it handles that the one-shot CLI never had to:
 | `POST /api/audio-devices/probe` | Listen briefly; catches muted output |
 | `GET /api/meetings/{id}` | Status plus live transcript |
 | `POST /api/meetings/{id}/stop` | Leave the call and write the summary |
+| `PUT /api/meetings/{id}/title` | `{"title": "..."}` — call it what it actually was |
+| `DELETE /api/meetings/{id}` | Delete the meeting, its recording and everything asked about it |
 | `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, `notes.md`, `enhanced.md`, … |
 | `GET /api/meetings/{id}/notepad` | Notes, enhanced notes, template, chat |
+| `GET /api/meetings/{id}/transcript` | The whole transcript, in the lines citations point at |
+| `PUT /api/meetings/{id}/speakers` | `{"names": {"Speaker 0": "Priya"}}` — real names, once, everywhere |
 | `PUT /api/meetings/{id}/notes` | `{"notes": "..."}` — autosave the notepad |
 | `POST /api/meetings/{id}/enhance` | `{"template": "standup"}` — write the notes up |
 | `POST /api/meetings/{id}/ask` | `{"question": "..."}` — ask about this meeting |
 | `DELETE /api/meetings/{id}/chat` | Forget the questions asked about it |
+| `GET` / `POST /api/chat` | Ask across every meeting this account can see |
+| `DELETE /api/chat` | Forget those questions |
+| `GET /api/calls` | Calls started on this machine and not yet answered (admin only) |
+| `POST /api/calls/{id}/dismiss` | Not this call |
+| `POST /api/calls/mute` | `{"app_id": "..."}` — never offer for this app |
+| `GET /api/voice` | Whether voice commands are listening, and the last one heard |
 | `GET /api/templates` | The note shapes the UI offers |
 | `GET /api/health` | What is working, and the command that fixes what is not |
 | `POST /api/health/refresh` | Re-run the checks after fixing something |
