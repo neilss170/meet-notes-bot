@@ -35,6 +35,7 @@
     --focus: rgba(226, 112, 58, .55);
     --focus-ring: rgba(226, 112, 58, .15);
     --spark: #e2703a;  --spark-hi: #ffcfae;
+    --spark-glow: rgba(226, 112, 58, .62);
     --live: #0f9f68;   --bad: #c43b2d;  --warn: #9a6a12;
     --radius: 20px;
   }
@@ -65,6 +66,7 @@
       --focus: rgba(240, 138, 75, .6);
       --focus-ring: rgba(240, 138, 75, .18);
       --spark: #f08a4b;  --spark-hi: #ffe2cd;
+      --spark-glow: rgba(240, 138, 75, .6);
       --live: #22c985;   --bad: #ef7a64;  --warn: #d9ab5c;
     }
   }
@@ -175,7 +177,10 @@
     transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
   }
   .mtg:hover { background: var(--chip); }
-  .mtg.on { background: var(--chip-on); border-color: var(--glass-edge); box-shadow: var(--chip-shadow); }
+  .mtg.on {
+    background: var(--chip-on); border-color: var(--glass-edge);
+    box-shadow: var(--chip-shadow), inset 2px 0 0 var(--spark);
+  }
   .mtg-top { display: flex; align-items: center; gap: 6px; }
   .mtg-name {
     font-weight: 500; font-size: 13.5px; letter-spacing: -0.01em;
@@ -236,15 +241,70 @@
   }
   select { cursor: pointer; padding-right: 26px; }
   select:hover { background: var(--chip-on); }
+  /* The neutral pill is the workhorse. The spark-coloured one is the single
+     thing a region is actually for - start the recording, ask the question,
+     write the notes up - and there is at most one per region: an accent that
+     means "press this" stops meaning anything when everything wears it.
+
+     Both glow, but only under the pointer. A button that glows on its own,
+     forever, is a button you learn to stop seeing. */
   button.btn {
     font-weight: 550; font-size: 13.5px; padding: 9px 17px; border-radius: 999px;
     background: var(--btn); color: var(--btn-ink); box-shadow: var(--btn-shadow);
-    transition: transform .14s ease, box-shadow .18s ease, opacity .18s ease, background .18s ease;
+    transition: transform .14s ease, box-shadow .26s ease, opacity .18s ease,
+                background .18s ease;
     display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    position: relative; overflow: hidden; isolation: isolate;
   }
-  button.btn:hover:not(:disabled) { transform: translateY(-1px); }
-  button.btn:active:not(:disabled) { transform: translateY(0); }
+  button.btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: var(--btn-shadow), 0 14px 32px -12px var(--spark-glow);
+  }
+  button.btn:active:not(:disabled) { transform: translateY(0) scale(.98); }
   button.btn:disabled { opacity: .45; cursor: not-allowed; }
+  /* Keyboard focus gets the ring the inputs already use. Hover glow alone
+     would leave anyone not using a mouse with no idea where they are. */
+  button.btn:focus-visible {
+    outline: none;
+    box-shadow: var(--btn-shadow), 0 0 0 1.5px var(--focus),
+                0 0 0 5px var(--focus-ring);
+  }
+
+  /* One highlight crossing the face on hover: the only thing on this page
+     that is decoration and nothing else. Skipped on the flat variants,
+     where a white sweep over a translucent chip just looks like a glitch. */
+  button.btn:not(.ghost):not(.quiet):not(.danger)::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    pointer-events: none; opacity: 0;
+    background: linear-gradient(105deg, transparent 34%,
+                rgba(255, 255, 255, .3) 47%, transparent 62%);
+  }
+  button.btn:not(.ghost):not(.quiet):not(.danger):hover:not(:disabled)::after {
+    animation: sheen .8s ease-out;
+  }
+  @keyframes sheen {
+    from { opacity: .9; transform: translateX(-115%); }
+    to   { opacity: 0;  transform: translateX(115%); }
+  }
+
+  button.btn.primary {
+    background: linear-gradient(180deg,
+      color-mix(in srgb, var(--spark) 76%, #ffffff) 0%,
+      var(--spark) 54%,
+      color-mix(in srgb, var(--spark) 84%, #000000) 100%);
+    color: #fff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .32),
+                0 10px 24px -10px var(--spark-glow);
+  }
+  button.btn.primary:hover:not(:disabled) {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .36),
+                0 18px 40px -12px var(--spark-glow),
+                0 0 30px -6px var(--spark-glow);
+  }
+  button.btn.primary:focus-visible {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .32),
+                0 0 0 1.5px var(--focus), 0 0 0 5px var(--focus-ring);
+  }
   button.btn.ghost {
     background: var(--chip); color: var(--ink); border: 1px solid var(--glass-edge);
     box-shadow: var(--glass-shine);
@@ -260,8 +320,23 @@
   }
   button.btn.danger:hover:not(:disabled) {
     background: color-mix(in srgb, var(--bad) 12%, var(--chip-on));
+    box-shadow: var(--glass-shine),
+                0 10px 26px -14px color-mix(in srgb, var(--bad) 85%, transparent);
   }
   button.btn.sm { padding: 6px 13px; font-size: 12.5px; }
+  /* Somebody who has asked their system for less movement gets this page
+     without the sweep, the lift or the turning spark - and still gets every
+     state, because each one is spelled out in words as well. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .01ms !important;
+      scroll-behavior: auto !important;
+    }
+    button.btn:hover:not(:disabled) { transform: none; }
+  }
+
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .grow { flex: 1 1 auto; }
   .icon-btn {
@@ -363,7 +438,11 @@
     color: var(--muted); transition: background .18s ease, color .18s ease, box-shadow .18s ease;
   }
   .tab:hover { color: var(--ink); }
-  .tab.on { background: var(--chip-on); color: var(--ink); font-weight: 600; box-shadow: var(--chip-shadow); }
+  .tab.on {
+    background: var(--chip-on); color: var(--ink); font-weight: 600;
+    box-shadow: var(--chip-shadow),
+                inset 0 0 0 1px color-mix(in srgb, var(--spark) 24%, transparent);
+  }
   .tab .count { font-size: 11px; color: var(--faint); margin-left: 5px; }
   .pane {
     flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 32px 40px;
@@ -847,7 +926,7 @@
           <input type="text" id="rec-title" placeholder="What is this meeting?"
                  autocomplete="off">
           <div class="row" style="margin-top:9px">
-            <button class="btn grow" id="record">Start recording</button>
+            <button class="btn primary grow" id="record">Start recording</button>
           </div>
           <div class="hint" id="audio-hint">Checking audio&hellip;</div>
           <details class="opts" id="call-opts" hidden>
@@ -866,7 +945,7 @@
           <input type="text" id="url" placeholder="meet.google.com/abc-defg-hij"
                  autocomplete="off" spellcheck="false">
           <div class="row" style="margin-top:9px">
-            <button class="btn grow" id="send">Send bot</button>
+            <button class="btn primary grow" id="send">Send bot</button>
           </div>
           <div class="hint">
             Joins the call as a visible participant and needs a signed-in
@@ -915,7 +994,7 @@
         <div class="composer">
           <textarea id="chat-input" rows="1" autocomplete="off"
                     placeholder="When did we talk about&hellip;"></textarea>
-          <button class="btn" id="chat-go">Ask</button>
+          <button class="btn primary" id="chat-go">Ask</button>
         </div>
         <div class="chat-note">
           <span class="grow">Searches every meeting you can see.</span>
@@ -1530,7 +1609,7 @@ function renderNotes(rebuild) {
     pane.innerHTML =
       '<div class="notebar">' +
         `<select id="template" title="How the enhanced notes are shaped">${options}</select>` +
-        '<button class="btn" id="enhance">Enhance notes</button>' +
+        '<button class="btn primary" id="enhance">Enhance notes</button>' +
         '<span class="savestate" id="savestate"></span>' +
       "</div>" +
       '<div class="err" id="note-error" hidden></div>' +
@@ -2033,7 +2112,7 @@ function renderAsk(rebuild) {
         "</div>") +
       '<div class="askbar">' +
         '<input type="text" id="ask-input" class="grow" placeholder="Ask anything about this meeting…" autocomplete="off">' +
-        `<button class="btn" id="ask-go"${state.asking ? " disabled" : ""}>` +
+        `<button class="btn primary" id="ask-go"${state.asking ? " disabled" : ""}>` +
         (state.asking ? '<span class="spark" aria-hidden="true"></span>' : "Ask") + "</button>" +
       "</div>" +
       '<div class="row ask-tools">' +
@@ -2316,7 +2395,7 @@ function renderCallCard() {
         `<input type="text" class="call-name" data-id="${esc(prompt.id)}" ` +
           `value="${esc(keep ?? prompt.title)}" aria-label="Name this recording" autocomplete="off">` +
         '<div class="call-actions">' +
-          `<button class="btn sm" data-act="record"${state.callBusy ? " disabled" : ""}>` +
+          `<button class="btn sm primary" data-act="record"${state.callBusy ? " disabled" : ""}>` +
             (state.callBusy ? '<span class="spin"></span> Starting' : "Start recording") + "</button>" +
           '<button class="btn sm ghost" data-act="dismiss">Not now</button>' +
           `<button class="btn sm quiet" data-act="mute">Don’t ask for ${esc(prompt.app)}</button>` +
