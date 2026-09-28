@@ -383,3 +383,72 @@ class TestFindingAndNamingInTheBrowser:
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()
+
+
+class TestTheButtonsTellYouWhereYouAre:
+    """Hover glow is invisible to anybody not holding a mouse."""
+
+    async def test_a_keyboard_user_can_see_which_button_they_are_on(
+        self, served
+    ) -> None:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                resting = await page.evaluate(
+                    "getComputedStyle(document.querySelector('#record')).boxShadow"
+                )
+
+                # Arrive by keyboard: :focus-visible deliberately ignores a
+                # click, so clicking would prove nothing.
+                await page.focus("#record")
+                await page.keyboard.press("Shift+Tab")
+                await page.keyboard.press("Tab")
+                # The shadow is transitioned, so an immediate read catches the
+                # old value half way to the new one.
+                await page.wait_for_timeout(500)
+
+                focused = await page.evaluate(
+                    """() => {
+                      const el = document.querySelector('#record');
+                      return {
+                        visible: el.matches(':focus-visible'),
+                        shadow: getComputedStyle(el).boxShadow,
+                      };
+                    }"""
+                )
+                assert focused["visible"] is True
+                assert focused["shadow"] != resting, "focus looks the same as resting"
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+    async def test_one_accented_action_per_region(self, served) -> None:
+        """An accent that means "press this" means nothing when everything
+        wears it."""
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                counts = await page.evaluate(
+                    """() => {
+                      // Only what is on screen: the other mode's form is in
+                      // the DOM the whole time, hidden behind the switch.
+                      const shown = (root) =>
+                        [...document.querySelectorAll(root + ' .btn.primary')]
+                          .filter((el) => el.offsetParent !== null).length;
+                      return {
+                        side: shown('.side'),
+                        main: shown('.main'),
+                        rail: shown('.chat'),
+                      };
+                    }"""
+                )
+                for region, count in counts.items():
+                    assert count <= 1, f"{region} has {count} accented buttons"
+                assert counts["side"] == 1, "the side panel lost its primary action"
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
