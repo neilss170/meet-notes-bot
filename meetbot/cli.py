@@ -36,6 +36,7 @@ from meetbot.analysis.summarize import (
 )
 from meetbot.capture.deepgram import DeepgramError, probe_credentials
 from meetbot.config import Config, ConfigError, load_config
+from meetbot import desktop
 from meetbot.logging_setup import configure_logging
 from meetbot.runner import MeetingRun, run_meeting
 from meetbot.transcript.format import format_timestamp, render_markdown, render_text
@@ -331,6 +332,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open the UI in your browser once the server is up.",
     )
     _add_llm_flags(serve_parser)
+
+    launch_parser = subparsers.add_parser(
+        "launch",
+        help="Start Scribe if it is not already running, and open it.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    launch_parser.add_argument(
+        "--port", type=int, default=8080, help="Port Scribe listens on."
+    )
+    launch_parser.add_argument(
+        "--no-open",
+        dest="no_open",
+        action="store_true",
+        help="Start it, but do not open a browser.",
+    )
+
+    shortcut_parser = subparsers.add_parser(
+        "shortcut",
+        help="Put Scribe on the Desktop, so starting it is a double-click.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    shortcut_parser.add_argument(
+        "--startup",
+        action="store_true",
+        help="Also start Scribe when you sign in to this account.",
+    )
+    shortcut_parser.add_argument(
+        "--remove", action="store_true", help="Take the shortcuts away again."
+    )
+    shortcut_parser.add_argument(
+        "--port", type=int, default=8080, help="Port the shortcuts use."
+    )
 
     check_parser = subparsers.add_parser(
         "check",
@@ -1027,6 +1060,68 @@ def cmd_users(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_launch(args: argparse.Namespace) -> int:
+    """Handle ``launch``: make sure Scribe is running, then open it.
+
+    This is what the Desktop icon runs, so it has to be safe to press twice.
+    A server is already listening more often than not - the second press
+    should show you the page, not fail to bind the port.
+    """
+    import webbrowser
+
+    url = f"http://127.0.0.1:{args.port}"
+    if desktop.is_running(args.port):
+        logger.info("Scribe is already running at %s", url)
+    else:
+        log_path = desktop.start_detached(args.port)
+        logger.info("Starting Scribe; its output goes to %s", log_path)
+        if not desktop.wait_until_running(args.port):
+            logger.error(
+                "Scribe did not answer within %.0f seconds. What went wrong "
+                "will be at the end of %s",
+                desktop.START_TIMEOUT_S,
+                log_path,
+            )
+            return EXIT_CONFIG_ERROR
+        logger.info("Scribe is at %s", url)
+
+    if not args.no_open:
+        webbrowser.open(url)
+    return EXIT_OK
+
+
+def cmd_shortcut(args: argparse.Namespace) -> int:
+    """Handle ``shortcut``: an icon, and optionally a start at sign-in."""
+    ready, detail = desktop.available()
+    if not ready:
+        logger.error("%s", detail)
+        return EXIT_CONFIG_ERROR
+
+    if args.remove:
+        gone = desktop.remove()
+        if not gone:
+            logger.info("There were no Scribe shortcuts to remove.")
+        for link in gone:
+            logger.info("Removed %s", link)
+        return EXIT_OK
+
+    made = desktop.install(port=args.port, startup=args.startup)
+    if not made:
+        logger.error(
+            "Could not create the shortcut. Windows would not say where the "
+            "Desktop is, or would not let PowerShell write the link."
+        )
+        return EXIT_CONFIG_ERROR
+    for link in made:
+        logger.info("Made %s", link)
+    if args.startup:
+        logger.info(
+            "Scribe will start when you sign in. Turn it off again with "
+            "'meetbot shortcut --remove', or in Settings under Startup apps."
+        )
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint. Returns the process exit code."""
     parser = build_parser()
@@ -1041,6 +1136,8 @@ def main(argv: list[str] | None = None) -> int:
         "format": cmd_format,
         "check": cmd_check,
         "serve": cmd_serve,
+        "launch": cmd_launch,
+        "shortcut": cmd_shortcut,
         "login": cmd_login,
         "users": cmd_users,
     }
