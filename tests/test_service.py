@@ -2558,3 +2558,56 @@ class TestCallAlertsApi:
             payload = client.get("/api/calls").json()
             assert payload["enabled"] is False
             assert "CALL_ALERTS" in payload["detail"]
+
+
+class TestTheNudgeFromTheIcon:
+    """"Latest notes" moving a page that is already open.
+
+    The icon runs inside this process, so it leaves a meeting id on the app
+    and the page's next poll carries it away. What matters is that it is
+    carried away *once*, and only by the person sitting at the machine.
+    """
+
+    @pytest.fixture
+    def client(self, service_config):
+        service_config.output_dir.mkdir(parents=True, exist_ok=True)
+        with TestClient(create_app(service_config)) as signed_out:
+            signed_out.app.state.users.add("neil", ADMIN_PASSWORD, Role.ADMIN)
+            signed_out.post(
+                "/login", data={"username": "neil", "password": ADMIN_PASSWORD}
+            )
+            yield signed_out
+
+    @pytest.fixture
+    def member(self, client):
+        client.app.state.users.add("priya", ADMIN_PASSWORD, Role.MEMBER)
+        other = TestClient(client.app)
+        other.post("/login", data={"username": "priya", "password": ADMIN_PASSWORD})
+        return other
+
+    def test_the_next_poll_carries_it(self, client) -> None:
+        client.app.state.focus = ("abc123", time.time())
+        assert client.get("/api/meetings").json()["focus"] == "abc123"
+
+    def test_and_only_the_next_one(self, client) -> None:
+        """Otherwise the page is dragged back to the same meeting every two
+        seconds, and no other meeting can be opened."""
+        client.app.state.focus = ("abc123", time.time())
+        client.get("/api/meetings")
+        assert client.get("/api/meetings").json()["focus"] == ""
+
+    def test_nothing_asked_for_is_nothing_said(self, client) -> None:
+        assert client.get("/api/meetings").json()["focus"] == ""
+
+    def test_a_stale_nudge_is_dropped(self, client) -> None:
+        """A page opened ten minutes later should not jump on arrival."""
+        client.app.state.focus = ("abc123", time.time() - 600)
+        assert client.get("/api/meetings").json()["focus"] == ""
+
+    def test_a_member_elsewhere_is_left_alone(self, client, member) -> None:
+        """The icon is whoever is sitting at this machine. It has no business
+        moving somebody else's page."""
+        client.app.state.focus = ("abc123", time.time())
+        assert member.get("/api/meetings").json()["focus"] == ""
+        # And it is still there for the admin the nudge was meant for.
+        assert client.get("/api/meetings").json()["focus"] == "abc123"

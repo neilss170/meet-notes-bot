@@ -360,8 +360,19 @@ python -m meetbot tray --open   # ...and open the page as well
 - **Right-click it** for the things worth doing without the page open: start or
   stop a recording, jump straight to the notes of the call that just finished,
   open the recordings folder or the server log.
-- **Quit** stops the recording first and waits for its write-up, rather than
-  killing the process mid-sentence and losing the summary.
+- **Quit** closes Scribe's window, stops the recording and waits for its
+  write-up, rather than killing the process mid-sentence and losing the
+  summary.
+
+Scribe opens its page as a **window of its own** — Chromium's `--app` mode, in
+your ordinary browser profile, so your session and extensions come with it.
+That is what lets Quit close it: a tab you opened yourself cannot be closed by
+the program that served it, which is a browser security rule and a good one.
+The window is found again by its title, because an app window is titled
+`Scribe` where a tabbed one is titled `Scribe - Google Chrome` — so quitting
+closes that window and leaves every other tab alone. With no Chromium browser
+installed the page opens as an ordinary tab, and that tab says *Scribe has
+stopped* rather than sitting there looking live.
 
 The icon lives in the same process as the server on purpose: it reads the job
 list directly, so nothing has to be authenticated to draw a tooltip. It needs

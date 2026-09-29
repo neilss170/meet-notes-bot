@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from meetbot import browser
 from meetbot.desktop import spark_image
 
 logger = logging.getLogger(__name__)
@@ -495,15 +496,43 @@ class ScribeTray:
             logger.exception("Tray: %s failed", action)
             self.notify("That did not work. The details are in the log.")
 
-    def open_page(self) -> None:
-        webbrowser.open(self.url)
+    def open_page(self, path: str = "") -> None:
+        """Bring Scribe's window up, opening one if there is not one already.
+
+        A window already open is raised rather than duplicated: clicking the
+        icon twice should not leave two copies of the same page, and the one
+        that is open may have half a sentence typed into its notepad.
+        """
+        if not path and browser.focus_window():
+            return
+        if browser.open_window(f"{self.url}{path}"):
+            return
+        # No Chromium browser here. The page still opens; it is simply a tab
+        # this cannot close later, which the page itself handles by saying so.
+        logger.info("Opening Scribe in the default browser instead.")
+        webbrowser.open(f"{self.url}{path}")
 
     def open_latest(self) -> None:
-        """Open the page on the meeting that finished most recently."""
+        """Show the meeting that finished most recently.
+
+        With a window already open this asks *that page* to move, through the
+        service both this and it are talking to, rather than opening a second
+        window onto the same Scribe.
+        """
         latest = self.status().latest_id
         if not latest:
             raise TrayError("Nothing has been recorded yet.")
-        webbrowser.open(f"{self.url}/?meeting={latest}")
+        if browser.app_windows():
+            self._ask_page_for(latest)
+            browser.focus_window()
+            return
+        self.open_page(f"/?meeting={latest}")
+
+    def _ask_page_for(self, job_id: str) -> None:
+        """Leave the meeting id where the page's next poll will collect it."""
+        state = getattr(self._app, "state", None)
+        if state is not None:
+            state.focus = (job_id, time.time())
 
     def open_folder(self) -> None:
         if self._output_dir is None:
@@ -559,17 +588,23 @@ class ScribeTray:
     def quit(self) -> None:
         """Let go of the machine properly.
 
-        A recording in progress is stopped first and its notes are given the
-        same grace the service gives them on shutdown, because the meeting
-        somebody has just ended is the one they are waiting to read. Killing
-        the process instead loses the summary and leaves the transcript's last
-        lines unwritten.
+        Three things, in order. The window Scribe opened is closed, because a
+        page left behind by a server that has gone is worse than no page. A
+        recording in progress is stopped, and its notes are given the same
+        grace the service gives them on shutdown - the meeting somebody has
+        just ended is the one they are waiting to read. Only then does the
+        process go.
         """
         if self._stopping.is_set():
             return
         if self.status().recording:
             self.notify("Finishing the recording, then closing.")
         self._stopping.set()
+        # The window goes first: waiting for a write-up with a dead-looking
+        # page still on screen is worse than the page simply being gone, and
+        # this is the one browser window Scribe is entitled to close.
+        with contextlib.suppress(Exception):
+            browser.close_windows()
         try:
             self._on_quit()
         finally:
