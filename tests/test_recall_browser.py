@@ -336,7 +336,7 @@ class TestLiveTranscriptInTheBrowser:
     ) -> None:
         """What a recording in progress looks like from the transcript tab.
 
-        A spark and "Listening..." at the foot while the meeting runs. A line
+        A meter and "Listening..." at the foot while the meeting runs. A line
         already there when the tab opens is simply shown; a line that arrives
         afterwards comes in word by word, and the foot says "Registering".
         """
@@ -372,14 +372,18 @@ class TestLiveTranscriptInTheBrowser:
                     "opening a transcript should show it, not perform it"
                 )
 
-                glyphs = set()
+                # The mark is one glyph that moves rather than a sequence of
+                # glyphs, so "is it animating" is "does the transform on the
+                # ::before change" - the content is the same turtle all the
+                # way through and proves nothing.
+                poses = set()
                 for _ in range(8):
-                    glyphs.add(await page.evaluate(
+                    poses.add(await page.evaluate(
                         "getComputedStyle(document.querySelector('#tx-foot .spark'), "
-                        "'::before').content"
+                        "'::before').transform"
                     ))
                     await page.wait_for_timeout(120)
-                assert len(glyphs) > 2, f"the spark should turn, saw {glyphs}"
+                assert len(poses) > 2, f"the turtle should walk, saw {poses}"
 
                 store.append(Utterance("Speaker 0", "Loud and clear, go ahead.", 3.0, 5.0))
                 fresh = page.locator("#tx-lines .live-line").nth(1)
