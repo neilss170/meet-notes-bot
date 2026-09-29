@@ -2863,7 +2863,9 @@ async function init() {
   const params = new URLSearchParams(window.location.search);
   if (params.get("record")) state.callLink = { record: params.get("record") };
   else if (params.get("call")) state.callLink = { call: params.get("call") };
-  if (state.callLink) history.replaceState(null, "", window.location.pathname);
+  // The icon's "Latest notes" names the meeting to open. Same reasoning: once.
+  const wanted = params.get("meeting") || "";
+  if (state.callLink || wanted) history.replaceState(null, "", window.location.pathname);
 
   try {
     const [me, config, templates] = await Promise.all([
@@ -2954,6 +2956,9 @@ async function init() {
   });
 
   await poll();
+  // Before the first render, so arriving from the icon does not flash the
+  // meeting that happens to be newest and then move.
+  if (wanted) await select(wanted);
   renderMain();
   const findBox = $("mtg-find");
   if (findBox) {

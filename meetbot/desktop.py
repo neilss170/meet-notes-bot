@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -129,16 +130,23 @@ def background_python() -> Path:
     return executable
 
 
-def start_detached(port: int) -> Path:
+def start_detached(port: int, *, command: str = "tray") -> Path:
     """Start the server and let go of it, so it outlives this process.
+
+    Args:
+        port: Port to serve on.
+        command: The subcommand to run. ``tray`` by default, so a Scribe
+            started this way has an icon in the notification area to stop it
+            by; ``tray`` falls back to serving without one where the icon
+            cannot be shown.
 
     Returns:
         The log file its output is going to.
     """
     directory = project_dir()
     log_path = directory / SERVER_LOG
-    command = [
-        str(background_python()), "-m", "meetbot", "serve", "--port", str(port)
+    command_line = [
+        str(background_python()), "-m", "meetbot", command, "--port", str(port)
     ]
     handle = log_path.open("a", encoding="utf-8", errors="replace")
     try:
@@ -153,7 +161,7 @@ def start_detached(port: int) -> Path:
         else:
             extra["start_new_session"] = True
         subprocess.Popen(  # noqa: S603 - fixed command, no shell
-            command,
+            command_line,
             cwd=str(directory),
             stdin=subprocess.DEVNULL,
             stdout=handle,
@@ -167,39 +175,61 @@ def start_detached(port: int) -> Path:
     return log_path
 
 
-def write_icon(path: Path) -> bool:
-    """Draw the spark as an icon file. ``False`` if Pillow is not installed.
+def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
+    """Draw the spark at *size* pixels. ``None`` if Pillow is not installed.
 
     The mark is the one the page uses - four strokes through a centre, in the
     same orange - because a shortcut carrying the stock Python icon looks like
     somebody's script rather than a thing you use.
+
+    Args:
+        size: Side length in pixels. Every measurement below is a fraction of
+            it, so the same drawing reads at 16 pixels in the notification
+            area and at 256 in a shortcut.
+        recording: Draw it as a red tile with the mark cut out of it. The
+            notification area gets 16 pixels to work with, which is too few
+            for a badge in a corner and too few to tell one dark tile from
+            another by the colour of four thin strokes - so the whole tile
+            changes. Beside a row of monochrome system glyphs it is the only
+            red thing on the taskbar, which is what "you are being recorded"
+            should look like.
     """
     try:
         from PIL import Image, ImageDraw
     except ImportError:
-        return False
+        return None
 
-    size = 256
-    spark = (226, 112, 58, 255)
+    ink = (18, 19, 26, 255)
+    red = (229, 72, 77, 255)
+    spark, back = (ink, red) if recording else ((226, 112, 58, 255), ink)
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle([0, 0, size - 1, size - 1], radius=58, fill=(18, 19, 26, 255))
+    draw.rounded_rectangle(
+        [0, 0, size - 1, size - 1], radius=max(2, round(size * 0.227)), fill=back
+    )
 
     centre = size / 2
     reach = size * 0.30
+    hub = size * 0.082
+    eye = size * 0.043
     for degrees in (0, 45, 90, 135):
         angle = math.radians(degrees)
         dx, dy = math.cos(angle) * reach, math.sin(angle) * reach
         draw.line(
             [(centre - dx, centre - dy), (centre + dx, centre + dy)],
             fill=spark,
-            width=15,
+            width=max(1, round(size * 0.059)),
         )
-    draw.ellipse(
-        [centre - 21, centre - 21, centre + 21, centre + 21], fill=(18, 19, 26, 255)
-    )
-    draw.ellipse([centre - 11, centre - 11, centre + 11, centre + 11], fill=spark)
+    draw.ellipse([centre - hub, centre - hub, centre + hub, centre + hub], fill=back)
+    draw.ellipse([centre - eye, centre - eye, centre + eye, centre + eye], fill=spark)
+    return image
 
+
+def write_icon(path: Path) -> bool:
+    """Save the spark as a Windows ``.ico``. ``False`` without Pillow."""
+    image = spark_image(256)
+    if image is None:
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path, sizes=[(256, 256), (48, 48), (32, 32), (16, 16)])
     return True
@@ -288,10 +318,12 @@ def install(*, port: int = 8080, startup: bool = False) -> list[Path]:
     if startup:
         folder = windows_folder(STARTUP_FOLDER)
         if folder is not None:
-            # Signing in should not throw a browser window at you, so this one
-            # serves and says nothing.
+            # Signing in should not throw a browser window at you, so this
+            # one opens no page - but it does put the icon in the notification
+            # area, which is the only thing that says Scribe is running at all
+            # when nothing asked for it.
             link = folder / f"{SHORTCUT_NAME}.lnk"
-            if _make_shortcut(link, python, f"-m meetbot serve --port {port}", icon):
+            if _make_shortcut(link, python, f"-m meetbot tray --port {port}", icon):
                 made.append(link)
     return made
 
@@ -335,6 +367,7 @@ __all__ = [
     "is_running",
     "project_dir",
     "remove",
+    "spark_image",
     "start_detached",
     "wait_until_running",
     "windows_folder",

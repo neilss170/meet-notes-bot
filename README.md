@@ -333,12 +333,48 @@ python -m meetbot shortcut --remove   # take both away again
 
 The icon runs `meetbot launch`, which is safe to press twice: when Scribe is
 already listening it opens the page rather than starting a second server that
-cannot bind the port. The Startup entry runs `serve` instead, because signing
-in should not throw a browser window at you.
+cannot bind the port. The Startup entry runs `meetbot tray`, because signing in
+should not throw a browser window at you.
 
 Both run under `pythonw.exe`, so no console window appears. The server's
 output goes to `scribe-server.log` beside the recordings, which is also where
 the admin password printed on the very first run can be read back.
+
+#### The icon by the clock
+
+A windowless server has no presence. Minimise the page and Scribe is gone:
+nothing in the taskbar, no way to tell whether it is listening, and stopping it
+means picking the right `pythonw.exe` out of Task Manager. So while it runs it
+sits in the notification area:
+
+```bash
+python -m meetbot tray          # serve, with the icon
+python -m meetbot tray --open   # ...and open the page as well
+```
+
+- **Hover it** and it says what is happening — `Recording · Standup · 4:07`,
+  `Writing up · Standup`, `Not recording`, or which setup check is failing.
+  The tile turns red while a meeting is being captured — beside a row of
+  monochrome system glyphs it is the only red thing on the taskbar.
+- **Click it** to bring the page back.
+- **Right-click it** for the things worth doing without the page open: start or
+  stop a recording, jump straight to the notes of the call that just finished,
+  open the recordings folder or the server log.
+- **Quit** stops the recording first and waits for its write-up, rather than
+  killing the process mid-sentence and losing the summary.
+
+The icon lives in the same process as the server on purpose: it reads the job
+list directly, so nothing has to be authenticated to draw a tooltip. It needs
+`pystray`, which comes with `pip install -r requirements.txt`; without it
+`meetbot tray` just serves, because a Scribe you cannot see still records the
+call.
+
+Windows 11 hides icons it has not seen before behind the `^`, which for this
+one would defeat the point, and there is no API for it — the setting is a
+registry value under `HKCU\Control Panel\NotifyIconSettings` or a
+drag with the mouse. So Scribe writes that one value, for the single entry
+carrying both its own tooltip and this interpreter's path. Drag the icon back
+into the flyout if you would rather it stayed hidden.
 
 Windows only so far: it asks Windows where the Desktop and Startup folders
 actually are, because a machine signed into OneDrive has its Desktop
@@ -538,6 +574,9 @@ python -m meetbot format --transcript <path>/transcript.jsonl --format text
 
 # Validate config + Playwright without joining a call.
 python -m meetbot check
+
+# Serve with an icon in the notification area, which is what the shortcuts run.
+python -m meetbot tray
 ```
 
 ### Useful flags

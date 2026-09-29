@@ -1461,6 +1461,10 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     app.state.manager = manager
     app.state.users = users
     app.state.calls = calls
+    # Read by the notification-area icon, which runs in this process: it is
+    # how the tooltip can say "writing up the standup" rather than going quiet
+    # for the twenty seconds a summary takes.
+    app.state.in_flight = in_flight
     return app
 
 

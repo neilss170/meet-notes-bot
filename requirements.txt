@@ -13,6 +13,11 @@ openai>=1.40                 # LLM_PROVIDER=openai
 fastapi>=0.110              # HTTP API for sending the bot to meetings
 uvicorn>=0.27               # ASGI server the UI runs on
 
+# The notification-area icon (`meetbot tray`), which is what the Desktop and
+# Startup shortcuts run. Optional: without them the server still serves.
+pystray>=0.19               # the icon and its menu
+pillow>=10.0                # draws the mark, and the .ico for the shortcuts
+
 # Recording this machine rather than sending a bot (`meetbot record`).
 # Windows-only: WASAPI loopback is how the speakers are captured without
 # installing a virtual audio device. The bot path works without these.
