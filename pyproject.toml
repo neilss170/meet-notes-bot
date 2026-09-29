@@ -38,6 +38,9 @@ dependencies = [
 anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.40"]
 serve = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.7"]
+# The notification-area icon. Pillow draws the mark; pystray puts it by the
+# clock. `meetbot tray` serves without an icon when they are missing.
+tray = ["pystray>=0.19", "pillow>=10.0"]
 # Recording this machine instead of sending a bot. Windows-only: WASAPI
 # loopback is what makes capturing the speakers possible without a
 # virtual audio device, and PyAudioWPatch is the fork that exposes it.

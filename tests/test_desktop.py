@@ -104,7 +104,9 @@ class TestStartingIt:
 
         assert log_path == tmp_path / desktop.SERVER_LOG
         assert log_path.exists(), "there is nowhere to read a failure from"
-        assert seen["command"][1:] == ["-m", "meetbot", "serve", "--port", "8123"]
+        # `tray`, not `serve`: a windowless server with no icon is a process
+        # you can only stop from Task Manager.
+        assert seen["command"][1:] == ["-m", "meetbot", "tray", "--port", "8123"]
         assert seen["kwargs"]["cwd"] == str(tmp_path)
         # Closing the window that started it must not take a meeting down.
         if sys.platform == "win32":
@@ -154,8 +156,9 @@ class TestShortcuts:
 
         assert startup_dir / "Scribe.lnk" in links
         startup = next(m for m in made if m["link"].parent == startup_dir)
-        assert startup["args"] == "-m meetbot serve --port 9000"
+        assert startup["args"] == "-m meetbot tray --port 9000"
         assert "launch" not in startup["args"], "it would open a browser at sign-in"
+        assert "--open" not in startup["args"]
 
     def test_startup_is_opt_in(self, folders) -> None:
         _, startup_dir, _ = folders
@@ -185,6 +188,31 @@ class TestTheIcon:
         # The ICO header: reserved 0, type 1 (icon), then the image count.
         assert path.read_bytes()[:4] == b"\x00\x00\x01\x00"
         assert path.stat().st_size > 500
+
+    def test_it_reads_at_the_size_the_notification_area_asks_for(self) -> None:
+        """16 pixels is what Windows gives a tray icon on a 1080p display."""
+        pytest.importorskip("PIL", reason="Pillow is not installed")
+        small = desktop.spark_image(16)
+        assert small is not None and small.size == (16, 16)
+        # Something was actually drawn: the corners are transparent, the
+        # middle is not.
+        assert small.getpixel((8, 8))[3] == 255
+        assert small.getpixel((0, 0))[3] == 0
+
+    def test_recording_turns_the_whole_tile_red(self) -> None:
+        """A dot in the corner of a 16-pixel icon is a grey smudge. The tile
+        itself changes, so it can be told apart at a glance in a row of
+        monochrome system icons."""
+        pytest.importorskip("PIL", reason="Pillow is not installed")
+        idle = desktop.spark_image(32)
+        live = desktop.spark_image(32, recording=True)
+        assert idle is not None and live is not None
+        assert idle.tobytes() != live.tobytes()
+        # The tile behind the mark, a few pixels in from the top edge.
+        live_tile = live.getpixel((16, 4))
+        idle_tile = idle.getpixel((16, 4))
+        assert live_tile[0] > 200 and live_tile[1] < 120, "the tile is not red"
+        assert max(idle_tile[:3]) < 60, "the idle tile is no longer dark"
 
     def test_a_missing_pillow_is_not_fatal(self, monkeypatch, tmp_path) -> None:
         """No icon is a plain-looking shortcut, not a failed install."""

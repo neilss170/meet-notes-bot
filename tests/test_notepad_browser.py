@@ -452,3 +452,30 @@ class TestTheButtonsTellYouWhereYouAre:
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()
+
+
+class TestArrivingFromTheIcon:
+    """The notification area's "Latest notes" names the meeting to open."""
+
+    async def test_a_named_meeting_opens_instead_of_the_newest(self, served) -> None:
+        """Without this the link lands on whatever is newest, which is never
+        what somebody clicking "Latest notes" after a call has just been
+        written up is looking at."""
+        from playwright.async_api import async_playwright
+
+        TestFindingAndNamingInTheBrowser._second_meeting(served)
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await page.goto(f"{served['url']}/?meeting=other-meeting")
+                await page.wait_for_function(
+                    "document.querySelector('.mtg.on')"
+                    "?.textContent.includes('Budget planning')",
+                    timeout=30_000,
+                )
+                # And the address bar is clean, so a reload does not fight a
+                # click on a different meeting.
+                assert "meeting=" not in page.url
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()

@@ -129,6 +129,56 @@ def _pyaudio() -> Any:
     return pyaudiowpatch
 
 
+#: Held across every construction and teardown of a PyAudio. PortAudio
+#: reference-counts its initialisation, but the counting itself is not
+#: thread-safe: two of these running at once faults the process with an access
+#: violation and takes the server down with it. That is not theoretical - the
+#: page asks what devices exist as it loads, the notification-area icon asks
+#: before it starts a recording, and each answers on its own thread, so a click
+#: while a page was opening was enough to do it.
+_PORTAUDIO_LOCK = threading.RLock()
+
+
+@contextlib.contextmanager
+def _portaudio() -> Iterator[Any]:
+    """PortAudio for the length of one question, and one asker at a time.
+
+    Every short-lived use - what devices are there, which is the default,
+    listen for a second - takes the whole scope rather than only the
+    construction, so in the ordinary case exactly one PyAudio exists at a
+    time. Queries are milliseconds and a probe is a second, which is a cheaper
+    price than the fault.
+    """
+    pyaudio = _pyaudio()
+    with _PORTAUDIO_LOCK:
+        audio = pyaudio.PyAudio()
+        try:
+            yield audio
+        finally:
+            with contextlib.suppress(Exception):
+                audio.terminate()
+
+
+def _open_portaudio(pyaudio: Any) -> Any:
+    """A PyAudio to keep, for the recorder that holds one per meeting.
+
+    It cannot hold the lock for that long, so only the construction and the
+    teardown are serialised against everything else - which is where the fault
+    was.
+    """
+    with _PORTAUDIO_LOCK:
+        return pyaudio.PyAudio()
+
+
+def _close_portaudio(audio: Any) -> None:
+    """Give a kept PyAudio back. Never raises: this runs in ``finally``."""
+    if audio is None:
+        return
+    with _PORTAUDIO_LOCK:
+        with contextlib.suppress(Exception):
+            audio.terminate()
+
+
 def _numpy() -> Any:
     try:
         import numpy
@@ -155,8 +205,7 @@ def list_devices() -> tuple[list[AudioDevice], list[AudioDevice]]:
             the audio service is not running.
     """
     pyaudio = _pyaudio()
-    audio = pyaudio.PyAudio()
-    try:
+    with _portaudio() as audio:
         try:
             wasapi = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
         except OSError as exc:
@@ -191,8 +240,6 @@ def list_devices() -> tuple[list[AudioDevice], list[AudioDevice]]:
             and d["hostApi"] == wasapi["index"]
         ]
         return loopbacks, microphones
-    finally:
-        audio.terminate()
 
 
 def default_output_name() -> str:
@@ -202,16 +249,14 @@ def default_output_name() -> str:
     when Bluetooth headphones drop and playback moves elsewhere.
     """
     pyaudio = _pyaudio()
-    audio = pyaudio.PyAudio()
-    try:
-        wasapi = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
-        return str(
-            audio.get_device_info_by_index(wasapi["defaultOutputDevice"])["name"]
-        )
-    except (OSError, KeyError):
-        return ""
-    finally:
-        audio.terminate()
+    with _portaudio() as audio:
+        try:
+            wasapi = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
+            return str(
+                audio.get_device_info_by_index(wasapi["defaultOutputDevice"])["name"]
+            )
+        except (OSError, KeyError):
+            return ""
 
 
 def default_devices() -> tuple[AudioDevice | None, AudioDevice | None]:
@@ -222,8 +267,7 @@ def default_devices() -> tuple[AudioDevice | None, AudioDevice | None]:
     device the meeting is actually playing through.
     """
     pyaudio = _pyaudio()
-    audio = pyaudio.PyAudio()
-    try:
+    with _portaudio() as audio:
         try:
             wasapi = audio.get_host_api_info_by_type(pyaudio.paWASAPI)
             out_name = str(
@@ -231,8 +275,6 @@ def default_devices() -> tuple[AudioDevice | None, AudioDevice | None]:
             )
         except (OSError, KeyError):
             out_name = ""
-    finally:
-        audio.terminate()
 
     loopbacks, microphones = list_devices()
     loopback = next((d for d in loopbacks if out_name and out_name in d.name), None)
@@ -571,7 +613,7 @@ class LocalRecorder:
             return
         pyaudio = _pyaudio()
         self._stop.clear()
-        self._audio = pyaudio.PyAudio()
+        self._audio = _open_portaudio(pyaudio)
         opened: list[_Source] = []
         try:
             for source in filter(None, (self._them, self._me)):
@@ -589,7 +631,7 @@ class LocalRecorder:
             for source in opened:
                 with contextlib.suppress(Exception):
                     source.stream.close()
-            self._audio.terminate()
+            _close_portaudio(self._audio)
             self._audio = None
             raise LocalCaptureError(
                 f"Could not open an audio device for recording: {exc}"
@@ -613,8 +655,7 @@ class LocalRecorder:
                     source.stream.close()
                 source.stream = None
         if self._audio is not None:
-            with contextlib.suppress(Exception):
-                self._audio.terminate()
+            _close_portaudio(self._audio)
             self._audio = None
 
     # -- output ------------------------------------------------------------
@@ -736,30 +777,30 @@ def probe_loopback(seconds: float = 1.0, *, device: AudioDevice | None = None) -
             "playback device for this machine to be recorded."
         )
 
-    audio = pyaudio.PyAudio()
     frames: list[bytes] = []
-    try:
-        stream = audio.open(
-            format=pyaudio.paInt16,
-            channels=device.channels,
-            rate=device.rate,
-            input=True,
-            input_device_index=device.index,
-            frames_per_buffer=DEVICE_CHUNK,
-        )
+    with _portaudio() as audio:
         try:
-            deadline = time.time() + seconds
-            while time.time() < deadline:
-                frames.append(stream.read(DEVICE_CHUNK, exception_on_overflow=False))
-        finally:
-            with contextlib.suppress(Exception):
-                stream.stop_stream()
-            with contextlib.suppress(Exception):
-                stream.close()
-    except OSError as exc:
-        raise LocalCaptureError(f"Could not open {device.name}: {exc}") from exc
-    finally:
-        audio.terminate()
+            stream = audio.open(
+                format=pyaudio.paInt16,
+                channels=device.channels,
+                rate=device.rate,
+                input=True,
+                input_device_index=device.index,
+                frames_per_buffer=DEVICE_CHUNK,
+            )
+            try:
+                deadline = time.time() + seconds
+                while time.time() < deadline:
+                    frames.append(
+                        stream.read(DEVICE_CHUNK, exception_on_overflow=False)
+                    )
+            finally:
+                with contextlib.suppress(Exception):
+                    stream.stop_stream()
+                with contextlib.suppress(Exception):
+                    stream.close()
+        except OSError as exc:
+            raise LocalCaptureError(f"Could not open {device.name}: {exc}") from exc
 
     raw = b"".join(frames)
     samples = np.frombuffer(raw, dtype=np.int16)

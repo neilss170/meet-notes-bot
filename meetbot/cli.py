@@ -333,6 +333,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_llm_flags(serve_parser)
 
+    tray_parser = subparsers.add_parser(
+        "tray",
+        help="Run the web UI with an icon in the notification area.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    tray_parser.add_argument(
+        "--port", type=int, default=8080, help="Port to listen on."
+    )
+    tray_parser.add_argument(
+        "--host", default="127.0.0.1", help="Address to bind. Leave it on loopback."
+    )
+    tray_parser.add_argument(
+        "--open",
+        dest="open_browser",
+        action="store_true",
+        help="Open the UI in your browser once the server is up.",
+    )
+    _add_llm_flags(tray_parser)
+
     launch_parser = subparsers.add_parser(
         "launch",
         help="Start Scribe if it is not already running, and open it.",
@@ -894,6 +913,33 @@ async def _login(
                 await context.close()
 
 
+def _service_config(args: argparse.Namespace) -> tuple[Config, str]:
+    """What a server runs with, and the address it serves at.
+
+    Shared by ``serve`` and ``tray`` so the two cannot disagree about which
+    settings are required or where the page ends up - the second of those
+    being what the notification links and the icon's menu point at.
+
+    Raises:
+        ConfigError: If the environment does not hold enough to serve.
+    """
+    config = _config_from_args(args)
+    # No meeting URL yet - the whole point is that one arrives later, per
+    # request - so only the settings a server needs are checked here.
+    config.validate(require_meeting=False)
+
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        logger.warning(
+            "Binding to %s serves meetbot to the network. Accounts are "
+            "required, but sessions travel as cookies: put TLS in front of "
+            "it, or passwords and session tokens cross the wire in clear.",
+            args.host,
+        )
+
+    host = "127.0.0.1" if args.host == "0.0.0.0" else args.host
+    return config, f"http://{host}:{args.port}"
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Handle ``serve``: run the local web UI until interrupted."""
     try:
@@ -906,24 +952,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     from meetbot.service.app import create_app
 
-    config = _config_from_args(args)
     try:
-        # No meeting URL yet - the whole point is that one arrives later, per
-        # request - so only the settings a server needs are checked here.
-        config.validate(require_meeting=False)
+        config, url = _service_config(args)
     except ConfigError as exc:
         logger.error("%s", exc)
         return EXIT_CONFIG_ERROR
 
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        logger.warning(
-            "Binding to %s serves meetbot to the network. Accounts are "
-            "required, but sessions travel as cookies: put TLS in front of "
-            "it, or passwords and session tokens cross the wire in clear.",
-            args.host,
-        )
-
-    url = f"http://{'127.0.0.1' if args.host == '0.0.0.0' else args.host}:{args.port}"
     logger.info("meetbot is at %s", url)
     logger.info("Recordings: %s", config.output_dir)
 
@@ -1090,6 +1124,87 @@ def cmd_launch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_tray(args: argparse.Namespace) -> int:
+    """Handle ``tray``: serve, and sit in the notification area while doing it.
+
+    This is what the shortcuts run, so it degrades rather than refuses. With
+    no way to draw an icon it serves without one: a Scribe you cannot see is
+    still a Scribe that records the call, and the alternative is a
+    double-clicked shortcut that appears to do nothing at all.
+    """
+    try:
+        import uvicorn  # noqa: F401 - checked here, used by tray.background_server
+    except ImportError:
+        logger.error(
+            "The web UI needs: pip install fastapi uvicorn python-multipart"
+        )
+        return EXIT_CONFIG_ERROR
+
+    from meetbot import tray
+
+    ready, detail = tray.available()
+    if not ready:
+        logger.warning("%s", detail)
+        return cmd_serve(args)
+
+    from meetbot.service.app import create_app
+
+    try:
+        config, url = _service_config(args)
+    except ConfigError as exc:
+        logger.error("%s", exc)
+        return EXIT_CONFIG_ERROR
+
+    logger.info("meetbot is at %s", url)
+    logger.info("Recordings: %s", config.output_dir)
+
+    app = create_app(config, public_url=url)
+    server, thread = tray.background_server(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=(args.log_level or "info").lower(),
+    )
+    # An icon for a server that never came up would be a menu whose every
+    # item fails, so the port is proved before anything is shown.
+    if not desktop.wait_until_running(args.port):
+        logger.error(
+            "Scribe did not answer on port %d within %.0f seconds.",
+            args.port,
+            desktop.START_TIMEOUT_S,
+        )
+        tray.stop_server(server, thread, timeout=5.0)
+        return EXIT_CONFIG_ERROR
+
+    if getattr(args, "open_browser", False):
+        import webbrowser
+
+        webbrowser.open(url)
+
+    def shut_down() -> None:
+        if not tray.stop_server(server, thread):
+            logger.warning(
+                "The server was still finishing after %.0f seconds; closing "
+                "anyway. A write-up may be incomplete.",
+                tray.QUIT_TIMEOUT_S,
+            )
+
+    tray.ScribeTray(
+        app,
+        url=url,
+        on_quit=shut_down,
+        log_path=desktop.project_dir() / desktop.SERVER_LOG,
+        output_dir=Path(config.output_dir),
+    ).run()
+    # Quit shuts the server down itself, but the icon can also end for reasons
+    # nobody asked for - an explorer restart it could not survive. The server
+    # would then still be up on a daemon thread that exiting kills mid-write,
+    # so it is asked to finish either way. Twice is harmless.
+    shut_down()
+    logger.info("Scribe has stopped.")
+    return EXIT_OK
+
+
 def cmd_shortcut(args: argparse.Namespace) -> int:
     """Handle ``shortcut``: an icon, and optionally a start at sign-in."""
     ready, detail = desktop.available()
@@ -1136,6 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
         "format": cmd_format,
         "check": cmd_check,
         "serve": cmd_serve,
+        "tray": cmd_tray,
         "launch": cmd_launch,
         "shortcut": cmd_shortcut,
         "login": cmd_login,

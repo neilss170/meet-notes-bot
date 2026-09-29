@@ -11,6 +11,8 @@ an error anyone would notice.
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -505,3 +507,65 @@ class TestAutoGain:
             assert stats["me"]["peak"] == 0
         finally:
             recorder.stop()
+
+
+class TestPortAudioIsNotAskedTwiceAtOnce:
+    """The crash this serialisation exists for.
+
+    PortAudio reference-counts its initialisation and does not guard the
+    count. Two threads constructing a PyAudio at the same moment faulted the
+    whole process with an access violation - reproduced, before the lock, by
+    opening the page (which asks what devices exist) while something else
+    asked as well. Nothing is caught when that happens: the server is gone,
+    and with it any recording it was making.
+    """
+
+    class _CountingPyAudio:
+        paInt16 = 8
+
+        def __init__(self) -> None:
+            self.live = 0
+            self.overlaps = 0
+            self.constructed = 0
+
+        def PyAudio(self) -> "TestPortAudioIsNotAskedTwiceAtOnce._CountingPyAudio":  # noqa: N802
+            self.constructed += 1
+            self.live += 1
+            if self.live > 1:
+                self.overlaps += 1
+            # Wide enough that unsynchronised threads would collide here.
+            time.sleep(0.02)
+            return self
+
+        def get_host_api_info_by_type(self, _kind: int) -> dict[str, Any]:
+            return {"index": 0, "defaultOutputDevice": 0}
+
+        def get_loopback_device_info_generator(self):
+            return iter(())
+
+        def get_device_count(self) -> int:
+            return 0
+
+        def get_device_info_by_index(self, _index: int) -> dict[str, Any]:
+            return {"name": "Speakers", "maxInputChannels": 0, "hostApi": 0}
+
+        def terminate(self) -> None:
+            time.sleep(0.02)
+            self.live -= 1
+
+    def test_two_threads_asking_at_once_do_not_overlap(self, monkeypatch) -> None:
+        from meetbot.capture import local
+
+        fake = self._CountingPyAudio()
+        monkeypatch.setattr(local, "_pyaudio", lambda: fake)
+
+        threads = [
+            threading.Thread(target=local.capture_available) for _ in range(6)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert fake.constructed == 6, "every caller should have been served"
+        assert fake.overlaps == 0, "two PortAudio initialisations overlapped"
