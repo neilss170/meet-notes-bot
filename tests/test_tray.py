@@ -303,9 +303,20 @@ class TestWhatTheMenuHolds:
 class TestClickingThings:
     @pytest.fixture
     def icon(self, server_loop, monkeypatch, tmp_path: Path):
-        """A tray wired to a fake service, with the browser stubbed out."""
+        """A tray wired to a fake service, with the browser stubbed out.
+
+        Every way of putting a page on screen is stubbed, not only the last
+        one: a test that leaves `browser.open_window` real opens an actual
+        Chrome window on whoever is running the suite.
+        """
         opened: list[str] = []
         monkeypatch.setattr(tray.webbrowser, "open", lambda url: opened.append(url))
+        monkeypatch.setattr(
+            tray.browser, "open_window", lambda url: bool(opened.append(url)) or True
+        )
+        monkeypatch.setattr(tray.browser, "focus_window", lambda: False)
+        monkeypatch.setattr(tray.browser, "app_windows", lambda: [])
+        monkeypatch.setattr(tray.browser, "close_windows", lambda *a, **k: 0)
         manager = FakeManager()
         app = fake_app(manager, loop=server_loop)
         icon = tray.ScribeTray(
@@ -662,3 +673,95 @@ class TestKeepingItVisible:
     def test_nothing_filed_yet_is_not_a_failure(self) -> None:
         """Before Windows has seen the icon there is simply nothing to mark."""
         assert tray.promote(key=r"Software\Scribe Tests\Nothing Here") is False
+
+
+class TestTheWindowItOwns:
+    """Quitting has to take the page with it, and only that page."""
+
+    @pytest.fixture
+    def icon(self, server_loop, monkeypatch, tmp_path: Path):
+        opened: list[str] = []
+        focused: list[bool] = []
+        closed: list[bool] = []
+        monkeypatch.setattr(tray.webbrowser, "open", lambda url: opened.append(url))
+        monkeypatch.setattr(
+            tray.browser, "open_window", lambda url: bool(opened.append(url)) or True
+        )
+        monkeypatch.setattr(tray.browser, "focus_window", lambda: bool(focused))
+        monkeypatch.setattr(tray.browser, "app_windows", lambda: [1] if focused else [])
+        monkeypatch.setattr(
+            tray.browser, "close_windows", lambda *a, **k: closed.append(True) or 1
+        )
+        manager = FakeManager()
+        app = fake_app(manager, loop=server_loop)
+        icon = tray.ScribeTray(
+            app, url="http://127.0.0.1:8080", on_quit=lambda: None, output_dir=tmp_path
+        )
+        icon.app = app  # type: ignore[attr-defined]
+        icon.manager = manager  # type: ignore[attr-defined]
+        icon.opened = opened  # type: ignore[attr-defined]
+        icon.window_open = focused  # type: ignore[attr-defined]
+        icon.closed = closed  # type: ignore[attr-defined]
+        return icon
+
+    def test_it_opens_a_window_of_its_own(self, icon) -> None:
+        """A tab you opened cannot be closed by the server. One Scribe opened
+        can be."""
+        icon.invoke("open")
+        assert icon.opened == ["http://127.0.0.1:8080"]
+
+    def test_a_second_click_raises_the_window_rather_than_duplicating_it(
+        self, icon
+    ) -> None:
+        """The page that is open may have half a sentence in its notepad."""
+        icon.window_open.append(True)
+        icon.invoke("open")
+        assert icon.opened == []
+
+    def test_without_a_browser_it_still_opens_the_page(self, icon, monkeypatch) -> None:
+        fallback: list[str] = []
+        monkeypatch.setattr(tray.browser, "open_window", lambda url: False)
+        monkeypatch.setattr(tray.webbrowser, "open", fallback.append)
+        icon.invoke("open")
+        assert fallback == ["http://127.0.0.1:8080"]
+
+    def test_quitting_closes_the_window_it_opened(self, icon) -> None:
+        icon.quit()
+        assert icon.closed == [True]
+
+    def test_the_window_goes_before_the_server_does(self, icon, monkeypatch) -> None:
+        """Waiting out a write-up with a dead-looking page on screen is worse
+        than the page simply being gone."""
+        order: list[str] = []
+        monkeypatch.setattr(
+            tray.browser, "close_windows", lambda *a, **k: order.append("window") or 1
+        )
+        monkeypatch.setattr(icon, "_on_quit", lambda: order.append("server"))
+        icon.quit()
+        assert order == ["window", "server"]
+
+    def test_a_window_that_will_not_close_does_not_stop_the_quit(
+        self, icon, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            tray.browser,
+            "close_windows",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("no")),
+        )
+        stopped: list[bool] = []
+        monkeypatch.setattr(icon, "_on_quit", lambda: stopped.append(True))
+        icon.quit()
+        assert stopped == [True]
+
+    def test_latest_notes_moves_the_page_that_is_already_open(self, icon) -> None:
+        """Rather than a second window onto the same Scribe."""
+        icon.window_open.append(True)
+        icon.manager.jobs.append(job("done", terminal=True))
+        icon.invoke("latest")
+        assert icon.opened == []
+        assert icon.app.state.focus[0] == "done"
+
+    def test_with_nothing_open_it_opens_on_that_meeting(self, icon) -> None:
+        icon.manager.jobs.append(job("done", terminal=True))
+        icon.invoke("latest")
+        assert icon.opened == ["http://127.0.0.1:8080/?meeting=done"]

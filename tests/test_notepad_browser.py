@@ -457,6 +457,47 @@ class TestTheButtonsTellYouWhereYouAre:
 class TestArrivingFromTheIcon:
     """The notification area's "Latest notes" names the meeting to open."""
 
+    async def test_a_nudge_moves_the_page_that_is_already_open(self, served) -> None:
+        """With a window already open, "Latest notes" should move that page
+        rather than open a second copy of the same Scribe."""
+        from playwright.async_api import async_playwright
+
+        TestFindingAndNamingInTheBrowser._second_meeting(served)
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await page.wait_for_selector(".mtg.on", timeout=30_000)
+                # What the icon does: leave the id where the next poll finds it.
+                served["app"].state.focus = ("other-meeting", time.time())
+                await page.wait_for_function(
+                    "document.querySelector('.mtg.on')"
+                    "?.textContent.includes('Budget planning')",
+                    timeout=30_000,
+                )
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+    async def test_the_page_says_so_when_scribe_quits(self, served) -> None:
+        """Quitting closes the window Scribe opened. A tab somebody opened
+        themselves cannot be closed by script that did not open it, so that
+        one has to say what happened instead of sitting there looking live."""
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                # The server goes away underneath it, as Quit does.
+                await page.route("**/api/**", lambda route: route.abort())
+                # Waited for as an element, not as page text: this page carries
+                # its own script inside <body>, so body.textContent contains
+                # every string the code can print before it prints any of them.
+                await page.wait_for_selector("#stopped-reload", timeout=30_000)
+                assert "Scribe has stopped" in await page.inner_text("#modal-root")
+                assert await page.evaluate("state.stopped") is True
+            finally:
+                await browser.close()
+
     async def test_a_named_meeting_opens_instead_of_the_newest(self, served) -> None:
         """Without this the link lands on whatever is newest, which is never
         what somebody clicking "Latest notes" after a call has just been

@@ -1038,6 +1038,9 @@ const state = {
   health: null,
   meetings: [],
   filter: "",              // what the search box is narrowing the list to
+  gone: 0,                 // consecutive failed polls; two means Scribe quit
+  stopped: false,          // and this page has said so
+  pollTimer: null,
   renaming: false,         // the title is an input right now - leave it alone
   selected: null,          // job id
   detail: null,            // full job payload for `selected`
@@ -2759,7 +2762,14 @@ async function stopMeeting(jobId) {
 async function poll() {
   try {
     const data = await api("/api/meetings");
+    state.gone = 0;
     state.meetings = data.meetings || [];
+    // The notification area asked for a meeting to be shown. It is handed
+    // over once, so acting on it here cannot fight a click somewhere else.
+    if (data.focus && data.focus !== state.selected) {
+      await select(data.focus);
+      return;
+    }
     for (const job of state.meetings) {
       if (["finished", "failed"].includes(job.status)) state.stopping.delete(job.id);
     }
@@ -2790,8 +2800,34 @@ async function poll() {
       catch (_) { /* non-fatal */ }
     }
   } catch (error) {
-    if (!String(error.message).includes("signed out")) console.warn(error);
+    if (String(error.message).includes("signed out")) return;
+    console.warn(error);
+    // Quitting Scribe closes the window it opened itself. A tab you opened
+    // cannot be closed by script that did not open it - so this one says what
+    // happened instead of sitting there looking live.
+    if (++state.gone >= 2) showStopped();
   }
+}
+
+/** The page after Scribe has gone. Nothing here polls or saves. */
+function showStopped() {
+  if (state.stopped) return;
+  state.stopped = true;
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  // Works when Scribe opened this window itself; ignored otherwise, which is
+  // why there is a message underneath it.
+  window.close();
+  const root = $("modal-root");
+  root.innerHTML =
+    '<div class="modal-bg"><div class="modal float" style="text-align:center">' +
+      "<h3>Scribe has stopped</h3>" +
+      '<p class="md-note">This page is no longer live. Start Scribe again from ' +
+      "the Desktop icon, then reload.</p>" +
+      '<div class="row" style="margin-top:16px;justify-content:center">' +
+        '<button class="btn primary sm" id="stopped-reload">Reload</button>' +
+      "</div>" +
+    "</div></div>";
+  $("stopped-reload").addEventListener("click", () => location.reload());
 }
 
 /* ---------------------------------------------------------------- admin */
@@ -2968,7 +3004,7 @@ async function init() {
     });
   }
 
-  setInterval(poll, 2000);
+  state.pollTimer = setInterval(poll, 2000);
   setInterval(advanceThinking, 2600);
 }
 

@@ -1099,10 +1099,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
     This is what the Desktop icon runs, so it has to be safe to press twice.
     A server is already listening more often than not - the second press
-    should show you the page, not fail to bind the port.
+    should show you the page, not fail to bind the port, and not open a second
+    copy of a page you may be typing into either.
     """
-    import webbrowser
-
     url = f"http://127.0.0.1:{args.port}"
     if desktop.is_running(args.port):
         logger.info("Scribe is already running at %s", url)
@@ -1120,8 +1119,24 @@ def cmd_launch(args: argparse.Namespace) -> int:
         logger.info("Scribe is at %s", url)
 
     if not args.no_open:
-        webbrowser.open(url)
+        _show_page(url)
     return EXIT_OK
+
+
+def _show_page(url: str) -> None:
+    """Put Scribe on screen: its own window where that is possible.
+
+    A window of Scribe's own is one the notification area can close again when
+    you quit. A tab in your browser is not - so that is the fallback, not the
+    default. See :mod:`meetbot.browser`.
+    """
+    from meetbot import browser
+
+    if browser.focus_window() or browser.open_window(url):
+        return
+    import webbrowser
+
+    webbrowser.open(url)
 
 
 def cmd_tray(args: argparse.Namespace) -> int:
@@ -1177,9 +1192,7 @@ def cmd_tray(args: argparse.Namespace) -> int:
         return EXIT_CONFIG_ERROR
 
     if getattr(args, "open_browser", False):
-        import webbrowser
-
-        webbrowser.open(url)
+        _show_page(url)
 
     def shut_down() -> None:
         if not tray.stop_server(server, thread):

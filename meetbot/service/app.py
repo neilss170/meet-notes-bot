@@ -117,6 +117,11 @@ HEALTH_STALE_AFTER_S = 300.0
 #: transcript it can reach.
 MAX_TITLE_CHARS = 120
 
+#: How long a "show me this meeting" nudge from the notification area stays
+#: worth acting on. Long enough for a page that is opening to arrive and poll,
+#: short enough that a page opened ten minutes later does not jump.
+FOCUS_TTL_S = 30.0
+
 #: How long shutdown waits for notes that are still being written. Stopping
 #: the service stops any live recording, which starts its write-up - and the
 #: notes for the call somebody has just ended are the ones they are waiting
@@ -265,6 +270,28 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             **job.to_dict(include_progress=include_progress),
             "enhancing": f"{job.id}:enhance" in in_flight,
         }
+
+    def _take_focus(user: User) -> str:
+        """The meeting the icon asked the open page to show, once.
+
+        "Latest notes" in the notification area should land on a page that is
+        already open rather than pile up a second window of the same thing.
+        The icon runs in this process, so it leaves the id here and the next
+        poll carries it away - taken, not read, so a page cannot be dragged
+        back to the same meeting every two seconds.
+
+        Admins only, and only briefly: it is a nudge from whoever is sitting
+        at this machine, and a member signed in from elsewhere should not have
+        their page moved by it.
+        """
+        wanted = getattr(app.state, "focus", None)
+        if not wanted or not user.is_admin:
+            return ""
+        meeting, asked_at = wanted
+        app.state.focus = None
+        if time.time() - asked_at > FOCUS_TTL_S:
+            return ""
+        return str(meeting)
 
     async def _refresh_health() -> Preflight:
         """Re-run the checks and remember the answer."""
@@ -608,6 +635,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             # Progress means reading a file per job; the list view only needs
             # counts, so the detail endpoint does that work instead.
             "meetings": [_payload(job, include_progress=False) for job in mine],
+            "focus": _take_focus(user),
         }
 
     @app.post("/api/meetings", status_code=201)
@@ -1465,11 +1493,15 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     # how the tooltip can say "writing up the standup" rather than going quiet
     # for the twenty seconds a summary takes.
     app.state.in_flight = in_flight
+    #: Set by the notification-area icon to ask the open page to show one
+    #: meeting; ``(job id, time)`` or ``None``.
+    app.state.focus = None
     return app
 
 
 __all__ = [
     "ARTIFACTS",
+    "FOCUS_TTL_S",
     "AskRequest",
     "MuteAppRequest",
     "RecordRequest",
