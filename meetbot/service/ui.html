@@ -2429,9 +2429,20 @@ function renderVoice() {
         : "")
     : esc(voice.detail);
   const heard = voice.heard;
+  // A command that is ignored in silence looks exactly like a microphone that
+  // is not working, so anything heard and not acted on says so, and says
+  // which of the two things went wrong.
   $("voice-heard").innerHTML = heard
     ? `Last heard &ldquo;${esc(heard.text)}&rdquo; ` +
-      `<span class="src">${Math.round((heard.confidence || 0) * 100)}%</span>`
+      `<span class="src">${Math.round((heard.confidence || 0) * 100)}%</span>` +
+      (heard.acted === false
+        ? `<br><span class="hint bad" style="padding:0;margin:0">` +
+          (heard.known
+            ? "Understood, but not confidently enough to act on it. " +
+              "Say it again, a little slower."
+            : "That is not one of the phrases above.") +
+          "</span>"
+        : "")
     : "";
 }
 
