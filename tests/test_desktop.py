@@ -178,7 +178,130 @@ class TestShortcuts:
         assert desktop.remove() == []
 
 
+def _pixels(image):
+    """Every RGBA pixel of an image, as four-byte tuples."""
+    raw = image.convert("RGBA").tobytes()
+    return [tuple(raw[at:at + 4]) for at in range(0, len(raw), 4)]
+
+
+def _difference(one, other) -> int:
+    """Total channel-by-channel difference between two same-sized images."""
+    return sum(
+        abs(a - b)
+        for left, right in zip(_pixels(one), _pixels(other))
+        for a, b in zip(left, right)
+    )
+
+
+def _tile_colour(image) -> tuple[int, int, int]:
+    """The colour most of an icon is - the tile, not the mark drawn on it."""
+    counts: dict[tuple[int, int, int], int] = {}
+    for pixel in _pixels(image):
+        if pixel[3] < 250:
+            continue
+        counts[pixel[:3]] = counts.get(pixel[:3], 0) + 1
+    return max(counts, key=lambda colour: counts[colour])
+
+
 class TestTheIcon:
+    def test_the_icon_is_the_spiral_the_page_draws(self) -> None:
+        """The claim the old docstring made and the code did not keep.
+
+        It said "the mark is the one the page uses" while drawing four strokes
+        through a centre, and the page had moved to a spiral - so the shortcut
+        and the window it opened wore different marks. The page's spiral is an
+        SVG mask baked into the stylesheet and the icon's is arithmetic in
+        Pillow, which means nothing stops them drifting apart again except
+        this: the curve behind the mask is measured back out of the CSS and
+        checked against the numbers the icon is drawn from.
+        """
+        import math
+        import re
+        import urllib.parse
+
+        page = Path(desktop.__file__).parent / "service" / "ui.html"
+        css = page.read_text(encoding="utf-8")
+        found = re.search(r"-webkit-mask: url\(\"(data:image/svg\+xml,[^\"]+)\"", css)
+        assert found, "the page no longer draws its mark with an SVG mask"
+        svg = urllib.parse.unquote(found.group(1).split(",", 1)[1])
+
+        box = re.search(r"viewBox='0 0 (\d+) (\d+)'", svg)
+        assert box and box.group(1) == box.group(2), "the mark's box is not square"
+        side = float(box.group(1))
+
+        stroke = re.search(r"stroke-width='([\d.]+)'", svg)
+        assert stroke, "the mask has no stroke to measure"
+        assert desktop.SPIRAL_STROKE == pytest.approx(
+            float(stroke.group(1)) / side, abs=0.002
+        ), "the icon's stroke is not the page's stroke"
+
+        path = re.search(r"d='([^']+)'", svg)
+        assert path, "the mask has no path"
+        points = [
+            (float(x), float(y))
+            for x, y in re.findall(r"([\d.]+),([\d.]+)", path.group(1))
+        ]
+        assert len(points) > 20, "too few points to be a curve"
+
+        # Unroll the path into (angle travelled, radius) about the centre.
+        centre = side / 2
+        travelled = 0.0
+        previous = None
+        polar = []
+        for x, y in points:
+            dx, dy = x - centre, y - centre
+            angle = math.atan2(dy, dx)
+            if previous is not None:
+                step = angle - previous
+                # Across the -pi/+pi seam, take the short way round.
+                while step <= -math.pi:
+                    step += 2 * math.pi
+                while step > math.pi:
+                    step -= 2 * math.pi
+                travelled += step
+            previous = angle
+            polar.append((travelled, math.hypot(dx, dy)))
+
+        # It leaves the centre straight up, which is where the icon starts it.
+        assert math.degrees(math.atan2(points[0][1] - centre, points[0][0] - centre)) \
+            == pytest.approx(-90.0, abs=1.0)
+
+        turns = polar[-1][0] / (2 * math.pi)
+        assert desktop.SPIRAL_TURNS == pytest.approx(turns, abs=0.02), (
+            f"the page turns {turns:.2f} times, the icon {desktop.SPIRAL_TURNS}"
+        )
+
+        # r = r0 + growth * phi, the whole way along, in the page's own units.
+        for phi, radius in polar:
+            expected = (
+                desktop.SPIRAL_R0 + desktop.SPIRAL_GROWTH * phi
+            ) * side
+            assert radius == pytest.approx(expected, abs=0.05), (
+                f"at {phi:.2f} rad the page is at {radius:.3f} and the icon "
+                f"would be at {expected:.3f}"
+            )
+
+    def test_the_mark_is_the_same_size_in_every_tile(self) -> None:
+        """Dropping the outer turn must not shrink the mark.
+
+        Small sizes draw fewer turns because there is no room for the gaps
+        between them, and a spiral cut short is a shorter curve - so a single
+        fixed scale drew the 16-pixel mark smaller inside its tile than the
+        256-pixel one, which is backwards. Both reach the same edge now.
+        """
+        pytest.importorskip("PIL", reason="Pillow is not installed")
+        small = desktop.spiral_turns(16)
+        large = desktop.spiral_turns(256)
+        assert small < large, "small sizes should be giving up detail"
+
+        def reach(turns: float) -> float:
+            fit = desktop.spiral_fit(turns)
+            outer = desktop.SPIRAL_R0 + desktop.SPIRAL_GROWTH * 2 * 3.141592653589793 * turns
+            return 2 * (outer + desktop.SPIRAL_STROKE / 2) * fit
+
+        assert reach(small) == pytest.approx(desktop.SPIRAL_REACH, abs=0.001)
+        assert reach(large) == pytest.approx(desktop.SPIRAL_REACH, abs=0.001)
+
     def test_it_writes_a_real_icon_file(self, tmp_path) -> None:
         pytest.importorskip("PIL", reason="Pillow is not installed")
         path = tmp_path / "scribe.ico"
@@ -188,6 +311,34 @@ class TestTheIcon:
         # The ICO header: reserved 0, type 1 (icon), then the image count.
         assert path.read_bytes()[:4] == b"\x00\x00\x01\x00"
         assert path.stat().st_size > 500
+
+    def test_the_small_entries_are_drawn_small_not_shrunk(self, tmp_path) -> None:
+        """The last step where the small drawing can be thrown away.
+
+        Handing Pillow one 256-pixel image and a list of sizes looks like it
+        writes those sizes and does not - it resamples the big one. So the
+        16-pixel entry was a squashed two-and-a-third-turn spiral: the exact
+        smudge the reduced-turn drawing exists to avoid, reintroduced after
+        all the work to avoid it, somewhere nothing was looking.
+        """
+        pytest.importorskip("PIL", reason="Pillow is not installed")
+        from PIL import Image, IcoImagePlugin
+
+        path = tmp_path / "scribe.ico"
+        assert desktop.write_icon(path) is True
+
+        with path.open("rb") as handle:
+            inside = IcoImagePlugin.IcoFile(handle).getimage((16, 16)).convert("RGBA")
+
+        drawn = desktop.spark_image(16)
+        shrunk = desktop.spark_image(256).resize((16, 16), Image.LANCZOS)
+        assert drawn is not None and shrunk is not None
+
+        assert _difference(inside, drawn) == 0, "the entry is not the 16-pixel drawing"
+        assert _difference(inside, shrunk) > 0, (
+            "a 16-pixel drawing and a shrunken 256 should not be the same image; "
+            "either the reduced-turn rule is gone or nothing is being drawn"
+        )
 
     def test_it_reads_at_the_size_the_notification_area_asks_for(self) -> None:
         """16 pixels is what Windows gives a tray icon on a 1080p display."""
@@ -202,17 +353,24 @@ class TestTheIcon:
     def test_recording_turns_the_whole_tile_red(self) -> None:
         """A dot in the corner of a 16-pixel icon is a grey smudge. The tile
         itself changes, so it can be told apart at a glance in a row of
-        monochrome system icons."""
+        monochrome system icons.
+
+        Asserted on the colour the tile mostly is, rather than on one pixel
+        that ought to be tile: an earlier version of this sampled a point that
+        the mark did not reach, and then the mark grew.
+        """
         pytest.importorskip("PIL", reason="Pillow is not installed")
         idle = desktop.spark_image(32)
         live = desktop.spark_image(32, recording=True)
         assert idle is not None and live is not None
         assert idle.tobytes() != live.tobytes()
-        # The tile behind the mark, a few pixels in from the top edge.
-        live_tile = live.getpixel((16, 4))
-        idle_tile = idle.getpixel((16, 4))
-        assert live_tile[0] > 200 and live_tile[1] < 120, "the tile is not red"
-        assert max(idle_tile[:3]) < 60, "the idle tile is no longer dark"
+
+        live_tile = _tile_colour(live)
+        idle_tile = _tile_colour(idle)
+        assert live_tile[0] > 200 and live_tile[1] < 120, (
+            f"the tile is not red, it is {live_tile}"
+        )
+        assert max(idle_tile) < 60, f"the idle tile is no longer dark: {idle_tile}"
 
     def test_a_missing_pillow_is_not_fatal(self, monkeypatch, tmp_path) -> None:
         """No icon is a plain-looking shortcut, not a failed install."""
