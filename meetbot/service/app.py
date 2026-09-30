@@ -423,19 +423,20 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     def _voice_heard(command: VoiceCommand) -> None:
         """Take a command off the listener's thread and onto the loop."""
         app.state.voice_heard = {
-            **command.to_dict(), "at": time.time(), "acted": True, "known": True,
+            **command.to_dict(), "at": time.time(), "acted": True, "reason": "",
         }
         loop = getattr(app.state, "loop", None)
         if loop is None:
             return
         asyncio.run_coroutine_threadsafe(_voice_act(command), loop)
 
-    def _voice_unsure(said: str, sure: float, known: bool) -> None:
-        """Show what was heard and not acted on.
+    def _voice_unsure(said: str, sure: float, reason: str) -> None:
+        """Show what was heard and not acted on, and what to do about it.
 
         Nothing is done with it - that is the point. It goes on screen beside
-        the phrases so somebody saying a command that keeps being dropped can
-        see whether Scribe misheard the words or simply was not sure enough.
+        the phrases, so somebody whose commands keep being dropped can see
+        that Scribe is hearing them at all, and which of several different
+        things went wrong.
         """
         app.state.voice_heard = {
             "kind": "",
@@ -444,7 +445,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             "title": "",
             "at": time.time(),
             "acted": False,
-            "known": known,
+            "reason": reason,
         }
 
     voice = VoiceListener(_voice_heard, on_unsure=_voice_unsure)
