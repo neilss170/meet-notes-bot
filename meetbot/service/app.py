@@ -422,13 +422,32 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
 
     def _voice_heard(command: VoiceCommand) -> None:
         """Take a command off the listener's thread and onto the loop."""
-        app.state.voice_heard = {**command.to_dict(), "at": time.time()}
+        app.state.voice_heard = {
+            **command.to_dict(), "at": time.time(), "acted": True, "known": True,
+        }
         loop = getattr(app.state, "loop", None)
         if loop is None:
             return
         asyncio.run_coroutine_threadsafe(_voice_act(command), loop)
 
-    voice = VoiceListener(_voice_heard)
+    def _voice_unsure(said: str, sure: float, known: bool) -> None:
+        """Show what was heard and not acted on.
+
+        Nothing is done with it - that is the point. It goes on screen beside
+        the phrases so somebody saying a command that keeps being dropped can
+        see whether Scribe misheard the words or simply was not sure enough.
+        """
+        app.state.voice_heard = {
+            "kind": "",
+            "text": said,
+            "confidence": round(sure, 3),
+            "title": "",
+            "at": time.time(),
+            "acted": False,
+            "known": known,
+        }
+
+    voice = VoiceListener(_voice_heard, on_unsure=_voice_unsure)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

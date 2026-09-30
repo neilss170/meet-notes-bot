@@ -62,6 +62,11 @@ WAKE_WORD = "scribe"
 #: and "say it again" is the cheap one.
 MIN_CONFIDENCE = 0.7
 
+#: Below this, a recognition is the room rather than somebody talking to
+#: Scribe, and saying so would fill the panel with chatter. Between this and
+#: MIN_CONFIDENCE is the interesting band: heard, understood, not acted on.
+MIN_REPORT = 0.3
+
 #: Every phrase the recogniser may hear, and what each one means. Whole
 #: phrases rather than parts assembled at runtime: the engine is handed
 #: exactly these strings, and a list it can enumerate is what makes it work
@@ -275,6 +280,7 @@ class VoiceListener:
         self,
         on_command: Callable[[VoiceCommand], None],
         *,
+        on_unsure: Callable[[str, float, bool], None] | None = None,
         spawn: Callable[[], Any] | None = None,
         min_confidence: float = MIN_CONFIDENCE,
         wave_file: str = "",
@@ -283,6 +289,11 @@ class VoiceListener:
 
         Args:
             on_command: Called with each understood command.
+            on_unsure: Called with what was heard but not acted on - the text,
+                the confidence, and whether it was one of our phrases at all.
+                Without this a rejected command is indistinguishable from a
+                dead microphone, which is the most confusing way for voice
+                control to fail.
             spawn: Starts the recogniser process. Replaced in tests, which
                 have no microphone and must not wait on one.
             min_confidence: Below this, a match is discarded as mishearing.
@@ -291,6 +302,7 @@ class VoiceListener:
                 without anybody speaking.
         """
         self._on_command = on_command
+        self._on_unsure = on_unsure
         self._wave_file = wave_file
         self._spawn = spawn or self._spawn_recogniser
         self._min_confidence = min_confidence
@@ -385,6 +397,28 @@ class VoiceListener:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
+    def _report_unsure(self, said: str, sure: float) -> None:
+        """Say what was heard and not acted on, and why.
+
+        Two different failures look identical from the room: a phrase the
+        engine understood but was not confident enough about, and a phrase
+        that is not a command at all. Both are worth showing, and they need
+        different advice - say it again, or say something else.
+        """
+        if not said.strip() or sure < MIN_REPORT:
+            return
+        known = command_of(said, 1.0) is not None
+        logger.info(
+            "Heard %r (%.2f) but did not act: %s",
+            said,
+            sure,
+            "below the confidence floor" if known else "not a command",
+        )
+        if self._on_unsure is None:
+            return
+        with contextlib.suppress(Exception):
+            self._on_unsure(said, sure, known)
+
     def _read(self) -> None:
         """Read recognitions until the process ends."""
         process = self._process
@@ -404,11 +438,11 @@ class VoiceListener:
             if record.get("ready"):
                 self._ready.set()
                 continue
-            command = command_of(
-                str(record.get("text", "")),
-                float(record.get("confidence", 0.0) or 0.0),
-            )
+            said = str(record.get("text", ""))
+            sure = float(record.get("confidence", 0.0) or 0.0)
+            command = command_of(said, sure)
             if command is None:
+                self._report_unsure(said, sure)
                 continue
             logger.info(
                 "Heard %r (%.2f) -> %s",

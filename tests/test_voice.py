@@ -147,6 +147,41 @@ class TestTheListener:
         ])
         assert heard == []
 
+    def test_what_it_throws_away_is_still_reported(self) -> None:
+        """Silence is the worst way for this to fail.
+
+        A command dropped for low confidence and a microphone that is not
+        working look exactly the same from across the room. So anything heard
+        and not acted on is handed over separately, with the one fact that
+        decides what to do about it: whether Scribe knew the phrase and was
+        unsure, or simply does not have that phrase.
+        """
+        heard: list = []
+        unsure: list = []
+        process = _FakeRecogniser([
+            READY,
+            # Understood, but under the floor: say it again.
+            _said("scribe start recording", 0.55),
+            # Confident and meaningless: say something else.
+            _said("the budget is capped at forty thousand", 0.99),
+            # Quiet enough to be the room rather than a person.
+            _said("scribe stop", 0.05),
+        ])
+        listener = VoiceListener(
+            heard.append,
+            on_unsure=lambda said, sure, known: unsure.append((said, sure, known)),
+            spawn=lambda: process,
+        )
+        assert listener.start() is True
+        assert process.drained.wait(5), "the recogniser was never read"
+
+        assert heard == [], "none of these should have been obeyed"
+        assert [(said, known) for said, _sure, known in unsure] == [
+            ("scribe start recording", True),
+            ("the budget is capped at forty thousand", False),
+        ], "the near miss and the non-command should both be reported, the room should not"
+        listener.stop()
+
     def test_it_does_not_claim_to_listen_before_the_microphone_opens(
         self, monkeypatch
     ) -> None:
