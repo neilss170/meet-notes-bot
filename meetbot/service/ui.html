@@ -959,6 +959,15 @@
     margin: 0 0 4px; font-family: var(--serif); font-size: 22px; font-weight: 400;
     letter-spacing: -0.01em;
   }
+  /* One row per thing you can take away: what it is on the left, the two
+     ways to take it on the right. */
+  .exp-row {
+    display: flex; align-items: center; gap: 10px; padding: 11px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .exp-what { flex: 1 1 auto; min-width: 0; }
+  .exp-what b { display: block; font-size: 13.5px; font-weight: 500; }
+  .exp-what span { font-size: 11.5px; color: var(--faint); }
   .user-row {
     display: flex; align-items: center; gap: 10px; padding: 11px 0;
     border-bottom: 1px solid var(--line); font-size: 13.5px;
@@ -1616,6 +1625,11 @@ function renderMain() {
             `${esc(meetingName(job))}</h2>` +
           `<span class="pill ${tone}">${esc(label)}</span>` +
           '<span class="grow"></span>' +
+          // Copy is the thing people want nine times in ten, so it is one
+          // click and not buried in the sheet behind it.
+          '<button class="btn sm ghost" id="copy" ' +
+            'title="Copy the write-up as Markdown">Copy</button>' +
+          '<button class="btn sm ghost" id="export">Export</button>' +
           (live
             ? `<button class="btn sm danger" id="stop"${state.stopping.has(job.id) ? " disabled" : ""}>` +
               `${state.stopping.has(job.id) ? "Stopping&hellip;" : "Stop &amp; write notes"}</button>`
@@ -1656,6 +1670,10 @@ function renderMain() {
     if (heading) heading.addEventListener("click", startRename);
     const remove = $("del");
     if (remove) remove.addEventListener("click", () => confirmDelete(job));
+    const quick = $("copy");
+    if (quick) quick.addEventListener("click", () => copyNotes(job, quick));
+    const sheet = $("export");
+    if (sheet) sheet.addEventListener("click", () => openExport(job));
 
     // The pane is new, so whatever was painted into it is gone.
     state.sig.enhanced = state.sig.transcript = state.sig.chat = "";
@@ -2795,6 +2813,235 @@ function startRename() {
   // Clicking away commits, the way the notepad saves - losing a rename to a
   // stray click would be a small, avoidable annoyance.
   box.addEventListener("blur", () => finish(true));
+}
+
+/* ---------------------------------------------------------------- export */
+
+/* Nothing here asks the server for anything it has not already written, and
+   nothing leaves this machine. The notes are in the notepad the page is
+   already holding; the transcript and the summary are files on disk, fetched
+   only when somebody asks for them. Markdown because it is the one format
+   that pastes into Slack, Notion, a doc or a mail with its headings intact. */
+
+const ARTIFACT_OF = { transcript: "transcript.md", summary: "analysis.md" };
+
+/** Which of the four choices this meeting can actually offer. */
+const hasPiece = (job, what) =>
+  what === "transcript" ? !!job.has_transcript
+  : what === "summary" ? !!job.has_summary
+  : true;
+
+const stamped = (epoch) => epoch
+  ? new Date(epoch * 1000).toLocaleString([], {
+      weekday: "short", day: "numeric", month: "short", year: "numeric",
+      hour: "numeric", minute: "2-digit",
+    })
+  : "";
+
+/** A filename that sorts by date and says what it is without being opened. */
+function exportName(job, what) {
+  const when = new Date((job.created_at || 0) * 1000);
+  const pad2 = (n) => String(n).padStart(2, "0");
+  const day = job.created_at
+    ? `${when.getFullYear()}-${pad2(when.getMonth() + 1)}-${pad2(when.getDate())}-`
+    : "";
+  const name = meetingName(job).toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "meeting";
+  return `${day}${name}${what === "notes" ? "" : "-" + what}.md`;
+}
+
+/** The heading every export opens with, so a pasted note carries its own
+    provenance: which meeting, when, how long, and where it was recorded. */
+function exportHead(job, label) {
+  const where = job.kind === "local"
+    ? "recorded on this machine" : "recorded from the call";
+  return `# ${meetingName(job)}${label ? " — " + label : ""}\n\n` +
+    `*${stamped(job.created_at)} · ${mmss(job.elapsed_s)} · ${where}*\n`;
+}
+
+/* An artifact carries its own "# Meeting Transcript" heading, which names the
+   document rather than the meeting. Ours names the meeting, so theirs goes. */
+const dropTopHeading = (body) => String(body || "").replace(/^\s*#\s+[^\n]*\n+/, "");
+
+/* A notepad is a column of fragments, and Markdown folds consecutive lines
+   into one paragraph - which would glue "priya -> migration fri" onto the end
+   of the line above it. Two trailing spaces is the hard line break: invisible
+   in the source and understood everywhere these notes might be pasted. */
+const keepLineBreaks = (body) => String(body).split("\n")
+  .map((line) => (line.trim() ? line.replace(/\s+$/, "") + "  " : ""))
+  .join("\n").replace(/\s+$/, "");
+
+/** Everything the page already holds for this meeting, as one document.
+
+    The enhanced write-up is not wrapped in a heading of its own: it arrives
+    with "## Summary" and "## Action items" already on it, so a "## Notes"
+    above that is a heading with nothing under it. It *is* the document. What
+    was typed during the call follows it, kept rather than thrown away, under
+    the one heading that says which of the two you are looking at. */
+function notesMarkdown(job) {
+  const pad = state.pad || {};
+  const enhanced = String(pad.enhanced || "").trim();
+  const raw = String(pad.notes || "").trim();
+  const parts = [exportHead(job)];
+  if (enhanced) parts.push("\n" + enhanced + "\n");
+  if (raw) {
+    parts.push(`\n## ${enhanced ? "What I typed" : "Notes"}\n\n` +
+      `${keepLineBreaks(raw)}\n`);
+  }
+  if (!enhanced && !raw) parts.push("\n*No notes were written for this meeting.*\n");
+  return parts.join("");
+}
+
+/* "Summary" rather than "Call summary" on its own, where the H1 already
+   names the meeting - but inside Everything the write-up usually has a
+   "## Summary" section of its own, and two identical headings in one document
+   is somebody's bad afternoon. */
+const PIECE_NAME = { transcript: "Transcript", summary: "Summary" };
+const PIECE_HEAD = { transcript: "Transcript", summary: "Call summary" };
+
+/** The text behind one choice. Artifacts are fetched, notes are not. */
+async function exportText(job, what) {
+  if (what === "notes") return notesMarkdown(job);
+  if (what === "all") {
+    const parts = [notesMarkdown(job)];
+    for (const piece of ["summary", "transcript"]) {
+      if (!hasPiece(job, piece)) continue;
+      const body = await api(`/api/meetings/${job.id}/artifact/${ARTIFACT_OF[piece]}`);
+      parts.push(`\n## ${PIECE_HEAD[piece]}\n\n${dropTopHeading(body).trim()}\n`);
+    }
+    return parts.join("");
+  }
+  const body = await api(`/api/meetings/${job.id}/artifact/${ARTIFACT_OF[what]}`);
+  return `${exportHead(job, PIECE_NAME[what])}\n${dropTopHeading(body).trim()}\n`;
+}
+
+/** Put text on the clipboard.
+
+    `navigator.clipboard` needs a secure context. 127.0.0.1 is one, so the
+    normal path works - but Scribe can be reached over the network, where it
+    is not, and a dead Copy button is worse than a slightly odd one. Hence
+    the old selection trick underneath. */
+async function toClipboard(body) {
+  try {
+    await navigator.clipboard.writeText(body);
+    return true;
+  } catch (error) {
+    const box = document.createElement("textarea");
+    box.value = body;
+    box.setAttribute("readonly", "");
+    box.style.cssText = "position:fixed;top:-1000px;opacity:0";
+    document.body.appendChild(box);
+    box.select();
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch (ignored) { copied = false; }
+    box.remove();
+    return copied;
+  }
+}
+
+/** Hand the browser a file, built here out of text the page already has. */
+function toFile(name, body) {
+  const url = URL.createObjectURL(
+    new Blob([body], { type: "text/markdown;charset=utf-8" })
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoking straight away cancels the download in some builds.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** Say it worked on the button that was pressed - a toast in another corner
+    of the screen is one more thing to go looking for. */
+function flash(button, word) {
+  if (button.dataset.was === undefined) button.dataset.was = button.innerHTML;
+  button.innerHTML = word;
+  button.classList.add("on");
+  clearTimeout(button._flash);
+  button._flash = setTimeout(() => {
+    button.innerHTML = button.dataset.was;
+    button.classList.remove("on");
+  }, 1600);
+}
+
+const NO_CLIPBOARD =
+  "This browser would not give up the clipboard. Download the file instead.";
+
+/** The one-click path in the header: the write-up, on the clipboard. */
+async function copyNotes(job, button) {
+  try {
+    const ok = await toClipboard(await exportText(job, "notes"));
+    if (ok) flash(button, "Copied");
+    else showError(NO_CLIPBOARD);
+  } catch (error) {
+    showError(error.message);
+  }
+}
+
+const PIECES = [
+  ["notes", "Notes", "The write-up, and anything you typed during the call"],
+  ["transcript", "Transcript", "Every line, with who said it and when"],
+  ["summary", "Summary", "The summary written when the recording stopped"],
+  ["all", "Everything", "One file: notes, summary and transcript"],
+];
+
+/** Every way this meeting can leave Scribe. */
+function openExport(job) {
+  const root = $("modal-root");
+  const close = () => { root.innerHTML = ""; };
+  const offered = PIECES.filter(([what]) => hasPiece(job, what));
+
+  root.innerHTML =
+    '<div class="modal-bg"><div class="modal float">' +
+      "<h3>Take this meeting with you</h3>" +
+      '<p class="md-note" style="margin:6px 0 16px">' +
+        `<strong>${esc(meetingName(job))}</strong> &mdash; as Markdown, which ` +
+        "pastes into Slack, Notion, a doc or an email with its headings " +
+        "intact. Nothing is uploaded; the file is built in this window.</p>" +
+      offered.map(([what, name, blurb]) =>
+        '<div class="exp-row">' +
+          `<span class="exp-what"><b>${name}</b><span>${blurb}</span></span>` +
+          `<button class="btn sm ghost" data-copy="${what}">Copy</button>` +
+          `<button class="btn sm ghost" data-file="${what}">Download</button>` +
+        "</div>").join("") +
+      '<div class="err" id="exp-error" hidden></div>' +
+      '<div class="row" style="margin-top:18px;justify-content:flex-end">' +
+        '<button class="btn ghost sm" id="exp-done">Done</button>' +
+      "</div>" +
+    "</div></div>";
+
+  $("exp-done").addEventListener("click", close);
+  root.querySelector(".modal-bg").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) close();
+  });
+
+  const fail = (message) => {
+    const box = $("exp-error");
+    box.textContent = message;
+    box.hidden = false;
+  };
+
+  root.querySelectorAll("[data-copy]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        const ok = await toClipboard(await exportText(job, button.dataset.copy));
+        if (ok) flash(button, "Copied");
+        else fail(NO_CLIPBOARD);
+      } catch (error) { fail(error.message); }
+    });
+  });
+  root.querySelectorAll("[data-file]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const what = button.dataset.file;
+      try {
+        toFile(exportName(job, what), await exportText(job, what));
+        flash(button, "Saved");
+      } catch (error) { fail(error.message); }
+    });
+  });
 }
 
 /** Ask before deleting a meeting, and say plainly what goes with it. */
