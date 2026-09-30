@@ -175,21 +175,89 @@ def start_detached(port: int, *, command: str = "tray") -> Path:
     return log_path
 
 
-def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
-    """Draw the spark at *size* pixels. ``None`` if Pillow is not installed.
+#: The mark, measured off the spiral the page draws: an Archimedean curve in
+#: a 24-unit box, ``r = 1.15 + 0.5384 * phi``, leaving the centre straight up
+#: and turning for two and a third turns. Held as fractions of the icon's
+#: side so one drawing serves 16 pixels and 256, and kept here in numbers
+#: rather than as a copied path so a test can check it against the page.
+SPIRAL_R0 = 1.15 / 24
+SPIRAL_GROWTH = 0.5384 / 24
+SPIRAL_STROKE = 2.5 / 24
+SPIRAL_TURNS = 2.35
 
-    The mark is the one the page uses - four strokes through a centre, in the
-    same orange - because a shortcut carrying the stock Python icon looks like
-    somebody's script rather than a thing you use.
+#: How wide the mark sits in its tile, edge to edge of the curve including
+#: the stroke. The mark this replaced reached 0.80, and matching it keeps the
+#: two the same weight beside other icons on a shelf.
+SPIRAL_REACH = 0.80
+
+#: Below this many pixels the gap between neighbouring turns is thinner than
+#: one pixel, and the whole mark greys into a smudge. The outer turn is
+#: dropped instead: the same curve, cut short. Carrying different artwork at
+#: different sizes is what an .ico's separate entries are for.
+SPIRAL_SMALL_PX = 32
+SPIRAL_SMALL_TURNS = 1.35
+
+#: Pillow draws hard pixels, and a one-pixel stroke with a sub-pixel gap
+#: beside it either closes or does not - which is how the first attempt at
+#: this produced an orange blob. Drawing eight times over and shrinking gives
+#: the anti-aliasing the browser does for free.
+_SUPERSAMPLE = 8
+
+
+def spiral_fit(turns: float) -> float:
+    """Scale that puts *turns* turns' outer edge at :data:`SPIRAL_REACH`.
+
+    Fewer turns is a shorter curve, so one fixed scale would draw the small
+    sizes' mark *smaller* inside the same tile - which is backwards, because
+    a 16-pixel icon needs to fill more of its tile than a 256-pixel one, not
+    less. Scaling by the turns actually drawn keeps the mark one size at every
+    size and lets only the amount of detail change.
+    """
+    extent = SPIRAL_R0 + SPIRAL_GROWTH * 2 * math.pi * turns + SPIRAL_STROKE / 2
+    return (SPIRAL_REACH / 2) / extent
+
+
+def spiral_turns(size: int) -> float:
+    """How much of the curve there is room to draw at *size* pixels."""
+    return SPIRAL_TURNS if size >= SPIRAL_SMALL_PX else SPIRAL_SMALL_TURNS
+
+
+def spiral_points(size: float, turns: float) -> list[tuple[float, float]]:
+    """The spiral, sampled densely enough to draw as a smooth stroke."""
+    centre = size / 2
+    fit = spiral_fit(turns)
+    sweep = turns * 2 * math.pi
+    steps = max(256, int(size))
+    points = []
+    for step in range(steps + 1):
+        phi = sweep * step / steps
+        radius = (SPIRAL_R0 + SPIRAL_GROWTH * phi) * size * fit
+        # Straight up out of the centre, then round, matching the page.
+        angle = phi - math.pi / 2
+        points.append(
+            (centre + math.cos(angle) * radius, centre + math.sin(angle) * radius)
+        )
+    return points
+
+
+def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
+    """Draw the mark at *size* pixels. ``None`` if Pillow is not installed.
+
+    The shape is the one the page wears: a spiral, which is Scribe's logo and
+    also the thing that turns while Scribe is working. A shortcut carrying
+    the stock Python icon looks like somebody's script rather than a thing you
+    use, and a shortcut carrying a *different* mark from the window it opens
+    is worse - it looks like two products.
 
     Args:
-        size: Side length in pixels. Every measurement below is a fraction of
-            it, so the same drawing reads at 16 pixels in the notification
-            area and at 256 in a shortcut.
+        size: Side length in pixels. Every measurement is a fraction of it,
+            so the same drawing serves the notification area and a 256-pixel
+            shortcut - though below :data:`SPIRAL_SMALL_PX` the curve gives up
+            its outer turn, which there is no room to draw.
         recording: Draw it as a red tile with the mark cut out of it. The
             notification area gets 16 pixels to work with, which is too few
             for a badge in a corner and too few to tell one dark tile from
-            another by the colour of four thin strokes - so the whole tile
+            another by the colour of a thin stroke - so the whole tile
             changes. Beside a row of monochrome system glyphs it is the only
             red thing on the taskbar, which is what "you are being recorded"
             should look like.
@@ -202,36 +270,61 @@ def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
     ink = (18, 19, 26, 255)
     red = (229, 72, 77, 255)
     spark, back = (ink, red) if recording else ((226, 112, 58, 255), ink)
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+
+    big = size * _SUPERSAMPLE
+    image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
-        [0, 0, size - 1, size - 1], radius=max(2, round(size * 0.227)), fill=back
+        [0, 0, big - 1, big - 1], radius=max(2, round(big * 0.227)), fill=back
     )
 
-    centre = size / 2
-    reach = size * 0.30
-    hub = size * 0.082
-    eye = size * 0.043
-    for degrees in (0, 45, 90, 135):
-        angle = math.radians(degrees)
-        dx, dy = math.cos(angle) * reach, math.sin(angle) * reach
-        draw.line(
-            [(centre - dx, centre - dy), (centre + dx, centre + dy)],
-            fill=spark,
-            width=max(1, round(size * 0.059)),
-        )
-    draw.ellipse([centre - hub, centre - hub, centre + hub, centre + hub], fill=back)
-    draw.ellipse([centre - eye, centre - eye, centre + eye, centre + eye], fill=spark)
-    return image
+    turns = spiral_turns(size)
+    points = spiral_points(big, turns)
+    width = max(1, round(big * SPIRAL_STROKE * spiral_fit(turns)))
+    # A round brush dragged along the curve. draw.line's own joints leave
+    # nicks along the outside of a tight bend at this scale; overlapping
+    # circles cannot, and they give the round ends for nothing.
+    radius = width / 2
+    step = max(1.0, width / 6)
+    carried = step
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        span = math.hypot(x1 - x0, y1 - y0)
+        draw.line([(x0, y0), (x1, y1)], fill=spark, width=width)
+        carried += span
+        if carried >= step:
+            carried = 0.0
+            draw.ellipse([x0 - radius, y0 - radius, x0 + radius, y0 + radius], fill=spark)
+    for x, y in (points[0], points[-1]):
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=spark)
+    return image.resize((size, size), Image.LANCZOS)
+
+
+#: What goes in the .ico, largest first. 256 is the one File Explorer shows
+#: at its biggest zoom, 48 is a Desktop icon, 32 a taskbar button and 16 a
+#: list row.
+ICO_SIZES = (256, 48, 32, 16)
 
 
 def write_icon(path: Path) -> bool:
-    """Save the spark as a Windows ``.ico``. ``False`` without Pillow."""
-    image = spark_image(256)
-    if image is None:
+    """Save the mark as a Windows ``.ico``. ``False`` without Pillow.
+
+    Every size is drawn at that size rather than shrunk from the big one.
+    Handing Pillow a single 256-pixel image and a list of sizes looks like it
+    does the same thing and does not: it resamples, so the 16-pixel entry
+    came out as a squashed two-and-a-third-turn spiral - exactly the smudge
+    that :data:`SPIRAL_SMALL_PX` exists to avoid, quietly reintroduced at the
+    last step. An .ico holds independent images for this reason.
+    """
+    drawn = [spark_image(size) for size in ICO_SIZES]
+    if any(image is None for image in drawn):
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path, sizes=[(256, 256), (48, 48), (32, 32), (16, 16)])
+    biggest, *rest = drawn
+    biggest.save(
+        path,
+        sizes=[(size, size) for size in ICO_SIZES],
+        append_images=rest,
+    )
     return True
 
 
@@ -371,5 +464,6 @@ __all__ = [
     "start_detached",
     "wait_until_running",
     "windows_folder",
+    "ICO_SIZES",
     "write_icon",
 ]
