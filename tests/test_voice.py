@@ -15,6 +15,7 @@ import threading
 import pytest
 
 from meetbot.capture import voice as voice_module
+from meetbot.capture import voice
 from meetbot.capture.voice import (
     MAX_TITLE,
     MIN_CONFIDENCE,
@@ -151,36 +152,72 @@ class TestTheListener:
         """Silence is the worst way for this to fail.
 
         A command dropped for low confidence and a microphone that is not
-        working look exactly the same from across the room. So anything heard
-        and not acted on is handed over separately, with the one fact that
-        decides what to do about it: whether Scribe knew the phrase and was
-        unsure, or simply does not have that phrase.
+        working look exactly the same from across the room, so anything heard
+        and not acted on is handed over separately - with the reason, because
+        the reasons want opposite responses and guessing between them is the
+        whole of the frustration.
+
+        The cases here are the ones the engine can really produce. It is
+        handed a fixed list of phrases and a prefix-then-dictation grammar,
+        and it only ever returns something one of those matched: an earlier
+        version of this test fed it a sentence about a budget, which proved
+        a branch that cannot be reached and missed the one that can.
         """
         heard: list = []
         unsure: list = []
         process = _FakeRecogniser([
             READY,
-            # Understood, but under the floor: say it again.
+            # A phrase we know, under the floor: say it again.
             _said("scribe start recording", 0.55),
-            # Confident and meaningless: say something else.
-            _said("the budget is capped at forty thousand", 0.99),
-            # Quiet enough to be the room rather than a person.
+            # The naming prefix and then nothing. Saying it again more slowly
+            # will not help; finishing the sentence will.
+            '{"text":"scribe call this","confidence":0.88,"grammar":"naming"}\n',
+            # Quiet enough to be the room rather than a person talking to us.
             _said("scribe stop", 0.05),
         ])
         listener = VoiceListener(
             heard.append,
-            on_unsure=lambda said, sure, known: unsure.append((said, sure, known)),
+            on_unsure=lambda said, sure, why: unsure.append((said, sure, why)),
             spawn=lambda: process,
         )
         assert listener.start() is True
         assert process.drained.wait(5), "the recogniser was never read"
 
         assert heard == [], "none of these should have been obeyed"
-        assert [(said, known) for said, _sure, known in unsure] == [
-            ("scribe start recording", True),
-            ("the budget is capped at forty thousand", False),
-        ], "the near miss and the non-command should both be reported, the room should not"
+        assert [(said, why) for said, _sure, why in unsure] == [
+            ("scribe start recording", voice.UNSURE),
+            ("scribe call this", voice.NO_TITLE),
+        ], "both near misses reported with their own reason, the room ignored"
         listener.stop()
+
+    def test_the_reason_is_not_guessed_from_the_words(self) -> None:
+        """Each answer sends somebody somewhere different.
+
+        "Say it again more slowly" is right for a phrase that arrived under
+        the confidence floor and wrong for one that arrived complete and
+        meant nothing, and telling somebody to stop saying the thing that
+        does work is worse than saying nothing at all. So the reason is taken
+        from the grammar the engine reports rather than inferred afterwards.
+        """
+        # A phrase from the fixed list: heard, just not clearly enough.
+        assert voice.unsure_reason("scribe stop recording", "command") == voice.UNSURE
+        assert voice.unsure_reason("Scribe  Start  Recording") == voice.UNSURE
+
+        # The prefix with a name is a working command, so if it was dropped
+        # it was dropped for confidence.
+        assert voice.unsure_reason(
+            "scribe call this the finance sync", "naming"
+        ) == voice.UNSURE
+        # The prefix without one is a different problem.
+        assert voice.unsure_reason("scribe call this", "naming") == voice.NO_TITLE
+        assert voice.unsure_reason("scribe name this   ", "naming") == voice.NO_TITLE
+
+        # Dictation matched but no prefix here did, which means this list and
+        # the grammar the recogniser was given have drifted apart.
+        assert voice.unsure_reason("scribe title this sprint", "naming") == voice.NO_TITLE
+
+        # And the branch that needs the engine to be misconfigured to happen.
+        assert voice.unsure_reason("what time is lunch", "command") == voice.UNKNOWN
 
     def test_it_does_not_claim_to_listen_before_the_microphone_opens(
         self, monkeypatch

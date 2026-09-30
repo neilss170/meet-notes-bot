@@ -2430,13 +2430,45 @@ async function pollVoice() {
   renderVoice();
 }
 
+/* What to do about something heard and not acted on. Three problems, three
+   answers, and they are not interchangeable: one says repeat yourself, one
+   says finish the sentence, one says say something else. */
+const VOICE_TROUBLE = {
+  unsure: "Heard that, but not clearly enough to be sure. Say it again, a " +
+    "little slower and closer to the microphone.",
+  "no-title": "Heard the opening but no name after it \u2014 say the whole " +
+    "thing in one breath.",
+  unknown: "That is not one of the phrases above.",
+};
+
+/* The advice is about something said a moment ago. Left on screen it reads as
+   a state rather than an event, and an hour later it is telling somebody to
+   repeat a sentence they have long forgotten. So it goes, and the line it
+   leaves behind - what was heard, and when - is the useful half anyway: a
+   time from this morning and nothing since says more about a dead microphone
+   than any message could. */
+const VOICE_FRESH_S = 120;
+
+const agoWords = (epoch) => {
+  const seconds = Math.max(0, Math.round(Date.now() / 1000 - (epoch || 0)));
+  if (seconds < 10) return "just now";
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+  return "more than a day ago";
+};
+
 function renderVoice() {
   const box = $("voice-opts");
   if (!box) return;
   const voice = state.voice;
   box.hidden = !voice.enabled && !voice.detail;
+  const heard = voice.heard;
+  const age = heard ? Math.round(Date.now() / 1000 - (heard.at || 0)) : 0;
+  // The age is in the signature, coarsely, so the line keeps up without
+  // being rebuilt on every two-second poll.
   const signature = `${voice.enabled}:${voice.listening}:${voice.detail}:` +
-    `${voice.heard ? voice.heard.at : ""}`;
+    `${heard ? heard.at : ""}:${Math.floor(age / 30)}`;
   if (signature === voice.sig) return;
   voice.sig = signature;
 
@@ -2446,20 +2478,21 @@ function renderVoice() {
         ? "<br>Also: " + said.slice(1).map((phrase) => `&ldquo;${esc(phrase)}&rdquo;`).join(", ")
         : "")
     : esc(voice.detail);
-  const heard = voice.heard;
-  // A command that is ignored in silence looks exactly like a microphone that
-  // is not working, so anything heard and not acted on says so, and says
-  // which of the two things went wrong.
+
+  // A command dropped in silence looks exactly like a microphone that is not
+  // working, so anything heard and not acted on says so - and says which of
+  // several different things went wrong, while that is still worth knowing.
+  const trouble = heard && heard.acted === false && age <= VOICE_FRESH_S
+    ? VOICE_TROUBLE[heard.reason] || VOICE_TROUBLE.unknown
+    : "";
   $("voice-heard").innerHTML = heard
     ? `Last heard &ldquo;${esc(heard.text)}&rdquo; ` +
       `<span class="src">${Math.round((heard.confidence || 0) * 100)}%</span>` +
-      (heard.acted === false
-        ? `<br><span class="hint bad" style="padding:0;margin:0">` +
-          (heard.known
-            ? "Understood, but not confidently enough to act on it. " +
-              "Say it again, a little slower."
-            : "That is not one of the phrases above.") +
-          "</span>"
+      // Outside .src, which uppercases - right for a source label, shouty
+      // for a time.
+      ` &middot; ${esc(agoWords(heard.at))}` +
+      (trouble
+        ? `<br><span class="hint bad" style="padding:0;margin:0">${trouble}</span>`
         : "")
     : "";
 }

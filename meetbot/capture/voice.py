@@ -90,6 +90,18 @@ PHRASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: Why something heard was not acted on. Three different problems with
+#: three different answers - and being told the wrong one is worse than
+#: being told nothing, because it sends you off correcting the wrong thing.
+UNSURE = "unsure"
+NO_TITLE = "no-title"
+UNKNOWN = "unknown"
+
+#: What the recogniser calls the prefix-then-dictation grammar. It reports
+#: which grammar matched with every result, which is worth more than
+#: inferring it back out of the words afterwards.
+NAMING_GRAMMAR = "naming"
+
 #: Naming is free text, so it is a fixed prefix followed by dictation. The
 #: prefix has to be unambiguous: anything the engine hears after it becomes
 #: the meeting's title.
@@ -222,6 +234,32 @@ def command_of(text: str, confidence: float = 1.0) -> VoiceCommand | None:
     return None
 
 
+def unsure_reason(said: str, grammar: str = "") -> str:
+    """Why *said* was heard and not acted on.
+
+    Worth getting right rather than approximating, because each answer sends
+    somebody somewhere different: repeat yourself, finish the sentence, or
+    say something else entirely. The engine only ever returns phrases from
+    the grammars it was handed - a fixed list, plus a prefix followed by
+    dictation for naming - so "that is not one of the phrases" is close to
+    unreachable in practice, and handing it out for the common cases would
+    have been telling people to stop saying the thing that does work.
+    """
+    words = " ".join(said.lower().split())
+    for prefix in NAMING_PREFIXES:
+        if words.startswith(prefix):
+            # "Scribe, call this" and then nothing is not a mishearing, and
+            # saying it again more slowly will not help.
+            return UNSURE if _clean_title(said[len(prefix):]) else NO_TITLE
+    if any(words in phrases for phrases in PHRASES.values()):
+        return UNSURE
+    if grammar == NAMING_GRAMMAR:
+        # Dictation matched but no prefix here did, so this list and the
+        # grammar the recogniser was given have drifted apart.
+        return NO_TITLE
+    return UNKNOWN
+
+
 def recogniser_executable() -> str:
     """The program the recogniser runs in, resolved the way Windows will.
 
@@ -280,7 +318,7 @@ class VoiceListener:
         self,
         on_command: Callable[[VoiceCommand], None],
         *,
-        on_unsure: Callable[[str, float, bool], None] | None = None,
+        on_unsure: Callable[[str, float, str], None] | None = None,
         spawn: Callable[[], Any] | None = None,
         min_confidence: float = MIN_CONFIDENCE,
         wave_file: str = "",
@@ -289,11 +327,11 @@ class VoiceListener:
 
         Args:
             on_command: Called with each understood command.
-            on_unsure: Called with what was heard but not acted on - the text,
-                the confidence, and whether it was one of our phrases at all.
-                Without this a rejected command is indistinguishable from a
-                dead microphone, which is the most confusing way for voice
-                control to fail.
+            on_unsure: Called with what was heard but not acted on - the
+                text, the confidence, and one of :data:`UNSURE`,
+                :data:`NO_TITLE` or :data:`UNKNOWN`. Without this a rejected
+                command is indistinguishable from a dead microphone, which is
+                the most confusing way for voice control to fail.
             spawn: Starts the recogniser process. Replaced in tests, which
                 have no microphone and must not wait on one.
             min_confidence: Below this, a match is discarded as mishearing.
@@ -397,27 +435,21 @@ class VoiceListener:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
-    def _report_unsure(self, said: str, sure: float) -> None:
+    def _report_unsure(self, said: str, sure: float, grammar: str = "") -> None:
         """Say what was heard and not acted on, and why.
 
-        Two different failures look identical from the room: a phrase the
-        engine understood but was not confident enough about, and a phrase
-        that is not a command at all. Both are worth showing, and they need
-        different advice - say it again, or say something else.
+        These failures look identical from across the room and to each other:
+        nothing happens. They need opposite responses, so the reason goes out
+        with the text rather than leaving somebody to guess.
         """
         if not said.strip() or sure < MIN_REPORT:
             return
-        known = command_of(said, 1.0) is not None
-        logger.info(
-            "Heard %r (%.2f) but did not act: %s",
-            said,
-            sure,
-            "below the confidence floor" if known else "not a command",
-        )
+        reason = unsure_reason(said, grammar)
+        logger.info("Heard %r (%.2f) but did not act: %s", said, sure, reason)
         if self._on_unsure is None:
             return
         with contextlib.suppress(Exception):
-            self._on_unsure(said, sure, known)
+            self._on_unsure(said, sure, reason)
 
     def _read(self) -> None:
         """Read recognitions until the process ends."""
@@ -442,7 +474,7 @@ class VoiceListener:
             sure = float(record.get("confidence", 0.0) or 0.0)
             command = command_of(said, sure)
             if command is None:
-                self._report_unsure(said, sure)
+                self._report_unsure(said, sure, str(record.get("grammar", "")))
                 continue
             logger.info(
                 "Heard %r (%.2f) -> %s",
@@ -539,6 +571,10 @@ def check_recogniser(say: str = "scribe start recording") -> tuple[bool, str]:
 __all__ = [
     "MAX_TITLE",
     "MIN_CONFIDENCE",
+    "NO_TITLE",
+    "UNKNOWN",
+    "UNSURE",
+    "unsure_reason",
     "NAMING_PREFIXES",
     "PHRASES",
     "WAKE_WORD",
