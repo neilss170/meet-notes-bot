@@ -302,6 +302,60 @@ class TestTheIcon:
         assert reach(small) == pytest.approx(desktop.SPIRAL_REACH, abs=0.001)
         assert reach(large) == pytest.approx(desktop.SPIRAL_REACH, abs=0.001)
 
+    def test_a_new_mark_gets_a_new_filename(self, monkeypatch) -> None:
+        """Because Windows will not notice the file changing underneath it.
+
+        A shortcut's icon is cached against the path it was read from, and
+        held long past the bytes at that path changing - so writing a new
+        mark into the same filename leaves the *old* picture on the Desktop
+        until somebody restarts Explorer or signs out. That is not something
+        to ask of whoever installs this, and it is what happened the first
+        time the mark actually changed: the file was right, both shortcuts
+        pointed at it, and the Desktop still showed the drawing it replaced.
+        """
+        pytest.importorskip("PIL", reason="Pillow is not installed")
+        settled = desktop.icon_name()
+        assert settled.startswith(f"{desktop.ICON_STEM}-"), settled
+        assert settled.endswith(".ico")
+        assert settled != desktop.ICON_FILE, "the old fixed name is the bug"
+        assert desktop.icon_name() == settled, "the same mark keeps its name"
+
+        # Draw something else and the name has to move with it.
+        from PIL import Image
+
+        monkeypatch.setattr(
+            desktop, "spark_image",
+            lambda size=256, recording=False: Image.new(
+                "RGBA", (size, size), (1, 2, 3, 255)
+            ),
+        )
+        assert desktop.icon_name() != settled, (
+            "a different drawing must not reuse a path the cache already holds"
+        )
+
+    def test_the_icon_for_the_previous_mark_is_cleared_away(self, tmp_path) -> None:
+        """Otherwise every change to the drawing leaves another file behind.
+
+        Only the icons this writes are fair game - the glob is anchored to
+        the stem, so nothing else in the project directory is touched.
+        """
+        keep = tmp_path / f"{desktop.ICON_STEM}-abcd1234.ico"
+        keep.write_bytes(b"current")
+        stale = tmp_path / f"{desktop.ICON_STEM}-0000dead.ico"
+        stale.write_bytes(b"previous")
+        original = tmp_path / desktop.ICON_FILE
+        original.write_bytes(b"from before any of this")
+        innocent = tmp_path / "logo.ico"
+        innocent.write_bytes(b"somebody else's")
+
+        gone = desktop.forget_old_icons(tmp_path, keep)
+
+        assert sorted(path.name for path in gone) == [
+            f"{desktop.ICON_STEM}-0000dead.ico", desktop.ICON_FILE,
+        ]
+        assert keep.exists(), "the icon in use must survive"
+        assert innocent.exists(), "only this program's icons are ours to delete"
+
     def test_it_writes_a_real_icon_file(self, tmp_path) -> None:
         pytest.importorskip("PIL", reason="Pillow is not installed")
         path = tmp_path / "scribe.ico"

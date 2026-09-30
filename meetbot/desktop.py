@@ -24,6 +24,8 @@ password printed on the very first run can be read back.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import logging
 import math
 import os
@@ -44,7 +46,10 @@ SHORTCUT_NAME = "Scribe"
 SERVER_LOG = "scribe-server.log"
 
 #: Generated beside it, and pointed at by both shortcuts.
-ICON_FILE = "scribe.ico"
+#: The icon's own file. Kept as a name for the one written before the
+#: fingerprint below existed, so an upgrade can clear it away.
+ICON_STEM = "scribe"
+ICON_FILE = f"{ICON_STEM}.ico"
 
 #: How long :func:`wait_until_running` gives a server it has just started.
 #: Generous: the first start of the day loads Python, FastAPI and Playwright's
@@ -305,6 +310,44 @@ def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
 ICO_SIZES = (256, 48, 32, 16)
 
 
+def icon_name() -> str:
+    """The icon's filename, fingerprinted with the drawing inside it.
+
+    Windows caches a shortcut's icon against the path it was read from, and
+    holds it long past the file changing underneath. Writing a new mark into
+    the same filename therefore leaves the *old* picture on the Desktop until
+    somebody restarts Explorer, clears the cache by hand or signs out - which
+    is not a reasonable thing to ask of anyone who installs this, and is
+    exactly what happened the first time the mark changed.
+
+    So a different drawing gets a different name, and there is no stale entry
+    left for the cache to serve.
+    """
+    image = spark_image(48)
+    if image is None:
+        return ICON_FILE
+    digest = hashlib.sha256(image.convert("RGBA").tobytes()).hexdigest()[:8]
+    return f"{ICON_STEM}-{digest}.ico"
+
+
+def forget_old_icons(directory: Path, keep: Path) -> list[Path]:
+    """Delete icons from marks that are no longer used.
+
+    Without this, every change to the drawing leaves another .ico in the
+    project directory forever. Shortcuts pointing at one that goes are
+    reissued in the same breath by :func:`install`, which is the only thing
+    that calls this.
+    """
+    gone: list[Path] = []
+    for stale in sorted(directory.glob(f"{ICON_STEM}*.ico")):
+        if stale == keep:
+            continue
+        with contextlib.suppress(OSError):
+            stale.unlink()
+            gone.append(stale)
+    return gone
+
+
 def write_icon(path: Path) -> bool:
     """Save the mark as a Windows ``.ico``. ``False`` without Pillow.
 
@@ -395,8 +438,11 @@ def install(*, port: int = 8080, startup: bool = False) -> list[Path]:
     Returns:
         The shortcut files that now exist.
     """
-    icon_path = project_dir() / ICON_FILE
+    icon_path = project_dir() / icon_name()
     icon = icon_path if write_icon(icon_path) else None
+    if icon is not None:
+        for stale in forget_old_icons(project_dir(), icon_path):
+            logger.info("Removed the icon for the previous mark: %s", stale.name)
     python = background_python()
     made: list[Path] = []
 
@@ -449,6 +495,9 @@ def remove() -> list[Path]:
 
 __all__ = [
     "ICON_FILE",
+    "ICON_STEM",
+    "forget_old_icons",
+    "icon_name",
     "PROBE_TIMEOUT_S",
     "SERVER_LOG",
     "SHORTCUT_NAME",
