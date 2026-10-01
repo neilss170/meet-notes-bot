@@ -529,15 +529,30 @@ class TestTheMenuPystrayIsGiven:
     def icon(self):
         pytest.importorskip("pystray")
         pytest.importorskip("PIL")
+        ready, detail = tray.available()
+        if not ready:
+            # A headless machine has no notification area to put an icon in,
+            # so there is nothing here to translate for it.
+            pytest.skip(detail)
         return tray.ScribeTray(
             fake_app(), url="http://127.0.0.1:8080", on_quit=lambda: None
         )
 
-    def test_it_can_be_shown_here(self) -> None:
+    def test_it_answers_rather_than_raising(self) -> None:
+        """Whichever answer is right here, it has to be an answer.
+
+        This used to assert True, which is only correct on a machine with a
+        desktop - and it failed by raising, not by returning False, because
+        available() caught ImportError while pystray was opening a display.
+        cmd_tray reads this to decide whether to serve without an icon, so a
+        raise there is a crash instead of a server.
+        """
         pytest.importorskip("pystray")
         ready, detail = tray.available()
-        assert ready is True
-        assert detail
+        assert isinstance(ready, bool)
+        assert detail, "a refusal has to say why"
+        if not ready:
+            assert "Scribe is only reachable at its address" in detail
 
     def test_every_line_survives_the_translation(self, icon) -> None:
         described = [item for item in icon.items() if not item.separator]

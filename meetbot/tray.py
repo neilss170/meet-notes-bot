@@ -112,6 +112,16 @@ def available() -> tuple[bool, str]:
             "The notification-area icon needs: pip install pystray pillow. "
             "Running without it - Scribe is only reachable at its address."
         )
+    except Exception as exc:  # noqa: BLE001
+        # pystray chooses a backend while being imported, and the X11 one
+        # opens the display as it does so - so on a machine without one this
+        # raises rather than failing to import. `tray` is documented to fall
+        # back to serving without an icon, and an Xlib traceback where a
+        # server should be is not that.
+        return False, (
+            f"No notification area here ({type(exc).__name__}: {exc}). "
+            "Running without it - Scribe is only reachable at its address."
+        )
     return True, "An icon in the notification area."
 
 

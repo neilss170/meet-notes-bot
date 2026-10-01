@@ -62,7 +62,13 @@ class TestWhoseWindowItIs:
 
     def test_this_process_can_be_named(self) -> None:
         name = browser.process_name(os.getpid())
-        assert name.endswith(".exe") or name == "python" or "python" in name
+        if sys.platform != "win32":
+            # Documented behaviour off Windows: there is no window to own, so
+            # there is nothing to name. Asserting ".exe" here was asserting
+            # the platform rather than the function.
+            assert name == ""
+            return
+        assert name.endswith(".exe") or "python" in name
 
     def test_a_process_that_does_not_exist(self) -> None:
         assert browser.process_name(4_000_000) == ""
@@ -88,7 +94,11 @@ class TestFindingABrowser:
         if found is None:
             pytest.skip("no Chromium browser on this machine")
         assert found.exists()
-        assert found.name.casefold() in browser.BROWSERS
+        # BROWSERS names the Windows executables, but find_browser also asks
+        # PATH for the name without .exe - which is how it finds /usr/bin/
+        # chromium. Either spelling is the same browser.
+        stems = {name.removesuffix(".exe") for name in browser.BROWSERS}
+        assert found.name.casefold().removesuffix(".exe") in stems
 
     def test_without_a_browser_it_declines_rather_than_raises(
         self, monkeypatch

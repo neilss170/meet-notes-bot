@@ -400,6 +400,11 @@ class TestTheButtonsTellYouWhereYouAre:
                     "getComputedStyle(document.querySelector('#record')).boxShadow"
                 )
 
+                # Chromium only applies the :focus-visible heuristic to a page
+                # it considers focused, and a headless browser with no
+                # compositor behind it does not always start that way.
+                await page.bring_to_front()
+
                 # Arrive by keyboard: :focus-visible deliberately ignores a
                 # click, so clicking would prove nothing.
                 await page.focus("#record")
@@ -413,12 +418,22 @@ class TestTheButtonsTellYouWhereYouAre:
                     """() => {
                       const el = document.querySelector('#record');
                       return {
+                        active: document.activeElement === el,
+                        page_focused: document.hasFocus(),
                         visible: el.matches(':focus-visible'),
                         shadow: getComputedStyle(el).boxShadow,
                       };
                     }"""
                 )
-                assert focused["visible"] is True
+                # Said separately from the assertion below so a failure names
+                # which assumption broke rather than only the symptom.
+                assert focused["active"] is True, (
+                    "Tab did not land back on the record button, so the rest "
+                    f"would measure the wrong element: {focused}"
+                )
+                assert focused["visible"] is True, (
+                    f"keyboard focus did not register as visible: {focused}"
+                )
                 assert focused["shadow"] != resting, "focus looks the same as resting"
                 assert not errors, f"the page logged errors: {errors}"
             finally:
