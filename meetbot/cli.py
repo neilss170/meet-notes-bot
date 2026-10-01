@@ -2,6 +2,9 @@
 
 Subcommands:
 
+``setup``
+    Prepare a fresh clone: seed ``.env`` and say which keys are still
+    needed. The first command to run, and safe to re-run.
 ``run``
     Join a meeting and produce a transcript plus analysis.
 ``analyze``
@@ -55,8 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m meetbot",
         description=(
-            "Join a Google Meet call, transcribe it live, and "
-            "generate a post-meeting summary."
+            "Record a meeting, transcribe it, and write the notes up. "
+            "Records this machine by default - nothing joins the call."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -75,6 +78,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser(
+        "setup",
+        help="Prepare a fresh install: seed .env and report what is missing.",
+        description=(
+            "Create .env from the template if it is not there yet, then say "
+            "which keys still need filling in and where to get them. Touches "
+            "nothing on the network and never overwrites an existing .env, so "
+            "it is safe to run as many times as you like."
+        ),
+    )
 
     run_parser = subparsers.add_parser(
         "run",
@@ -320,9 +334,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--host",
         default="127.0.0.1",
         help=(
-            "Address to bind. Loopback by default and you should leave it "
-            "there: the service has no authentication and can join meetings "
-            "and read their transcripts."
+            "Address to bind. Loopback by default. Accounts are enforced on "
+            "every route, but there is no TLS, so anything other than "
+            "loopback belongs behind a reverse proxy that terminates HTTPS - "
+            "see docs/deploying.md."
         ),
     )
     serve_parser.add_argument(
@@ -342,7 +357,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--port", type=int, default=8080, help="Port to listen on."
     )
     tray_parser.add_argument(
-        "--host", default="127.0.0.1", help="Address to bind. Leave it on loopback."
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Address to bind. Loopback by default; see docs/deploying.md "
+            "before changing it, as there is no TLS."
+        ),
     )
     tray_parser.add_argument(
         "--open",
@@ -980,6 +1000,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Handle ``setup``: get a fresh clone to the point where ``check`` runs.
+
+    Deliberately does no network calls and installs nothing, so a failure is
+    a printed instruction rather than a ten-minute download that dies at the
+    end. ``check`` is the thing that proves the keys actually work.
+    """
+    from meetbot.firstrun import log_setup, run_setup
+
+    directory = args.env_file.parent if args.env_file else desktop.project_dir()
+    report = run_setup(directory, lambda env_path: load_config(env_file=env_path))
+    log_setup(report)
+    return EXIT_OK if report.ready else EXIT_CONFIG_ERROR
+
+
 def cmd_check(args: argparse.Namespace) -> int:
     """Handle ``check``: confirm everything a real run depends on.
 
@@ -1014,16 +1049,23 @@ def cmd_check(args: argparse.Namespace) -> int:
             browser = playwright.chromium.launch(headless=True)
             logger.info("  OK    %-16s %s", "Playwright", browser.version)
             browser.close()
+        can_drive_browser = True
     except Exception as exc:  # noqa: BLE001
-        logger.error("  FAIL  %-16s %s", "Playwright", exc)
+        # Only bot mode drives a browser. Recording this machine is the
+        # default and never opens one, so this degrades the result to
+        # "local only" instead of failing outright - which is what it used
+        # to do, telling people with a working install to fix something they
+        # had no use for.
+        can_drive_browser = False
+        logger.warning("  WARN  %-16s %s", "Playwright", exc)
         logger.warning("To fix Playwright: playwright install chromium")
-        return EXIT_CONFIG_ERROR
 
     logger.info("")
     # Two ways to record, and they fail independently. Reporting "not ready"
     # because the browser session expired was wrong once local capture became
     # the default - that path never touches Google.
-    if report.can_record_locally and report.can_send_bot:
+    can_send_bot = report.can_send_bot and can_drive_browser
+    if report.can_record_locally and can_send_bot:
         logger.info("Ready to record, either locally or by sending the bot.")
         return EXIT_OK
     if report.can_record_locally:
@@ -1033,7 +1075,7 @@ def cmd_check(args: argparse.Namespace) -> int:
             "it for meetings that are not playing through this machine."
         )
         return EXIT_OK
-    if report.can_send_bot:
+    if can_send_bot:
         logger.info("Ready to send the bot: python -m meetbot run --url ...")
         logger.info(
             "Recording this machine is unavailable - see the warnings above."
@@ -1262,6 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
         "record": cmd_record,
         "analyze": cmd_analyze,
         "format": cmd_format,
+        "setup": cmd_setup,
         "check": cmd_check,
         "serve": cmd_serve,
         "tray": cmd_tray,
