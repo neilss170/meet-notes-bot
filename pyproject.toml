@@ -46,6 +46,11 @@ tray = ["pystray>=0.19", "pillow>=10.0"]
 # virtual audio device, and PyAudioWPatch is the fork that exposes it.
 local = ["PyAudioWPatch>=0.2.12; sys_platform == 'win32'", "numpy>=1.24"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+# What the desktop app actually uses, so there is one install line to give
+# people instead of a list of extras to assemble. Both LLM providers are in
+# here because LLM_PROVIDER is a runtime setting - installing the wrong one
+# and finding out after a meeting is not a good trade for 20 MB.
+all = ["meetbot[anthropic,openai,serve,tray,local]"]
 
 [project.scripts]
 meetbot = "meetbot.cli:main"

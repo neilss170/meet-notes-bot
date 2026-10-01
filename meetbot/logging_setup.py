@@ -8,11 +8,20 @@ from __future__ import annotations
 
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 _CONSOLE_FORMAT = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 _FILE_FORMAT = "%(asctime)s %(levelname)-8s %(name)s [%(filename)s:%(lineno)d]: %(message)s"
 _DATE_FORMAT = "%H:%M:%S"
+
+#: How much log to keep, and in how many files. The tray runs windowless
+#: and logs at DEBUG, so the file is the only record of what happened - but
+#: it is also unattended, and left alone it grows without limit. Two
+#: megabytes is a few weeks of ordinary use, and three of them is enough
+#: history to explain a recording that went wrong last week.
+_LOG_MAX_BYTES = 2 * 1024 * 1024
+_LOG_BACKUPS = 3
 
 #: Third-party loggers that are far too chatty at DEBUG for our purposes.
 _NOISY_LOGGERS = ("websockets", "urllib3", "httpx", "httpcore", "anthropic", "openai")
@@ -27,7 +36,9 @@ def configure_logging(level: str = "INFO", log_file: Path | None = None) -> None
     Args:
         level: Root log level name, e.g. ``"INFO"`` or ``"DEBUG"``.
         log_file: When given, also write DEBUG-level logs to this path. The
-            parent directory is created if needed.
+            parent directory is created if needed. The file is rotated at
+            :data:`_LOG_MAX_BYTES` and :data:`_LOG_BACKUPS` older copies are
+            kept, so an unattended tray cannot fill the disk.
     """
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
@@ -49,7 +60,12 @@ def configure_logging(level: str = "INFO", log_file: Path | None = None) -> None
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=_LOG_BACKUPS,
+            encoding="utf-8",
+        )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(logging.Formatter(_FILE_FORMAT))
         file_handler._meetbot_handler = True  # type: ignore[attr-defined]

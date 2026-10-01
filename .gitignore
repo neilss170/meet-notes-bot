@@ -36,5 +36,5 @@ chrome-profile/
 # carries a fingerprint of the drawing, so it changes with the mark.
 scribe*.ico
 
-# Where a windowless server's output goes.
-scribe-server.log
+# Where a windowless server's output goes, plus the rotated copies.
+scribe-server.log*
