@@ -400,10 +400,18 @@ class TestTheButtonsTellYouWhereYouAre:
                     "getComputedStyle(document.querySelector('#record')).boxShadow"
                 )
 
-                # Chromium only applies the :focus-visible heuristic to a page
-                # it considers focused, and a headless browser with no
-                # compositor behind it does not always start that way.
+                # Chromium only applies the :focus-visible heuristic to a
+                # page it considers focused, and a headless browser with no
+                # compositor behind it never gets focus at all - on a Linux
+                # CI runner this reports false even after bring_to_front,
+                # and then Tab does not move the selection either. There is
+                # nothing here to measure rather than something broken.
                 await page.bring_to_front()
+                if not await page.evaluate("document.hasFocus()"):
+                    pytest.skip(
+                        "the page cannot take window focus here, so "
+                        ":focus-visible never engages"
+                    )
 
                 # Arrive by keyboard: :focus-visible deliberately ignores a
                 # click, so clicking would prove nothing.
