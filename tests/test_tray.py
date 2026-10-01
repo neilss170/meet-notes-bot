@@ -527,8 +527,11 @@ class TestTheMenuPystrayIsGiven:
 
     @pytest.fixture
     def icon(self):
-        pytest.importorskip("pystray")
         pytest.importorskip("PIL")
+        # Asked before pystray is imported anywhere, because importing it is
+        # the part that raises: importorskip only rescues an ImportError, and
+        # pystray opening a display raises Xlib.error.DisplayNameError.
+        # available() catches both.
         ready, detail = tray.available()
         if not ready:
             # A headless machine has no notification area to put an icon in,
@@ -546,8 +549,11 @@ class TestTheMenuPystrayIsGiven:
         available() caught ImportError while pystray was opening a display.
         cmd_tray reads this to decide whether to serve without an icon, so a
         raise there is a crash instead of a server.
+
+        Nothing is imported before the call, deliberately: the import is what
+        raises, so an importorskip in front of this would take the failure
+        before the function under test got the chance to handle it.
         """
-        pytest.importorskip("pystray")
         ready, detail = tray.available()
         assert isinstance(ready, bool)
         assert detail, "a refusal has to say why"
