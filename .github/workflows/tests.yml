@@ -8,11 +8,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Scribe is developed on Windows and records only there, so the point of
+      # CI is the other platforms: everything except capturing the speakers is
+      # meant to work anywhere, and nothing proves that from this desk. macOS
+      # runs one version rather than both because it bills at ten times the
+      # Linux rate and the second interpreter has never been where the
+      # platform differences are.
       matrix:
-        python-version: ["3.11", "3.12"]
+        include:
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: macos-latest, python-version: "3.12" }
 
     steps:
       - uses: actions/checkout@v4
@@ -31,8 +40,17 @@ jobs:
       # a video stream, and no amount of mocking proves a canvas capture
       # actually emits frames. They skip themselves when Chromium is absent,
       # which would quietly hide the bugs they exist to catch.
+      #
+      # --with-deps installs the shared libraries headless Chromium needs via
+      # apt, so it is Linux-only; passing it on macOS is an error rather than
+      # a no-op.
       - name: Install Chromium
         run: playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+
+      - name: Install Chromium (macOS)
+        run: playwright install chromium
+        if: runner.os == 'macOS'
 
       # No secrets are needed: every test that would talk to Deepgram, Groq or
       # Google is either a pure unit test or stubbed. Anything that genuinely
