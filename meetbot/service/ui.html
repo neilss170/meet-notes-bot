@@ -977,6 +977,14 @@
   .newuser input, .newuser select {
     width: auto; flex: 1 1 120px; padding: 8px 11px; font-size: 13px;
   }
+  /* The password editor opens underneath the row it belongs to, so it keeps
+     that row's bottom rule and does not read as a separate account. */
+  .pwrow {
+    display: flex; gap: 7px; flex-wrap: wrap; align-items: center;
+    padding: 0 0 11px; border-bottom: 1px solid var(--line);
+  }
+  .pwrow input { width: auto; flex: 1 1 170px; padding: 8px 11px; font-size: 13px; }
+  .ok { color: var(--live); font-size: 12.5px; margin-top: 10px; line-height: 1.55; }
 </style>
 </head>
 <body>
@@ -3211,6 +3219,14 @@ function showStopped() {
 async function openAdmin() {
   const root = $("modal-root");
   const close = () => { root.innerHTML = ""; };
+  // Whose password is being changed, and what to say once a change lands.
+  // Both live out here so the one render path below can draw them, rather
+  // than a second path that patches a row in place. A password change leaves
+  // the list looking identical, so unlike adding or removing an account it
+  // has to be said out loud or Save appears to have done nothing.
+  let editing = null;
+  let note = "";
+
   const draw = (users) => {
     root.innerHTML =
       '<div class="modal-bg"><div class="modal float">' +
@@ -3221,9 +3237,17 @@ async function openAdmin() {
           '<div class="user-row">' +
             `<strong class="grow">${esc(u.username)}</strong>` +
             `<span class="pill">${esc(u.role)}</span>` +
+            `<button class="btn sm quiet" data-pw="${esc(u.username)}">Password</button>` +
             (u.username === state.me.username ? "" :
               `<button class="btn sm danger" data-del="${esc(u.username)}">Remove</button>`) +
-          "</div>").join("") +
+          "</div>" +
+          (editing === u.username ?
+            '<div class="pwrow">' +
+              '<input id="pw-new" type="password" autocomplete="new-password" ' +
+                'placeholder="new password (min 8)">' +
+              '<button class="btn sm primary" id="pw-save">Save</button>' +
+              '<button class="btn sm ghost" id="pw-cancel">Cancel</button>' +
+            "</div>" : "")).join("") +
         '<div class="newuser">' +
           '<input id="nu-name" type="text" placeholder="username" autocapitalize="none" spellcheck="false">' +
           '<input id="nu-pass" type="password" placeholder="password (min 8)">' +
@@ -3231,6 +3255,7 @@ async function openAdmin() {
           '<option value="admin">Admin</option></select>' +
           '<button class="btn sm" id="nu-add">Add</button>' +
         "</div>" +
+        `<div class="ok" id="admin-note"${note ? "" : " hidden"}>${esc(note)}</div>` +
         '<div class="err" id="admin-error" hidden></div>' +
         '<div class="row" style="margin-top:16px;justify-content:flex-end">' +
           '<button class="btn ghost sm" id="admin-close">Close</button>' +
@@ -3241,6 +3266,34 @@ async function openAdmin() {
     root.querySelector(".modal-bg").addEventListener("click", (event) => {
       if (event.target === event.currentTarget) close();
     });
+    root.querySelectorAll("[data-pw]").forEach((el) => {
+      el.addEventListener("click", () => {
+        // Toggle, so a second press on the same row puts the editor away.
+        editing = editing === el.dataset.pw ? null : el.dataset.pw;
+        note = "";
+        draw(users);
+      });
+    });
+    if (editing !== null) {
+      const field = $("pw-new");
+      // Read now rather than inside the handler: act() clears `editing` once
+      // the change lands, and a retry after a rejected password still has to
+      // know which account it was for.
+      const name = editing;
+      const save = () => act(
+        () => api(`/api/users/${encodeURIComponent(name)}/password`, {
+          method: "POST",
+          body: JSON.stringify({ password: field.value }),
+        }),
+        `Password updated for ${name}. Anyone already signed in as ${name} ` +
+        "stays signed in until their session expires.");
+      $("pw-save").addEventListener("click", save);
+      $("pw-cancel").addEventListener("click", () => { editing = null; draw(users); });
+      field.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") save();
+      });
+      field.focus();
+    }
     root.querySelectorAll("[data-del]").forEach((el) => {
       el.addEventListener("click", () => act(
         () => api(`/api/users/${encodeURIComponent(el.dataset.del)}`, { method: "DELETE" })));
@@ -3255,9 +3308,19 @@ async function openAdmin() {
     })));
   };
 
-  const act = async (fn) => {
-    try { await fn(); draw((await api("/api/users")).users); }
-    catch (error) {
+  const act = async (fn, done) => {
+    try {
+      await fn();
+      note = done || "";
+      editing = null;
+      draw((await api("/api/users")).users);
+    } catch (error) {
+      // No redraw on this path, so a password the server calls too short
+      // leaves what was typed where it is - and the success line from an
+      // earlier change goes, or it would sit there contradicting this one.
+      note = "";
+      const ok = $("admin-note");
+      if (ok) { ok.hidden = true; }
       const box = $("admin-error");
       if (box) { box.textContent = error.message; box.hidden = false; }
     }
