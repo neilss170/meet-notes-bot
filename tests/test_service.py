@@ -2030,10 +2030,20 @@ class TestVoiceCommands:
             == "Finance sync"
         )
         assert renamed, "the recording kept its old name"
-        # Written down too, so a restart does not forget it.
+
+        # Written down too, so a restart does not forget it - but the job
+        # carries the new title before the line reaches the disk, so reading
+        # the file the moment the API agrees catches it empty. Waited for
+        # rather than assumed: this passed here and on 3.11 and failed on
+        # 3.12 at the same commit, which is a race, not a platform.
         job = client.app.state.manager.get(meeting["id"])
-        raw = (job.output_dir / "transcript.jsonl").read_text(encoding="utf-8")
-        assert "Finance sync" in raw
+        transcript = job.output_dir / "transcript.jsonl"
+        written = self._until(
+            lambda: "Finance sync" in transcript.read_text(encoding="utf-8")
+            if transcript.exists()
+            else False
+        )
+        assert written, "the new name was not written down"
 
     def test_the_page_can_see_what_it_is_listening_for(self, rig) -> None:
         client, listener = rig
