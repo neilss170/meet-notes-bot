@@ -73,7 +73,8 @@ After `pip install`, `meetbot ...` works as a shortcut for
 ## Your first recording
 
 Start `tray` (or `serve --open`), sign in with the admin password it prints on
-first run, and press record. Or stay in the terminal:
+first run, and press record. Change that password from **Accounts** once you
+are in. Or stay in the terminal:
 
 ```bash
 python -m meetbot record --list-devices      # what can be captured

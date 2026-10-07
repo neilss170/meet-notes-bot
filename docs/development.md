@@ -9,7 +9,7 @@ Running the tests, what they cover, and how secrets are handled.
 ```bash
 pip install -e ".[serve,dev]"
 playwright install chromium   # a few tests drive a real browser
-python -m pytest -q           # 453 tests, no network, no credentials
+python -m pytest -q           # 895 tests, no network, no credentials
 ```
 
 **No test touches the network or needs an API key.** Deepgram, both LLM SDKs
@@ -22,8 +22,11 @@ passes where the keys happen to work and fails everywhere else.
 A handful of tests launch real Chromium, because some of this cannot be
 faked: a canvas capture stream that emits no frames looks identical to a
 working one until a compositor runs, and Chromium's profile-locking
-behaviour is the reason per-run profile copies exist at all. They skip
-themselves when Chromium is absent.
+behaviour is the reason per-run profile copies exist at all. The web UI is
+driven the same way wherever a test of the route cannot reach the question:
+the Accounts panel rebuilds itself from the account list after every change,
+and whether a rejected password survives that redraw is only answerable in a
+browser. They skip themselves when Chromium is absent.
 
 The suite covers the transcript store (durability, corrupt lines, schema
 evolution), the formatters, Deepgram result parsing and stream-URL
@@ -32,7 +35,10 @@ based speaker attribution, config validation and disclosure enforcement, the
 analysis module, accounts and sessions, the readiness checks, and the
 runner's failure containment.
 
-CI runs the same command on Python 3.11 and 3.12 for every push.
+CI runs the same command on every push: Ubuntu on Python 3.11 and 3.12, and
+macOS on 3.12. Windows is the machine this is developed on, so the point of
+CI is the platforms that cannot be checked from here — everything but
+capturing the speakers is meant to work anywhere.
 
 **Integration against a real Meet call is manual and out of scope for the
 automated tests.** To do it: start a Meet call, then

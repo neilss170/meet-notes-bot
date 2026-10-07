@@ -260,12 +260,20 @@ admins only — guessing who they belonged to would be worse than showing
 nobody.
 
 Passwords are hashed with scrypt. Sessions are HMAC-signed cookies, so
-restarting the service does not sign everyone out, and accounts are re-read
-per request, so deleting or demoting someone takes effect immediately rather
-than whenever their cookie lapses.
+restarting the service does not sign everyone out, and every request is
+authorised against the live account list, so adding someone, demoting them,
+removing them or changing their password from the UI takes effect
+immediately rather than whenever their cookie lapses.
 
-If the only admin password is ever lost, the UI cannot help — `meetbot users`
-can:
+Each row of that panel has a **Password** button, which opens a field
+underneath it. The new password works at the next sign-in; it does not sign
+anybody out, because the session cookie is signed over the username and an
+expiry with no password material in it. To end the sessions already open as
+well, delete `~/.meetbot/session.key` and restart — that invalidates every
+cookie the old key signed, for everyone.
+
+`meetbot users` does the same four jobs from a terminal, and is the only
+route left if the last admin password is lost:
 
 ```bash
 python -m meetbot users list
@@ -273,6 +281,13 @@ python -m meetbot users add priya --role member
 python -m meetbot users passwd admin
 python -m meetbot users delete priya
 ```
+
+**These write `users.json`, and a service that is already running will not
+notice.** The account list is read once, when the service starts. So a
+password changed this way is correct on disk and ignored by the process doing
+the authenticating, with nothing to warn you — the command succeeded, it just
+did not reach the running server. Restart it afterwards, or use the panel,
+which changes the list the server is actually reading from.
 
 It binds to **loopback only** by default. `--host` serves it to the network
 and warns when you use it: accounts are required, but sessions travel as
@@ -318,6 +333,9 @@ Things it handles that the one-shot CLI never had to:
 | `GET /api/health` | What is working, and the command that fixes what is not |
 | `POST /api/health/refresh` | Re-run the checks after fixing something |
 | `GET /api/users` | Admin only: list accounts |
+| `POST /api/users` | Admin only: `{"username": "...", "password": "...", "role": "member"}` |
+| `POST /api/users/{name}/password` | Admin only: `{"password": "..."}` — effective at once, signs nobody out |
+| `DELETE /api/users/{name}` | Admin only: remove an account. Not your own |
 | `POST /login` / `POST /logout` | Session in, session out |
 
 All of them require a session; `POST /api/meetings` also returns **409** when

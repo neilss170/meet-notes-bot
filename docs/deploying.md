@@ -48,6 +48,11 @@ already rotated away:
 python -m meetbot users passwd admin
 ```
 
+That writes `users.json` directly, so **restart Scribe afterwards** — a
+running service read the account list when it started and goes on accepting
+the old password until it reads it again. Once you are signed in, change
+passwords from the **Accounts** panel instead, which needs no restart.
+
 ---
 
 ## 2. Shared on a network
