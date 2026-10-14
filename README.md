@@ -7,6 +7,8 @@
 Records your meetings, transcribes them, and turns your rough notes into good
 ones. **Nothing joins the call.**
 
+![Scribe's meeting view: your rough notes on the left, the notes Scribe filled in from the transcript on the right](docs/images/scribe-meeting-notes.png)
+
 Scribe listens to what your speakers are already playing and what your
 microphone is already hearing, so there is no bot in the participant list, no
 Google account to expire, and no lobby to be admitted through. It works with
@@ -74,7 +76,13 @@ After `pip install`, `meetbot ...` works as a shortcut for
 
 Start `tray` (or `serve --open`), sign in with the admin password it prints on
 first run, and press record. Change that password from **Accounts** once you
-are in. Or stay in the terminal:
+are in.
+
+<p align="center">
+  <img src="docs/images/scribe-sign-in.png" alt="Scribe's sign-in screen" width="480">
+</p>
+
+Or stay in the terminal:
 
 ```bash
 python -m meetbot record --list-devices      # what can be captured
