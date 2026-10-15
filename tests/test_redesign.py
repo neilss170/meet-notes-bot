@@ -316,3 +316,22 @@ class TestTheSetting:
 
         assert load_config(env={}).auto_stop is True
         assert load_config(env={"AUTO_STOP": "false"}).auto_stop is False
+
+
+class TestCitationChips:
+    """How a model's citation markers become chips, pinned in the page's code."""
+
+    @staticmethod
+    def _ui() -> str:
+        from meetbot.service.app import UI_PATH
+
+        return UI_PATH.read_text(encoding="utf-8")
+
+    def test_a_run_of_markers_is_one_chip(self) -> None:
+        ui = self._ui()
+        assert 'data-ns="${ns.join(",")}"' in ui
+        assert '<span class="more">+${ns.length - 1}</span>' in ui
+
+    def test_the_spaces_models_put_before_markers_are_dropped(self) -> None:
+        """Real answers put a narrow no-break space before [^1]."""
+        assert r"\u202f" in self._ui()

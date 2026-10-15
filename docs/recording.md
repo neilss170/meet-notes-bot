@@ -302,9 +302,11 @@ contain invented detail would be worse than no notes at all.
 **Ctrl+J** opens Ask from anywhere, floating over whatever you were doing.
 *This meeting* answers about the meeting that is open from its transcript and
 notes, and nothing else; *All meetings* searches every transcript you can
-see. A citation is not a `[1]` in the prose: point at a sentence and a small
-quote mark appears after it, which opens the transcript at the line it came
-from. `/` offers the questions people ask most and the note templates. "What did I miss?", "What was decided?", "List every
+see. Each claim carries a small numbered chip — a run of sources is one chip,
+`2 +1`, so a well-sourced answer stays readable. Click a chip for a card
+beside the panel: who said it, when, in which meeting, the line itself with a
+breath of context either side, and **Open in transcript**, which steps Ask
+aside and opens the transcript at that line. `/` offers the questions people ask most and the note templates. "What did I miss?", "What was decided?", "List every
 action item and who owns it." If the meeting did not cover it, the answer says
 so rather than reasoning outwards into what was probably meant. Questions and
 answers are kept per meeting in `chat.jsonl`, and earlier turns are replayed

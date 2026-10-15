@@ -528,16 +528,60 @@
   }
   .turn .a { font-size: 14px; line-height: 1.65; color: var(--ink); }
   .turn-meta { font-size: 12px; color: var(--faint); margin-top: 6px; }
-  /* A citation: nothing in the prose until you point at the sentence it
-     belongs to, then a small quote mark that opens the transcript there. */
+  /* A citation: a small numbered chip after the sentence it supports.
+     Quiet enough to read past, there when you want it. A run of them -
+     [3][4][5] - is one chip, "3 +2", so a well-sourced answer does not turn
+     into a row of numbers. Click it for the card. */
   .cite {
-    display: inline-flex; vertical-align: -2px; width: 18px; height: 18px; margin-left: 1px;
-    border-radius: 6px; align-items: center; justify-content: center; color: var(--accent);
-    opacity: 0; transition: opacity .15s ease, background .15s ease;
+    display: inline-flex; align-items: center; gap: 2px; height: 17px; min-width: 17px;
+    padding: 0 5px; margin: 0 1px 0 3px; border-radius: 6px; vertical-align: 1px;
+    font: 650 10.5px/1 var(--sans); font-variant-numeric: tabular-nums;
+    color: var(--accent); background: var(--accent-soft);
+    transition: background .15s ease, color .15s ease, transform .15s ease;
   }
-  .cite svg { width: 12px; height: 12px; }
-  .a .md-p:hover .cite, .a li:hover .cite, .cite:focus-visible { opacity: 1; }
-  .cite:hover { background: var(--accent-soft); }
+  .cite .more { opacity: .7; font-weight: 600; }
+  .cite:hover, .cite.on { background: var(--iris); color: #fff; }
+  .cite:active { transform: scale(.94); }
+
+  /* The card a chip opens: who said it, when, the line itself picked out,
+     and a breath of what came either side. */
+  .citecard {
+    position: fixed; z-index: 45; width: min(380px, calc(100vw - 24px));
+    max-height: min(70vh, 520px); overflow-y: auto; padding: 6px;
+    border-radius: 18px; background: var(--raised); box-shadow: var(--float);
+    animation: pop .18s cubic-bezier(.2, .8, .2, 1);
+  }
+  .citecard::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px;
+    background: var(--iris); opacity: .5; pointer-events: none;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  @keyframes pop { from { opacity: 0; transform: translateY(4px) scale(.98); } }
+  .cc-source { padding: 10px 12px 12px; border-radius: 13px; }
+  .cc-source + .cc-source { border-top: 1px solid var(--line); border-radius: 0 0 13px 13px; }
+  .cc-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--faint); }
+  .cc-n {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px;
+    border-radius: 6px; background: var(--iris); color: #fff; font: 650 10.5px/1 var(--sans);
+  }
+  .cc-who { color: var(--ink); font-weight: 600; font-size: 12.5px; }
+  .cc-where { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cc-ctx { font-size: 12.5px; color: var(--faint); line-height: 1.5; margin: 4px 0; padding-left: 12px; }
+  .cc-ctx b { font-weight: 600; color: var(--ink-2); margin-right: 4px; }
+  .cc-said {
+    position: relative; font-size: 14px; line-height: 1.55; color: var(--ink); margin: 6px 0;
+    padding: 8px 12px; border-radius: 10px; background: var(--accent-soft);
+  }
+  .cc-said::before {
+    content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 3px;
+    background: var(--iris);
+  }
+  .cc-open {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; height: 28px; padding: 0 10px;
+    border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent);
+  }
+  .cc-open:hover { background: var(--accent-soft); }
   .chat-empty { color: var(--faint); font-size: 13.5px; padding: 30vh 0 0; text-align: center; }
   .chat-foot { padding: 8px 12px 12px; position: relative; }
   .composer {
@@ -943,6 +987,7 @@
 <div id="toast-root" aria-live="polite"></div>
 <div id="modal-root"></div>
 <div id="menu-root"></div>
+<div id="citecard-root"></div>
 <div id="call-root"></div>
 
 <script>
@@ -1143,15 +1188,21 @@ function renderMarkdown(text, opts = {}) {
   // Bold before italic, so the ** in **bold** is not eaten as two *italics*.
   // The lookarounds keep snake_case identifiers and mid-word asterisks
   // intact. Citation markers go last, so nothing re-reads the button.
-  // A citation sits after the sentence's full stop, not before it, so the
-  // icon that appears on hover does not open a gap in the middle of a line.
-  const inline = (s) => esc(String(s).replace(/((?:\s*\[\^\d+\])+)([.,;:!?])/g, "$2$1"))
+  // A citation sits after the punctuation it follows, with no gap before
+  // it - models put ordinary and non-breaking spaces of every width there.
+  const inline = (s) => esc(String(s).replace(
+      /[\s\u00a0\u202f]*((?:\[\^\d+\][\s\u00a0\u202f]*)+)([.,;:!?\u201d"'\u2019)]*)/g,
+      (_, marks, punct) => punct + marks.replace(/[\s\u00a0\u202f]+/g, "")))
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])/g, "$1<em>$2</em>")
     .replace(/(^|[^\w_])_(?!\s)(.+?)(?<!\s)_(?![\w_])/g, "$1<em>$2</em>")
     .replace(/`(.+?)`/g, "<code>$1</code>")
-    .replace(/\s*\[\^(\d+)\]/g,
-      `<button class="cite" data-n="$1" type="button" aria-label="Open the transcript where this was said">${ICON.quote}</button>`);
+    .replace(/((?:\[\^\d+\])+)/g, (run) => {
+      const ns = [...run.matchAll(/\[\^(\d+)\]/g)].map((m) => m[1]);
+      const more = ns.length > 1 ? `<span class="more">+${ns.length - 1}</span>` : "";
+      return `<button class="cite" data-ns="${ns.join(",")}" type="button" ` +
+        `aria-label="Source${ns.length > 1 ? "s" : ""} ${ns.join(", ")}">${ns[0]}${more}</button>`;
+    });
 
   /** A line's content, with whatever you wrote in it picked out in ink. */
   const content = (raw, line) => {
@@ -2294,6 +2345,7 @@ function openAsk({ focus = true, scope, text } = {}) {
 }
 
 function closeAsk() {
+  closeCiteCard();
   state.askOpen = false;
   $("ask").hidden = true;
   $("chat-toggle").classList.remove("on");
@@ -2334,16 +2386,11 @@ function sourceWhere(c, acrossMeetings) {
   return parts.filter(Boolean).join(" · ");
 }
 
-/** One question and its answer, with each citation a quiet icon. */
+/** One question and its answer, each citation a small numbered chip. */
 function turnHtml(turn, index, acrossMeetings, fresh = false) {
   const cites = Array.isArray(turn.citations) ? turn.citations : [];
   const answer = cites.length ? turn.answer : String(turn.answer || "").replace(/\[\^\d+\]/g, "");
-  let html = renderMarkdown(answer);
-  // Say where each one goes before it is clicked.
-  html = html.replace(/<button class="cite" data-n="(\d+)"/g, (whole, n) => {
-    const c = cites.find((x) => String(x.n) === n);
-    return c ? `${whole} title="${esc(`${sourceWhere(c, acrossMeetings)} — “${c.text}”`)}"` : whole;
-  });
+  const html = renderMarkdown(answer);
   return (
     `<div class="turn" data-turn="${index}">` +
       `<div class="q">${esc(turn.question)}</div>` +
@@ -2381,13 +2428,17 @@ function renderChat(scrollToEnd) {
       : "") +
     (error ? `<div class="err">${esc(error)}</div>` : "");
   feed.onclick = (event) => {
-    const cite = event.target.closest(".cite[data-n]");
+    const cite = event.target.closest(".cite[data-ns]");
     const row = cite && cite.closest(".turn");
     if (!row) return;
+    if (cite.classList.contains("on")) { closeCiteCard(); return; }
     const turn = turns[Number(row.dataset.turn)];
-    const c = (turn?.citations || []).find((x) => String(x.n) === cite.dataset.n);
-    if (c) openCitation({ ...c, meeting_id: c.meeting_id || state.selected });
+    const wanted = cite.dataset.ns.split(",");
+    const found = wanted.map((n) => (turn?.citations || []).find((x) => String(x.n) === n)).filter(Boolean)
+      .map((c) => ({ ...c, meeting_id: c.meeting_id || state.selected }));
+    if (found.length) openCiteCard(found, cite, across);
   };
+  feed.onscroll = closeCiteCard;
   $("chat-clear").hidden = !turns.length;
   $("chat-go").disabled = asking;
   feed.scrollTop = scrollToEnd ? feed.scrollHeight : scroll;
@@ -2515,6 +2566,69 @@ function closeSlash() {
   $("slash").hidden = true;
 }
 
+/** The sources behind one chip, in a card beside it. */
+function openCiteCard(sources, anchor, acrossMeetings) {
+  closeCiteCard();
+  const line = (seg) => `<div class="cc-ctx"><b>${esc(seg.speaker === SELF ? "Me" : seg.speaker)}</b>${esc(seg.text)}</div>`;
+  const root = $("citecard-root");
+  root.innerHTML =
+    '<div class="citecard" role="dialog" aria-label="Sources">' +
+      sources.map((c, i) =>
+        `<div class="cc-source" data-i="${i}">` +
+          '<div class="cc-meta">' +
+            `<span class="cc-n">${esc(c.n)}</span>` +
+            `<span class="cc-who">${esc(c.speaker === SELF ? "Me" : c.speaker)}</span>` +
+            `<span>${esc(mmss(c.start))}</span>` +
+            (acrossMeetings ? `<span class="cc-where">&middot; ${esc(c.meeting_title || "Meeting")}, ${esc(shortDate(c.started_at))}</span>` : "") +
+          "</div>" +
+          (c.before || []).slice(-1).map(line).join("") +
+          `<div class="cc-said">${esc(c.text)}</div>` +
+          (c.after || []).slice(0, 1).map(line).join("") +
+          `<button class="cc-open" type="button" data-open="${i}">Open in transcript &rarr;</button>` +
+        "</div>").join("") +
+    "</div>";
+  const card = root.firstElementChild;
+  placeCiteCard(card, anchor);
+  anchor.classList.add("on");
+  state.citeAnchor = anchor;
+  card.querySelectorAll("[data-open]").forEach((button) => button.addEventListener("click", () => {
+    const c = sources[Number(button.dataset.open)];
+    closeCiteCard();
+    openCitation(c);
+  }));
+}
+
+/** Beside the chip, outside the Ask panel where there is room, and always
+    wholly on screen. */
+function placeCiteCard(card, anchor) {
+  const margin = 12;
+  const rect = anchor.getBoundingClientRect();
+  const panel = $("ask").getBoundingClientRect();
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  let left;
+  let top;
+  if (panel.left - width - margin > margin) {
+    left = panel.left - width - margin;
+    top = rect.top - 24;
+  } else {
+    left = rect.left - width / 2;
+    top = rect.top - height - 8;
+    if (top < margin) top = rect.bottom + 8;
+  }
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  top = Math.max(margin, Math.min(top, window.innerHeight - height - margin));
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
+}
+
+function closeCiteCard() {
+  const root = $("citecard-root");
+  if (root) root.innerHTML = "";
+  if (state.citeAnchor) state.citeAnchor.classList.remove("on");
+  state.citeAnchor = null;
+}
+
 /** Jump to the cited line in its meeting's transcript. */
 async function openCitation(c) {
   if (!state.meetings.some((m) => m.id === c.meeting_id)) {
@@ -2524,10 +2638,12 @@ async function openCitation(c) {
   if (state.selected !== c.meeting_id) await select(c.meeting_id);
   flushNotes();
   state.jump = { id: c.meeting_id, start: c.start };
+  // Ask floats over the right of the page, which is where the transcript
+  // opens - so it steps aside, and Ctrl+J brings the conversation back.
+  closeAsk();
+  if (state.drawerClosed) state.drawerClosed.delete(c.meeting_id);
   openDrawer("transcript");
   renderTranscript(false);
-  // On a narrow screen the panel would sit over the very line being shown.
-  if (window.innerWidth <= 980) closeAsk();
 }
 
 /* ----------------------------------------------------------- call alerts */
@@ -3497,6 +3613,7 @@ function onKey(event) {
     return;
   }
   if (event.key === "Escape") {
+    if ($("citecard-root").firstElementChild) { closeCiteCard(); return; }
     if ($("menu-root").firstElementChild) { closeMenu(); return; }
     if (!$("slash").hidden) { closeSlash(); return; }
     if ($("modal-root").firstElementChild) return;
@@ -3596,8 +3713,9 @@ async function init() {
   document.addEventListener("keydown", onKey);
   document.addEventListener("mousedown", (event) => {
     if (!event.target.closest(".menu") && !event.target.closest("#more")) closeMenu();
+    if (!event.target.closest(".citecard") && !event.target.closest(".cite")) closeCiteCard();
   });
-  window.addEventListener("resize", () => { closeMenu(); const box = $("notepad"); if (box) fitPad(box); });
+  window.addEventListener("resize", () => { closeMenu(); closeCiteCard(); const box = $("notepad"); if (box) fitPad(box); });
 
   const findBox = $("mtg-find");
   findBox.addEventListener("input", () => {

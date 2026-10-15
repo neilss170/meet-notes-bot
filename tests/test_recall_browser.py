@@ -206,24 +206,40 @@ class TestCitationsInTheBrowser:
             browser, page, errors = await _open(pw, served)
             try:
                 await _ask_about_the_budget(page)
-                icon = page.locator("#chat-feed .a .cite").first
-                # A quiet icon, not a numbered marker - and it says where it
-                # goes before it is clicked.
-                assert (await icon.text_content()).strip() == ""
-                where = await icon.get_attribute("title")
-                assert "capped at forty thousand" in where
-                assert "Finance sync" in where
+                chip = page.locator("#chat-feed .a .cite").first
+                # A small numbered chip, always there.
+                assert (await chip.text_content()).strip() == "1"
+                assert await chip.is_visible()
 
-                await icon.click()
+                # Clicked, it opens a card: who, when, which meeting, the line
+                # itself, and what came either side.
+                await chip.click()
+                card = page.locator(".citecard")
+                await card.wait_for()
+                text = await card.text_content()
+                assert "Finance sync" in text
+                assert "capped at forty thousand" in await card.locator(".cc-said").text_content()
+                assert "Let's look at next quarter." in text, "what led up to it"
+                assert "Anything above that needs sign-off." in text, "what came after"
+                # Beside the panel, not on top of it.
+                box = await card.bounding_box()
+                panel = await page.locator("#ask").bounding_box()
+                assert box["x"] + box["width"] <= panel["x"] + 1, (box, panel)
+
+                # And from the card, to the line in its transcript - with Ask
+                # out of the way so the line can be seen.
+                await card.locator("[data-open]").click()
                 cited = page.locator("#drawer .live-line.cited")
                 await cited.wait_for(timeout=30_000)
                 assert "capped at forty thousand" in await cited.text_content()
                 assert await page.text_content(".mtitle h2") == "Finance sync"
+                assert await page.is_hidden("#ask")
+                assert await page.locator(".citecard").count() == 0
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()
 
-    async def test_citations_stay_out_of_the_prose_until_pointed_at(self, served) -> None:
+    async def test_citations_are_small_chips_not_raw_markers(self, served) -> None:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as pw:
@@ -233,15 +249,12 @@ class TestCitationsInTheBrowser:
                 answer = await page.text_content("#chat-feed .a")
                 assert "forty thousand" in answer
                 assert "[^1]" not in answer, "markers must not show as raw text"
-                assert "[1]" not in answer
-                icon = page.locator("#chat-feed .a .cite").first
-                opacity = "el => getComputedStyle(el).opacity"
-                assert await icon.evaluate(opacity) == "0", "visible before pointing"
-                await page.hover("#chat-feed .a .md-p")
-                await page.wait_for_function(
-                    "getComputedStyle(document.querySelector('#chat-feed .a .cite')).opacity === '1'",
-                    timeout=5_000,
-                )
+                # Escape puts a card away again.
+                await page.locator("#chat-feed .a .cite").first.click()
+                await page.wait_for_selector(".citecard")
+                await page.keyboard.press("Escape")
+                await page.wait_for_selector(".citecard", state="detached", timeout=5_000)
+                assert await page.is_visible("#ask"), "Escape closed Ask too"
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()
