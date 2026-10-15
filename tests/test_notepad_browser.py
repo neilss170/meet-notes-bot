@@ -697,14 +697,14 @@ class TestTheWriteUp:
                 )
 
                 await lines.nth(1).click()
-                await page.keyboard.press("Control+a")
+                await page.keyboard.press("ControlOrMeta+a")
                 await page.keyboard.type("Finance signs off anything over 40k.")
                 await page.keyboard.press("Escape")
                 # Escape cancels; nothing changed on disk.
                 assert "Finance signs off" not in pad.read_enhanced()
 
                 await lines.nth(1).click()
-                await page.keyboard.press("Control+a")
+                await page.keyboard.press("ControlOrMeta+a")
                 await page.keyboard.type("Finance signs off anything over 40k.")
                 await page.locator("#enhanced li").nth(1).evaluate("el => el.blur()")
                 await page.wait_for_function(
