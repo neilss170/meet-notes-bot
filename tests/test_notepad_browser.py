@@ -450,10 +450,12 @@ class TestTheButtonsTellYouWhereYouAre:
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
+                # Not Start recording: it is rightly disabled on a machine with
+                # no audio devices, and a disabled button cannot take focus.
                 await page.click("#home")
-                await page.wait_for_selector("#record")
+                await page.wait_for_selector("#bot-toggle")
                 resting = await page.evaluate(
-                    "(() => { const s = getComputedStyle(document.querySelector('#record'));"
+                    "(() => { const s = getComputedStyle(document.querySelector('#bot-toggle'));"
                     " return s.boxShadow + '|' + s.outlineStyle; })()"
                 )
 
@@ -467,7 +469,7 @@ class TestTheButtonsTellYouWhereYouAre:
 
                 # Arrive by keyboard: :focus-visible deliberately ignores a
                 # click, so clicking would prove nothing.
-                await page.focus("#record")
+                await page.focus("#bot-toggle")
                 await page.keyboard.press("Shift+Tab")
                 await page.keyboard.press("Tab")
                 # The shadow is transitioned, so an immediate read catches the
@@ -476,7 +478,7 @@ class TestTheButtonsTellYouWhereYouAre:
 
                 focused = await page.evaluate(
                     """() => {
-                      const el = document.querySelector('#record');
+                      const el = document.querySelector('#bot-toggle');
                       return {
                         active: document.activeElement === el,
                         page_focused: document.hasFocus(),
@@ -499,7 +501,7 @@ class TestTheButtonsTellYouWhereYouAre:
                 # Said separately from the assertion below so a failure names
                 # which assumption broke rather than only the symptom.
                 assert focused["active"] is True, (
-                    "Tab did not land back on the record button, so the rest "
+                    "Tab did not land back on the bot link, so the rest "
                     f"would measure the wrong element: {focused}"
                 )
                 assert focused["visible"] is True, (

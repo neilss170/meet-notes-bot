@@ -112,6 +112,15 @@ def _alive(pid: int) -> bool:
             return ctypes.windll.kernel32.WaitForSingleObject(handle, 0) == 0x102
         finally:
             ctypes.windll.kernel32.CloseHandle(handle)
+    # A child of ours that has exited stays in the process table as a zombie
+    # until it is collected, and os.kill() reports a zombie as alive. Collect
+    # it if it is ours; the shell is not, and is asked the ordinary way.
+    try:
+        done, _ = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return False
+    except ChildProcessError:
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
