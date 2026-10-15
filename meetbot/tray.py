@@ -28,6 +28,11 @@ thread, so anything that touches a job is handed to that thread rather than
 called from the menu (:meth:`ScribeTray._on_server`). And Windows keeps the
 menu it was last given, so what an action does is decided from the live state
 rather than from the label that was clicked.
+
+The icon also owns Ctrl+Alt+M, which mutes your microphone in a recording
+that is running. It belongs here rather than in the service because this is
+the process sitting at somebody's desktop; a server started for other people
+to reach has no business claiming a key on whatever machine it runs on.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from typing import Any, Callable, Iterator
 
 from meetbot import browser
 from meetbot.desktop import spark_image
+from meetbot.hotkey import GlobalHotkey
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +217,8 @@ class Status:
         live_id: The job to stop. Empty when nothing is running.
         latest_id: The newest finished meeting, for "Latest notes".
         detail: The blockers, named, for the tooltip.
+        mic_available: The live recording has a microphone that can be muted.
+        mic_muted: Scribe has stopped hearing it.
     """
 
     label: str
@@ -222,6 +230,8 @@ class Status:
     live_id: str = ""
     latest_id: str = ""
     detail: str = ""
+    mic_available: bool = False
+    mic_muted: bool = False
 
 
 def _writing_job(state: Any, jobs: list[Any]) -> Any | None:
@@ -288,6 +298,8 @@ def read_status(app: Any) -> Status:
         live_id=getattr(live, "id", "") if live is not None else "",
         latest_id=getattr(latest, "id", "") if latest is not None else "",
         detail=detail,
+        mic_available=bool(getattr(live, "mic_available", False)),
+        mic_muted=bool(getattr(live, "mic_muted", False)) if live is not None else False,
     )
 
 
@@ -299,7 +311,11 @@ def tooltip(status: Status) -> str:
     question a hidden recorder has to answer without being opened.
     """
     text = f"Scribe — {status.label}"
-    if status.recording:
+    if status.recording and status.mic_muted:
+        # The one thing worth saying over the meeting's name: people forget
+        # they muted Scribe long after they have unmuted the call.
+        text = f"Scribe — Recording · your mic is muted · {clock(status.elapsed_s)}"
+    elif status.recording:
         text = f"{text} · {clock(status.elapsed_s)}"
     return _clip(text, TOOLTIP_LIMIT)
 
@@ -338,6 +354,13 @@ def menu_for(status: Status, *, log: bool = False, folder: bool = True) -> list[
     ]
     if status.recording:
         items.append(Item("Stop recording", action="toggle"))
+        if status.mic_available:
+            items.append(
+                Item(
+                    "Unmute my mic" if status.mic_muted else "Mute my mic",
+                    action="mic",
+                )
+            )
     else:
         # Greyed out rather than hidden when the machine cannot be recorded:
         # a missing item reads as a missing feature, and the tooltip says why.
@@ -449,8 +472,9 @@ class ScribeTray:
         self._stopping = threading.Event()
         self._shown = ""
         self._tip = ""
-        self._recording_icon = False
+        self._drawn: tuple[bool, bool] = (False, False)
         self._promote_tries = PROMOTE_TRIES
+        self._hotkey = GlobalHotkey(self.mic_shortcut)
 
     # -- what it is saying -------------------------------------------------
 
@@ -489,6 +513,7 @@ class ScribeTray:
         handlers: dict[str, Callable[[], Any]] = {
             "open": self.open_page,
             "toggle": self.toggle_recording,
+            "mic": self.toggle_mic,
             "latest": self.open_latest,
             "folder": self.open_folder,
             "log": self.open_log,
@@ -595,6 +620,42 @@ class ScribeTray:
         logger.info("Tray: stop requested for job %s", job_id)
         self.refresh()
 
+    def toggle_mic(self) -> bool:
+        """Mute or unmute the microphone of the recording that is running.
+
+        Decided from the live state, like the start and stop item, so a stale
+        "Mute my mic" cannot unmute somebody who muted from the page.
+
+        Returns:
+            Whether the microphone is muted afterwards.
+        """
+        status = self.status()
+        if not status.live_id:
+            raise TrayError("Nothing is recording.")
+        manager = self._manager()
+        from meetbot.service.jobs import MicUnavailable
+
+        try:
+            muted = self._on_server(lambda: manager.set_mic(status.live_id))
+        except MicUnavailable as exc:
+            raise TrayError(str(exc)) from exc
+        self.refresh()
+        return bool(muted)
+
+    def mic_shortcut(self) -> None:
+        """What Ctrl+Alt+M does: toggle the microphone, or nothing at all.
+
+        Nothing, rather than a notification, when no recording is running: the
+        same keys mean something in other programs, and a toast every time
+        they are pressed there would be noise about a feature nobody used.
+        """
+        if not self.status().live_id:
+            return
+        try:
+            self.toggle_mic()
+        except TrayError as exc:
+            self.notify(str(exc))
+
     def quit(self) -> None:
         """Let go of the machine properly.
 
@@ -610,6 +671,8 @@ class ScribeTray:
         if self.status().recording:
             self.notify("Finishing the recording, then closing.")
         self._stopping.set()
+        with contextlib.suppress(Exception):
+            self._hotkey.stop()
         # The window goes first: waiting for a write-up with a dead-looking
         # page still on screen is worse than the page simply being gone, and
         # this is the one browser window Scribe is entitled to close.
@@ -646,15 +709,19 @@ class ScribeTray:
             with contextlib.suppress(Exception):
                 icon.title = tip
 
-        if status.recording != self._recording_icon:
-            image = spark_image(ICON_SIZE, recording=status.recording)
-            self._recording_icon = status.recording
+        drawn = (status.recording, status.recording and status.mic_muted)
+        if drawn != self._drawn:
+            image = spark_image(ICON_SIZE, recording=drawn[0], muted=drawn[1])
+            self._drawn = drawn
             if image is not None:
                 with contextlib.suppress(Exception):
                     icon.icon = image
 
-        if status.label != self._shown:
-            self._shown = status.label
+        # The mute item's wording is in the menu too, so it is part of what
+        # decides whether the menu needs handing over again.
+        shown = f"{status.label}|{status.mic_available}|{status.mic_muted}"
+        if shown != self._shown:
+            self._shown = shown
             with contextlib.suppress(Exception):
                 icon.update_menu()
 
@@ -750,14 +817,19 @@ class ScribeTray:
         image = spark_image(ICON_SIZE)
         if image is None:
             raise TrayError("Drawing the icon needs Pillow: pip install pillow")
-        self._tip = tooltip(self.status())
-        self._shown = self.status().label
+        status = self.status()
+        self._tip = tooltip(status)
+        self._shown = f"{status.label}|{status.mic_available}|{status.mic_muted}"
         # A callable menu is re-read on every rebuild, which is how the status
         # line and the start/stop label follow what the server is doing.
         return Icon("Scribe", image, self._tip, menu=Menu(self._entries))
 
     def _ready(self, icon: Any) -> None:
         icon.visible = True
+        if self._hotkey.start():
+            state = getattr(self._app, "state", None)
+            if state is not None:
+                state.mic_shortcut = self._hotkey.name
         if promote():
             self._promote_tries = 0
         threading.Thread(target=self._watch, name="scribe-tray", daemon=True).start()

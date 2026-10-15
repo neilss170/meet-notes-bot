@@ -36,16 +36,32 @@ from pathlib import Path
 from typing import Any, Callable
 
 from meetbot.config import Config, validate_meet_url
-from meetbot.local_runner import run_local_meeting
+from meetbot.local_runner import SELF_SPEAKER, run_local_meeting
 from meetbot.runner import MeetingRun, run_meeting
 from meetbot.transcript.notes import Notepad
-from meetbot.transcript.store import MARK_EVENT, iter_records, read_title
+from meetbot.transcript.store import (
+    MARK_EVENT,
+    MIC_EVENT,
+    iter_records,
+    read_speaker_names,
+    read_title,
+    read_utterances,
+    speakers,
+)
 
 logger = logging.getLogger(__name__)
 
 #: Most recent utterances kept in a status payload, so polling stays cheap
 #: however long the meeting runs.
 LIVE_TRANSCRIPT_LINES = 40
+
+#: How often a live meeting's attendees are re-read for the meetings list.
+#: A finished one is read once and kept until its file changes.
+ATTENDEES_REFRESH_S = 10.0
+
+
+class MicUnavailable(RuntimeError):
+    """Muting was asked of a meeting where it cannot apply. Says why."""
 
 
 class JobStatus(str, Enum):
@@ -105,6 +121,12 @@ class MeetingJob:
     _task: asyncio.Task[Any] | None = field(default=None, repr=False)
     _stop: Callable[[], None] | None = field(default=None, repr=False)
     _run: MeetingRun | None = field(default=None, repr=False)
+    #: The live recording's microphone switch - a
+    #: :class:`~meetbot.local_runner.MicSwitch`. Only a local recording that
+    #: has opened its devices has one, and it goes when the recording ends.
+    _mic: Any = field(default=None, repr=False)
+    #: (file signature, read at, names) - see :meth:`attendees`.
+    _attendees: tuple[Any, float, list[str]] | None = field(default=None, repr=False)
 
     @property
     def elapsed_s(self) -> float:
@@ -126,6 +148,7 @@ class MeetingJob:
             "speakers": [],
             "duration_s": 0.0,
             "mark_count": 0,
+            "mic_muted": False,
         }
         if self.output_dir is None:
             return progress
@@ -136,6 +159,7 @@ class MeetingJob:
         transcript: list[dict[str, Any]] = []
         events: list[dict[str, Any]] = []
         marks = 0
+        muted = False
         speakers: list[str] = []
         last_end = 0.0
         try:
@@ -163,6 +187,14 @@ class MeetingJob:
                         # marked: nothing else about the meeting changed,
                         # and without this it would never re-read it.
                         marks += 1
+                    elif record.get("kind") == MIC_EVENT:
+                        # Replayed rather than remembered, so a meeting read
+                        # back after a restart says what its file says.
+                        details = record.get("details")
+                        if isinstance(details, dict) and isinstance(
+                            details.get("muted"), bool
+                        ):
+                            muted = details["muted"]
         except (OSError, ValueError):
             logger.debug("Could not read progress for job %s", self.id, exc_info=True)
             return progress
@@ -177,7 +209,65 @@ class MeetingJob:
         progress["speakers"] = speakers
         progress["duration_s"] = last_end
         progress["mark_count"] = marks
+        progress["mic_muted"] = muted
         return progress
+
+    def attendees(self) -> list[str]:
+        """Who else spoke, by the names they have been given, first heard first.
+
+        For the meetings list, which shows them beside every title on every
+        poll - so the answer is kept until the transcript changes, and a live
+        one is re-read at most every :data:`ATTENDEES_REFRESH_S`. You are not
+        listed: you were at every meeting you recorded.
+        """
+        path = self.artifact("transcript.jsonl")
+        if path is None:
+            return []
+        try:
+            stat = path.stat()
+        except OSError:
+            return []
+        signature = (stat.st_mtime_ns, stat.st_size)
+        now = time.time()
+        cached = self._attendees
+        if cached is not None and (
+            cached[0] == signature
+            or (not self.status.is_terminal and now - cached[1] < ATTENDEES_REFRESH_S)
+        ):
+            return cached[2]
+        try:
+            named = read_speaker_names(path)
+            names = [
+                named.get(label, label)
+                for label in speakers(read_utterances(path))
+                if label != SELF_SPEAKER
+            ]
+        except (OSError, ValueError):
+            names = []
+        self._attendees = (signature, now, names)
+        return names
+
+    @property
+    def mic_available(self) -> bool:
+        """Whether this meeting's microphone can be muted right now.
+
+        Only while a local recording is running and recording a microphone.
+        A bot hears the call rather than this machine, so there is nothing of
+        yours in it to mute.
+        """
+        return (
+            self.kind == "local"
+            and not self.status.is_terminal
+            and self._mic is not None
+            and bool(self._mic.available)
+        )
+
+    @property
+    def mic_muted(self) -> bool:
+        """Whether Scribe has stopped hearing the microphone, live or replayed."""
+        if self._mic is not None:
+            return bool(self._mic.muted)
+        return bool(self.read_progress().get("mic_muted"))
 
     @property
     def notepad(self) -> Notepad | None:
@@ -222,6 +312,21 @@ class MeetingJob:
             payload.update(self.read_progress())
         else:
             payload["utterance_count"] = self.utterance_count
+        # Live state wins over the replay: it is the same answer a moment
+        # sooner, and the only answer before the first event is on disk.
+        if self._mic is not None:
+            payload["mic_muted"] = bool(self._mic.muted)
+        elif "mic_muted" not in payload:
+            payload["mic_muted"] = False
+        payload["mic_available"] = self.mic_available
+        payload["mic_levels"] = (
+            self._mic.levels() if self.mic_available and self._mic is not None else []
+        )
+        # The whole room, for the recording pill: it keeps moving while the
+        # microphone is muted, because the meeting is still being recorded.
+        room = getattr(self._mic, "room_levels", None) if self._mic is not None else None
+        payload["levels"] = room() if callable(room) and not self.status.is_terminal else []
+        payload["attendees"] = self.attendees()
         return payload
 
 
@@ -285,7 +390,50 @@ class JobManager:
             for job in self._jobs.values()
         )
 
+    def live_local(self) -> MeetingJob | None:
+        """The recording happening on this machine right now, if any."""
+        return next(
+            (
+                job
+                for job in self.list()
+                if job.kind == "local" and not job.status.is_terminal
+            ),
+            None,
+        )
+
     # -- commands ----------------------------------------------------------
+
+    def set_mic(self, job_id: str, muted: bool | None = None) -> bool:
+        """Mute or unmute a recording's microphone, or flip it with ``None``.
+
+        Returns:
+            Whether the microphone is muted afterwards.
+
+        Raises:
+            MicUnavailable: With the reason, when the meeting is not a local
+                recording that is running and capturing a microphone.
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            raise MicUnavailable("No such meeting.")
+        if job.kind != "local":
+            raise MicUnavailable(
+                "Muting applies to recordings made on this computer. The bot "
+                "hears the call, not your microphone - mute yourself in the "
+                "call instead."
+            )
+        if job.status.is_terminal:
+            raise MicUnavailable("This meeting is no longer recording.")
+        if job._mic is None:
+            raise MicUnavailable(
+                "The recording is still opening its devices. Try again in a moment."
+            )
+        if not job._mic.available:
+            raise MicUnavailable("This recording is not capturing a microphone.")
+        if muted is None:
+            return bool(job._mic.toggle())
+        job._mic.set(bool(muted))
+        return bool(job._mic.muted)
 
     def start(
         self, meet_url: str, *, owner: str = "", **overrides: Any
@@ -444,6 +592,7 @@ class JobManager:
                 microphone_index=microphone_index,
                 on_stop=lambda stop: setattr(job, "_stop", stop),
                 on_output_dir=lambda path: setattr(job, "output_dir", path),
+                on_mic=lambda switch: setattr(job, "_mic", switch),
                 reconfigure_logging=False,
             )
             job._run = run
@@ -470,6 +619,9 @@ class JobManager:
             job.errors.append(f"{type(exc).__name__}: {exc}")
         finally:
             job.finished_at = time.time()
+            # The devices are closed, so there is nothing left to mute; what
+            # happened is in the transcript, which the payload replays.
+            job._mic = None
             if not job.status.is_terminal:
                 job.status = JobStatus.FAILED
             self._finished(job)
@@ -585,6 +737,7 @@ __all__ = [
     "JobManager",
     "JobStatus",
     "MeetingJob",
+    "MicUnavailable",
     "free_port",
     "load_past_runs",
 ]

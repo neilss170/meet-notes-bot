@@ -245,7 +245,9 @@ def spiral_points(size: float, turns: float) -> list[tuple[float, float]]:
     return points
 
 
-def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
+def spark_image(
+    size: int = 256, *, recording: bool = False, muted: bool = False
+) -> Any | None:
     """Draw the mark at *size* pixels. ``None`` if Pillow is not installed.
 
     The shape is the one the page wears: a spiral, which is Scribe's logo and
@@ -266,6 +268,10 @@ def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
             changes. Beside a row of monochrome system glyphs it is the only
             red thing on the taskbar, which is what "you are being recorded"
             should look like.
+        muted: Recording, with your microphone muted: the tile turns amber
+            and a slash crosses the mark. Still plainly a recording - the
+            other side of the call is being captured - but not the red of
+            "everything you say is going in".
     """
     try:
         from PIL import Image, ImageDraw
@@ -274,7 +280,13 @@ def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
 
     ink = (18, 19, 26, 255)
     red = (229, 72, 77, 255)
-    spark, back = (ink, red) if recording else ((226, 112, 58, 255), ink)
+    amber = (240, 168, 48, 255)
+    if recording and muted:
+        spark, back = ink, amber
+    elif recording:
+        spark, back = ink, red
+    else:
+        spark, back = (226, 112, 58, 255), ink
 
     big = size * _SUPERSAMPLE
     image = Image.new("RGBA", (big, big), (0, 0, 0, 0))
@@ -301,6 +313,14 @@ def spark_image(size: int = 256, *, recording: bool = False) -> Any | None:
             draw.ellipse([x0 - radius, y0 - radius, x0 + radius, y0 + radius], fill=spark)
     for x, y in (points[0], points[-1]):
         draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=spark)
+    if recording and muted:
+        # A slash, cut out of the mark by a band of the tile's own colour so
+        # it still reads as a slash at sixteen pixels rather than a smudge.
+        a, b = big * 0.2, big * 0.8
+        draw.line([(a, a), (b, b)], fill=back, width=round(width * 2.6))
+        draw.line([(a, a), (b, b)], fill=spark, width=width)
+        for x, y in ((a, a), (b, b)):
+            draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=spark)
     return image.resize((size, size), Image.LANCZOS)
 
 

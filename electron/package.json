@@ -1,0 +1,29 @@
+{
+  "name": "scribe-desktop",
+  "productName": "Scribe",
+  "version": "1.0.0",
+  "description": "Scribe - meeting notes. The desktop shell around the local Scribe server.",
+  "author": "Neil Sharma",
+  "license": "MIT",
+  "private": true,
+  "main": "src/main.js",
+  "scribe": {
+    "autoUpdate": false
+  },
+  "scripts": {
+    "icons": "node scripts/run-python.js electron/scripts/make_icons.py",
+    "dev": "node scripts/dev.js",
+    "build:server": "node scripts/build-server.js",
+    "build:app": "electron-builder --config electron-builder.yml --dir",
+    "dist": "npm run icons && npm run build:server && electron-builder --config electron-builder.yml",
+    "smoke": "node scripts/smoke.js"
+  },
+  "devDependencies": {
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "koffi": "^3.3.3"
+  }
+}

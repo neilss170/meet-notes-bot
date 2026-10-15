@@ -1,0 +1,86 @@
+# electron-builder: how Scribe is packaged.
+#
+#   npm run build:app   unpacked app in release/win-unpacked, for a quick look
+#   npm run dist        icons + frozen server + installer: release/Scribe-Setup-<version>.exe
+#
+# The server is frozen separately (npm run build:server -> ../dist/scribe-server)
+# and shipped beside the app as an extraResource, at resources/server.
+
+appId: com.neilsharma.scribe          # also the Windows AppUserModelID; see src/platform/win32.js
+productName: Scribe
+copyright: Copyright © 2026 Neil Sharma
+
+directories:
+  output: release
+  buildResources: resources
+
+files:
+  - src/**/*
+  - assets/**/*
+  - package.json
+
+extraResources:
+  - from: ../dist/scribe-server
+    to: server
+    filter: ["**/*"]
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: resources/icon.ico
+  executableName: Scribe
+  # --- Code signing -----------------------------------------------------
+  # Unsigned for now, so Windows SmartScreen warns on first run ("Windows
+  # protected your PC" -> More info -> Run anyway). To sign, provide the
+  # certificate through the environment rather than this file:
+  #   CSC_LINK=<path or base64 of the .pfx>  CSC_KEY_PASSWORD=<password>
+  # or, for a cloud HSM / Azure Trusted Signing, uncomment and fill in:
+  # signtoolOptions:
+  #   publisherName: "Your Company Ltd"
+  #   certificateSubjectName: "Your Company Ltd"
+  #   rfc3161TimeStampServer: http://timestamp.digicert.com
+  # azureSignOptions:
+  #   endpoint: https://<region>.codesigning.azure.net
+  #   codeSigningAccountName: <account>
+  #   certificateProfileName: <profile>
+  # Note scribe-server.exe should be signed too: it is the process that
+  # holds the microphone, and the one antivirus looks at hardest.
+
+nsis:
+  oneClick: false                       # an assisted installer, so the uninstaller can ask about data
+  perMachine: false                     # per-user: no admin prompt, data and app both under the user
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: Scribe
+  artifactName: Scribe-Setup-${version}.${ext}
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  include: resources/installer.nsh      # "remove my data" on uninstall; waits for the server to finish
+  deleteAppDataOnUninstall: false       # decided by the checkbox in installer.nsh instead
+  runAfterFinish: true
+
+# Updates: wired, switched off in package.json ("scribe": { "autoUpdate": false }).
+# A private repository needs a GH_TOKEN to publish, and the updater needs one
+# to read - see the README before turning this on.
+publish:
+  provider: github
+  owner: neilss170
+  repo: meet-notes-bot
+  private: true
+  releaseType: release
+
+# --- macOS, for later ---------------------------------------------------
+# Kept here so the target is one block away. Needs scribe-server built on a
+# Mac (npm run build:server there) and an .icns icon.
+# mac:
+#   target: [dmg, zip]
+#   category: public.app-category.productivity
+#   icon: resources/icon.icns
+#   hardenedRuntime: true
+#   extendInfo:
+#     NSMicrophoneUsageDescription: Scribe records your side of the meeting.

@@ -319,6 +319,9 @@ class CallWatcher:
         self._handled: set[str] = set()
         self._announced: set[str] = set()
         self._muted: dict[str, str] = self._load_muted()
+        #: Apps other than Scribe holding the microphone at the last poll,
+        #: or ``None`` before the first one.
+        self._on_mic: set[str] | None = None
 
     # -- reading -----------------------------------------------------------
 
@@ -341,6 +344,7 @@ class CallWatcher:
         )
         now = self.clock()
         with self._lock:
+            self._on_mic = {s.app_id for s in sessions}
             live: set[str] = set()
             for session in sessions:
                 if session.started_at and now - session.started_at > MAX_SESSION_AGE_S:
@@ -371,6 +375,15 @@ class CallWatcher:
             fresh = [p for p in self._pending(now) if p.id not in self._announced]
             self._announced.update(p.id for p in fresh)
         return fresh
+
+    def others_on_mic(self) -> bool | None:
+        """Whether any app but Scribe held the microphone at the last poll.
+
+        ``None`` until the first poll, so a caller cannot read "no call" into
+        a watcher that has not looked yet.
+        """
+        with self._lock:
+            return None if self._on_mic is None else bool(self._on_mic)
 
     def pending(self) -> list[CallPrompt]:
         """Calls still waiting for an answer, oldest first."""

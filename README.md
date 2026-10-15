@@ -31,9 +31,28 @@ and no virtual audio device has to be installed.
 
 ## Install
 
+### The Windows app
+
+Download `Scribe-Setup-<version>.exe` and run it — no Python needed. Scribe
+starts in the notification area and opens signed in. Put your Deepgram and LLM
+keys in **tray → Settings and API keys** (`%APPDATA%\Scribe\.env`).
+
+The installer is not code-signed yet, so Windows SmartScreen will say
+*"Windows protected your PC"*: choose **More info → Run anyway**.
+
+Your data lives in `%APPDATA%\Scribe` — recordings, settings, accounts, and the
+logs in `logs\` — and survives uninstalling unless you tick *remove my data*.
+Building the installer, and everything else about the app:
+[docs/desktop-app.md](docs/desktop-app.md).
+
+### From source
+
 You need **Python 3.11+**, a [Deepgram](https://console.deepgram.com/) key for
-transcription, and an [Anthropic](https://console.anthropic.com/settings/keys)
-key for the write-up.
+transcription, and one key for the write-up: [Anthropic](https://console.anthropic.com/settings/keys),
+[OpenAI](https://platform.openai.com/api-keys) or
+[Gemini](https://aistudio.google.com/apikey) — set `LLM_PROVIDER` to whichever
+you have. Anything that speaks the OpenAI wire format works too, Groq
+included; see [docs/configuration.md](docs/configuration.md).
 
 ```bash
 git clone https://github.com/neilss170/meet-notes-bot.git
@@ -106,6 +125,7 @@ refuses anonymous guests, and Google expires the session on its own schedule.
 
 | | |
 |---|---|
+| [The desktop app](docs/desktop-app.md) | Building the installer, where data and logs live, how it behaves |
 | [Recording a meeting](docs/recording.md) | Every way to start one, what it produces, and the flags worth knowing |
 | [Configuration](docs/configuration.md) | Everything that can go in `.env` |
 | [Deploying it](docs/deploying.md) | On your own machine, shared on a network, or on a server with no sound card |

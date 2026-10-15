@@ -38,8 +38,8 @@ from typing import Sequence
 
 from meetbot.analysis.llm import LLMClient, LLMError
 from meetbot.analysis.summarize import CHUNK_CHARS, chunk_transcript
-from meetbot.transcript.format import render_for_llm
-from meetbot.transcript.store import Utterance, speakers
+from meetbot.transcript.format import mute_context, render_for_llm
+from meetbot.transcript.store import MicMute, Utterance, speakers
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +275,10 @@ def _condense_parts(
 
 
 def _context_header(
-    utterances: Sequence[Utterance], meeting_url: str, duration: str
+    utterances: Sequence[Utterance],
+    meeting_url: str,
+    duration: str,
+    mic_muted: Sequence[MicMute] = (),
 ) -> str:
     lines = ["Meeting context:"]
     if meeting_url:
@@ -290,6 +293,8 @@ def _context_header(
                 "- Labels like 'Speaker 0' come from automatic diarization "
                 "and are not real names."
             )
+    if mic_muted:
+        lines.append(f"- {mute_context(mic_muted)}")
     return "\n".join(lines)
 
 
@@ -301,6 +306,7 @@ def enhance_notes(
     template_id: str | None = None,
     meeting_url: str = "",
     duration: str = "",
+    mic_muted: Sequence[MicMute] = (),
     max_single_pass_chars: int = MAX_SINGLE_PASS_CHARS,
 ) -> str:
     """Rewrite ``notes`` into finished notes, grounded in the transcript.
@@ -314,6 +320,9 @@ def enhance_notes(
             fall back to :data:`DEFAULT_TEMPLATE`.
         meeting_url: Included as prompt context.
         duration: Human-readable captured duration, e.g. ``"00:42:10"``.
+        mic_muted: Stretches the person recording muted their microphone.
+            Without them a silent "You" reads to the model as audio that
+            failed, and the notes say so.
         max_single_pass_chars: Threshold above which the transcript is
             condensed in parts first.
 
@@ -334,7 +343,7 @@ def enhance_notes(
         )
 
     if utterances:
-        transcript = render_for_llm(utterances)
+        transcript = render_for_llm(utterances, mic_muted=mic_muted)
         if len(transcript) > max_single_pass_chars:
             chunks = chunk_transcript(transcript, CHUNK_CHARS)
             logger.info(
@@ -372,7 +381,7 @@ def enhance_notes(
     user_prompt = "\n\n".join(
         part
         for part in (
-            _context_header(utterances, meeting_url, duration),
+            _context_header(utterances, meeting_url, duration, mic_muted),
             instruction,
             f"--- REQUIRED SHAPE ---\n{template.guidance}",
             spine,

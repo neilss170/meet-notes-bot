@@ -143,8 +143,25 @@ async def _signed_in_page(playwright_api, served):
     await page.fill("input[name=username]", "neil")
     await page.fill("input[name=password]", PASSWORD)
     await page.click("button[type=submit]")
+    # Nothing opens by itself any more - the page waits on its home screen -
+    # so open the newest meeting the way a person would.
+    await page.wait_for_selector(".mtg", timeout=40_000)
+    await page.click(".mtg .mtg-time")
     await page.wait_for_selector("#notepad", timeout=40_000)
     return browser, page, errors
+
+
+async def _open_ask(page, scope: str = "meeting") -> None:
+    """Ask, the way a person reaches it from anywhere: Ctrl+J."""
+    await page.keyboard.press("Control+j")
+    await page.wait_for_selector("#chat-input", timeout=10_000)
+    await page.click(f'#ask-scope [data-scope="{scope}"]')
+
+
+async def _open_transcript(page) -> None:
+    """The pill at the foot of a meeting opens its transcript."""
+    await page.click("#rec-pill")
+    await page.wait_for_selector("#drawer #tx-lines", timeout=10_000)
 
 
 class TestNotepadInTheBrowser:
@@ -195,18 +212,25 @@ class TestNotepadInTheBrowser:
             try:
                 typed = "api behind\npriya -> script"
                 await page.fill("#notepad", typed)
-                await page.select_option("#template", "standup")
-                await page.click("#enhance")
+                # Templates live behind "/" in Ask now: pick one, and the
+                # notes are rewritten in its shape.
+                await _open_ask(page)
+                await page.fill("#chat-input", "/stand")
+                await page.wait_for_selector("#slash .slash-item.on", timeout=10_000)
+                assert "Stand" in await page.text_content("#slash .slash-item.on")
+                await page.press("#chat-input", "Enter")
                 await page.wait_for_function(
                     "document.querySelector('#enhanced')?.textContent"
                     ".includes('Canned enhancement')",
                     timeout=60_000,
                 )
-                # The notes are the spine; enhancing must not consume them.
-                assert await page.input_value("#notepad") == typed
                 assert (served["dir"] / "enhanced.md").exists()
                 # Task items render as checkboxes rather than raw "- [ ]".
                 assert await page.locator("#enhanced .md-task").count() == 1
+                # The notes are the spine; enhancing must not consume them.
+                await page.keyboard.press("Escape")
+                await page.click('#note-mode [data-mode="mine"]')
+                assert await page.input_value("#notepad") == typed
                 # The chosen template actually shaped the request.
                 assert "by person" in served["llm"].prompts[-1].lower()
                 assert typed in served["llm"].prompts[-1]
@@ -220,15 +244,15 @@ class TestNotepadInTheBrowser:
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
-                await page.click('button[data-tab="ask"]')
-                await page.wait_for_selector("#ask-input")
-                await page.fill("#ask-input", "Was the budget discussed?")
-                await page.click("#ask-go")
+                await _open_ask(page)
+                await page.fill("#chat-input", "Was the budget discussed?")
+                await page.click("#chat-go")
                 await page.wait_for_function(
-                    "document.body.textContent.includes('That did not come up')",
+                    "document.querySelector('#chat-feed')?.textContent"
+                    ".includes('That did not come up')",
                     timeout=60_000,
                 )
-                body = await page.text_content(".askwrap")
+                body = await page.text_content("#chat-feed")
                 assert "Was the budget discussed?" in body
                 assert not errors, f"the page logged errors: {errors}"
             finally:
@@ -241,9 +265,13 @@ class TestNotepadInTheBrowser:
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
-                await page.click('button[data-tab="transcript"]')
-                await page.wait_for_selector('.sb-chip[data-id="Speaker 1"]')
-                await page.click('.sb-chip[data-id="Speaker 1"]')
+                await _open_transcript(page)
+                chip = '#tx-speakers .sb-chip[data-id="Speaker 1"]'
+                await page.wait_for_selector(chip)
+                await page.click(chip)
+                assert await page.locator("#sb-edit").count() == 1, (
+                    "the name box should open in one place, not two"
+                )
                 await page.fill("#sb-edit", "Priya")
                 await page.press("#sb-edit", "Enter")
 
@@ -271,14 +299,17 @@ class TestNotepadInTheBrowser:
             try:
                 typed = "keep me"
                 await page.fill("#notepad", typed)
-                await page.click('button[data-tab="transcript"]')
+                await _open_transcript(page)
                 await page.wait_for_selector(".live-line")
-                assert "two weeks behind" in await page.text_content("#pane")
-                await page.click('button[data-tab="notes"]')
-                await page.wait_for_selector("#notepad")
+                assert "two weeks behind" in await page.text_content("#drawer")
+                await page.click("#drawer-close")
                 assert await page.input_value("#notepad") == typed
-                # Leaving the notepad flushes it rather than waiting for the
-                # debounce, so the tab switch is also a save point.
+                # Opening the transcript flushes the notes rather than waiting
+                # for the debounce, so it is also a save point.
+                await page.wait_for_function(
+                    "document.querySelector('#savestate')?.textContent === 'Saved'",
+                    timeout=10_000,
+                )
                 assert (served["dir"] / "notes.md").read_text(
                     encoding="utf-8"
                 ) == typed
@@ -367,6 +398,29 @@ class TestFindingAndNamingInTheBrowser:
             finally:
                 await browser.close()
 
+    async def test_a_meeting_is_renamed_from_the_list(self, served) -> None:
+        """The list has no edit buttons: click the name, type, press Enter."""
+        from meetbot.transcript.store import read_title
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await page.click("#home")
+                await page.click(".mtg .mtg-name")
+                await page.fill(".mtg-edit", "Planning, renamed")
+                await page.press(".mtg-edit", "Enter")
+                await page.wait_for_function(
+                    "document.querySelector('.mtg-name')"
+                    "?.textContent.includes('Planning, renamed')",
+                    timeout=20_000,
+                )
+                assert await page.is_visible("#home-view"), "renaming opened the meeting"
+                assert read_title(served["dir"] / "transcript.jsonl") == "Planning, renamed"
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
     async def test_a_half_typed_name_survives_the_poll_loop(self, served) -> None:
         """The notepad bug wearing a different hat: the page rebuilds the
         header every time the elapsed clock ticks, which would take the input
@@ -396,8 +450,11 @@ class TestTheButtonsTellYouWhereYouAre:
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
+                await page.click("#home")
+                await page.wait_for_selector("#record")
                 resting = await page.evaluate(
-                    "getComputedStyle(document.querySelector('#record')).boxShadow"
+                    "(() => { const s = getComputedStyle(document.querySelector('#record'));"
+                    " return s.boxShadow + '|' + s.outlineStyle; })()"
                 )
 
                 # Chromium only applies the :focus-visible heuristic to a
@@ -424,7 +481,8 @@ class TestTheButtonsTellYouWhereYouAre:
                         active: document.activeElement === el,
                         page_focused: document.hasFocus(),
                         visible: el.matches(':focus-visible'),
-                        shadow: getComputedStyle(el).boxShadow,
+                        shadow: getComputedStyle(el).boxShadow + '|' +
+                          getComputedStyle(el).outlineStyle,
                       };
                     }"""
                 )
@@ -460,24 +518,73 @@ class TestTheButtonsTellYouWhereYouAre:
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
-                counts = await page.evaluate(
-                    """() => {
-                      // Only what is on screen: the other mode's form is in
-                      // the DOM the whole time, hidden behind the switch.
-                      const shown = (root) =>
-                        [...document.querySelectorAll(root + ' .btn.primary')]
-                          .filter((el) => el.offsetParent !== null).length;
-                      return {
-                        side: shown('.side'),
-                        main: shown('.main'),
-                        rail: shown('.chat'),
-                      };
-                    }"""
-                )
-                for region, count in counts.items():
-                    assert count <= 1, f"{region} has {count} accented buttons"
-                assert counts["side"] == 1, "the side panel lost its primary action"
+                count = """() => {
+                  // Only what is on screen: the hidden view is in the DOM too.
+                  const shown = (root) =>
+                    [...document.querySelectorAll(root + ' .btn.primary')]
+                      .filter((el) => el.offsetParent !== null).length;
+                  return {
+                    side: shown('.side'), home: shown('#home-view'),
+                    meeting: shown('#meeting-view'), ask: shown('#ask'),
+                  };
+                }"""
+                in_meeting = await page.evaluate(count)
+                await _open_ask(page)
+                with_ask = await page.evaluate(count)
+                await page.keyboard.press("Escape")
+                await page.click("#home")
+                await page.wait_for_selector("#record")
+                at_home = await page.evaluate(count)
+                for counts in (in_meeting, with_ask, at_home):
+                    for region, n in counts.items():
+                        assert n <= 1, f"{region} has {n} accented buttons: {counts}"
+                assert at_home["home"] == 1, "home lost its one action: Start recording"
+                assert in_meeting["meeting"] == 1, "a meeting with no write-up offers one"
+                assert with_ask["ask"] == 1, "Ask has one action: Ask"
                 assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+
+class TestTheHomeScreen:
+    """Opening Scribe shows nothing in particular until you ask for something.
+
+    It used to open the newest meeting by itself, so sitting idle meant
+    looking at the last call's notes. Now the page waits on its home screen;
+    a meeting opens when it is clicked or when a recording starts.
+    """
+
+    async def test_signing_in_opens_no_meeting(self, served) -> None:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            try:
+                browser = await pw.chromium.launch(headless=True)
+            except Exception as exc:  # noqa: BLE001
+                pytest.skip(f"Chromium is not available: {exc}")
+            page = await (await browser.new_context()).new_page()
+            try:
+                await page.goto(f"{served['url']}/login")
+                await page.fill("input[name=username]", "neil")
+                await page.fill("input[name=password]", PASSWORD)
+                await page.click("button[type=submit]")
+                await page.wait_for_selector(".mtg", timeout=40_000)
+                # Two polls' worth: long enough for the old behaviour to
+                # have opened the newest meeting.
+                await page.wait_for_timeout(4500)
+                assert await page.is_visible("#home-view")
+                assert await page.locator("#notepad").count() == 0
+                assert await page.locator(".mtg.on").count() == 0
+
+                await page.click(".mtg .mtg-time")
+                await page.wait_for_selector("#notepad", timeout=20_000)
+                assert await page.is_hidden("#home-view")
+                await page.click("#home")
+                await page.wait_for_selector("#home-view", timeout=10_000)
+                await page.wait_for_timeout(2500)
+                assert await page.locator("#notepad").count() == 0, (
+                    "the next poll reopened a meeting after going home"
+                )
             finally:
                 await browser.close()
 
@@ -494,7 +601,7 @@ class TestArrivingFromTheIcon:
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
-                await page.wait_for_selector(".mtg.on", timeout=30_000)
+                await page.wait_for_selector(".mtg.on", state="attached", timeout=30_000)
                 # What the icon does: leave the id where the next poll finds it.
                 served["app"].state.focus = ("other-meeting", time.time())
                 await page.wait_for_function(
@@ -545,6 +652,105 @@ class TestArrivingFromTheIcon:
                 # And the address bar is clean, so a reload does not fight a
                 # click on a different meeting.
                 assert "meeting=" not in page.url
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+
+class TestTheWriteUp:
+    """After the call: your words in ink, the model's in grey, and a line
+    you rewrite becomes yours."""
+
+    async def test_your_words_are_ink_and_an_edited_line_becomes_yours(self, served) -> None:
+        from playwright.async_api import async_playwright
+
+        from meetbot.transcript.notes import Notepad
+
+        pad = Notepad(served["dir"])
+        pad.write_notes("budget approved?")
+        pad.write_enhanced("## Summary\n\n- budget approved?\n- The model added this line.\n")
+        async with async_playwright() as pw:
+            try:
+                browser = await pw.chromium.launch(headless=True)
+            except Exception as exc:  # noqa: BLE001
+                pytest.skip(f"Chromium is not available: {exc}")
+            errors: list[str] = []
+            page = await (await browser.new_context()).new_page()
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            try:
+                await page.goto(f"{served['url']}/login")
+                await page.fill("input[name=username]", "neil")
+                await page.fill("input[name=password]", PASSWORD)
+                await page.click("button[type=submit]")
+                await page.wait_for_selector(".mtg", timeout=40_000)
+                await page.click(".mtg .mtg-time")
+                await page.wait_for_selector("#enhanced li", timeout=30_000)
+
+                lines = page.locator("#enhanced li")
+                assert "mine" in (await lines.nth(0).get_attribute("class") or "")
+                assert "mine" not in (await lines.nth(1).get_attribute("class") or "")
+                ink = "el => getComputedStyle(el).color"
+                assert await lines.nth(0).evaluate(ink) != await lines.nth(1).evaluate(ink), (
+                    "your line and the model's look the same"
+                )
+
+                await lines.nth(1).click()
+                await page.keyboard.press("Control+a")
+                await page.keyboard.type("Finance signs off anything over 40k.")
+                await page.keyboard.press("Escape")
+                # Escape cancels; nothing changed on disk.
+                assert "Finance signs off" not in pad.read_enhanced()
+
+                await lines.nth(1).click()
+                await page.keyboard.press("Control+a")
+                await page.keyboard.type("Finance signs off anything over 40k.")
+                await page.locator("#enhanced li").nth(1).evaluate("el => el.blur()")
+                await page.wait_for_function(
+                    "document.querySelector('#savestate')?.textContent === 'Saved'",
+                    timeout=10_000,
+                )
+                assert "- Finance signs off anything over 40k." in pad.read_enhanced()
+                assert pad.edited_lines == ["- Finance signs off anything over 40k."]
+                edited = page.locator("#enhanced li").nth(1)
+                assert "mine" in (await edited.get_attribute("class") or "")
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+
+class TestStoppingByItself:
+    async def test_the_countdown_shows_and_keep_recording_cancels_it(
+        self, served, tmp_path
+    ) -> None:
+        from playwright.async_api import async_playwright
+
+        directory = tmp_path / "recordings" / "live-call"
+        store = TranscriptStore(directory / "transcript.jsonl")
+        store.write_meta(MeetingMeta(meet_url="Live call", bot_name="Scribe (local capture)"))
+        store.close()
+        job = MeetingJob(
+            id="live-call", meet_url="Live call", kind="local", title="Live call",
+            owner="neil", status=JobStatus.IN_CALL, created_at=time.time(),
+            output_dir=directory,
+        )
+        auto = served["app"].state.auto_stop
+        auto.countdown_s = 600  # long enough that nothing really stops here
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                # Registered once the page is open, so it does not open itself
+                # before the helper has opened the meeting it expects.
+                served["app"].state.manager._jobs[job.id] = job
+                auto.slept("live-call")
+                toast = page.locator('#toast-root [data-key="auto-stop"]')
+                await toast.wait_for(timeout=30_000)
+                text = await toast.text_content()
+                assert "Stopping" in text and "asleep" in text
+                await toast.locator("button").click()
+                await page.wait_for_selector(
+                    '#toast-root [data-key="auto-stop"]', state="detached", timeout=10_000
+                )
+                assert auto.pending("live-call") is None
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()

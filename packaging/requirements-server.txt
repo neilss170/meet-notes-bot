@@ -1,0 +1,25 @@
+# What scribe-server.exe is frozen from - and nothing else.
+#
+# The build runs in its own virtualenv (build/server-venv, made by
+# `npm run build:server`). Freezing from a developer's global Python was tried
+# and is not workable: PyInstaller follows optional imports, and a machine
+# with torch, PyQt or Jupyter installed ends up shipping them, at gigabytes
+# and an hour of build time, for code that never runs.
+#
+# Mirrors the "all" extra in pyproject.toml minus the tray, which the shell
+# replaces.
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.7
+python-dotenv>=1.0,<2.0
+websockets>=12.0,<16.0
+anthropic>=0.40
+openai>=1.40
+numpy>=1.24
+PyAudioWPatch>=0.2.12; sys_platform == "win32"
+# Bot mode drives a browser; the app can still send one where Chrome or Edge
+# is installed (BROWSER_CHANNEL). Its bundled Chromium is not shipped.
+playwright>=1.45,<2.0
+# Draws the icons at build time; not imported by the server.
+pillow>=10.0
+pyinstaller>=6.10

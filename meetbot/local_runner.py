@@ -57,7 +57,12 @@ from meetbot.runner import (
     _maybe_analyse,
     _write_transcript_markdown,
 )
-from meetbot.transcript.store import MeetingMeta, TranscriptStore, Utterance
+from meetbot.transcript.store import (
+    MIC_EVENT,
+    MeetingMeta,
+    TranscriptStore,
+    Utterance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +81,80 @@ SILENCE_WARN_S = 45.0
 #: How often to check that playback is still coming out of the device being
 #: recorded. Bluetooth headphones drop without warning.
 DEVICE_CHECK_S = 10.0
+
+
+class MicSwitch:
+    """Mute and unmute the microphone of one recording that is running.
+
+    Handed out by :func:`run_local_meeting` once the devices are open, and
+    safe to call from any thread: the page's request, a voice command and the
+    keyboard shortcut all arrive on different ones. Every change is written to
+    the transcript as it happens, so the recording's own file is the record
+    of when Scribe was and was not hearing you - and a transcript replayed
+    after a restart knows exactly that.
+    """
+
+    def __init__(
+        self,
+        recorder: LocalRecorder,
+        record: Callable[..., None],
+        clock: Callable[[], float],
+    ) -> None:
+        """
+        Args:
+            recorder: The recording whose microphone channel this silences.
+            record: Writes one event to the transcript, as ``record(kind,
+                **details)``.
+            clock: Seconds since the recording started, on the timeline its
+                utterances are stamped with.
+        """
+        self._recorder = recorder
+        self._record = record
+        self._clock = clock
+        self._lock = threading.Lock()
+
+    @property
+    def available(self) -> bool:
+        """Whether there is a microphone to mute at all."""
+        return self._recorder.microphone is not None
+
+    @property
+    def muted(self) -> bool:
+        return bool(self._recorder.mic_muted)
+
+    def levels(self) -> list[float]:
+        return self._recorder.mic_levels()
+
+    def room_levels(self) -> list[float]:
+        """Both channels' loudness - see :meth:`LocalRecorder.room_levels`."""
+        return self._recorder.room_levels()
+
+    def quiet_for(self) -> float:
+        """Seconds since anything was heard on either channel."""
+        return self._recorder.quiet_for()
+
+    def set(self, muted: bool) -> bool:
+        """Mute or unmute. Returns whether anything changed.
+
+        Asking for the state it is already in writes nothing, so two pages
+        that both say "mute" leave one event behind rather than two.
+        """
+        with self._lock:
+            if not self.available or self.muted == bool(muted):
+                return False
+            at = round(max(0.0, self._clock()), 2)
+            # Silence first, then the record of it: a word spoken between the
+            # two would otherwise reach the transcript after the event that
+            # says nothing was being heard.
+            self._recorder.mic_muted = bool(muted)
+            self._record(MIC_EVENT, muted=bool(muted), t=at)
+        logger.info("Microphone %s at +%.1fs", "muted" if muted else "unmuted", at)
+        return True
+
+    def toggle(self) -> bool:
+        """Flip the microphone. Returns the state it is now in."""
+        self.set(not self.muted)
+        return self.muted
 
 
 def slugify(title: str, fallback: str = "local") -> str:
@@ -116,6 +195,7 @@ async def run_local_meeting(
     on_stop: Callable[[Callable[[], None]], None] | None = None,
     on_output_dir: Callable[[Path], None] | None = None,
     on_event: Callable[[str, dict[str, Any]], None] | None = None,
+    on_mic: Callable[[MicSwitch], None] | None = None,
     reconfigure_logging: bool = True,
 ) -> MeetingRun:
     """Record this machine until stopped, then transcribe and write it up.
@@ -134,6 +214,9 @@ async def run_local_meeting(
         on_output_dir: Called with the artifact directory as soon as it
             exists, so a caller can show partial results while recording.
         on_event: Called with each lifecycle event as it happens.
+        on_mic: Called once with the recording's :class:`MicSwitch`, as soon
+            as the devices are open. How a caller mutes the microphone while
+            the recording goes on.
         reconfigure_logging: Set up per-run file logging. False for the
             service, which keeps its own configuration.
 
@@ -253,6 +336,9 @@ async def run_local_meeting(
         store.close()
         raise
 
+    if on_mic is not None:
+        on_mic(MicSwitch(recorder, emit, lambda: time.monotonic() - started))
+
     pump_thread = threading.Thread(target=pump, name="local-pump", daemon=True)
     pump_thread.start()
     watchdog = asyncio.create_task(_warn_if_silent(recorder, stop_event, emit))
@@ -369,6 +455,7 @@ async def _warn_if_silent(
 
 __all__ = [
     "CHANNEL_SPEAKERS",
+    "MicSwitch",
     "DEVICE_CHECK_S",
     "SELF_SPEAKER",
     "SILENCE_WARN_S",

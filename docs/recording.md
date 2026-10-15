@@ -93,6 +93,26 @@ that is the first thing to check.
 playing in another tab is recorded too. That is the trade for not needing a
 bot, an account, or anyone's permission to join.
 
+**Muting yourself in Zoom, Meet or Teams does not mute Scribe.** The call app
+mutes by not *sending* your voice; the microphone stays open, and Scribe reads
+the microphone. So a recording has a mute of its own: **Mic on** beside
+Stop on the page, **Mute my mic** in the icon's menu, **Ctrl+Alt+M** from
+anywhere while the icon is running, or *"Scribe, mute my mic"* with voice
+commands on. While muted, your channel carries silence — not nothing, so the
+stream to Deepgram stays open and every timestamp after it still lines up —
+and the speakers go on being recorded as normal. Unmute the same ways;
+*"Scribe, unmute my mic"* still works while muted, because the recogniser opens
+the microphone for itself and never sends what it hears anywhere.
+
+Each mute and unmute is written into `transcript.jsonl` as an event
+(`{"kind": "mic", "details": {"muted": true, "t": 812.4}}`, `t` on the same
+clock as the utterances), so the file is the record of when Scribe was not
+hearing you. `transcript.md` shows each stretch as one line —
+*— Your mic muted 00:13:32–00:14:05 —* — and the notes, the summary and
+cited answers are told about it, so a quiet `You` reads as a choice rather
+than as audio that failed. A bot meeting has no mute: the bot hears the call,
+not your microphone, so mute yourself in the call instead.
+
 Compared with the bot:
 
 | | Local capture | Bot |
@@ -152,9 +172,11 @@ python -m meetbot tray --open   # ...and open the page as well
 ```
 
 - **Hover it** and it says what is happening — `Recording · Standup · 4:07`,
-  `Writing up · Standup`, `Not recording`, or which setup check is failing.
-  The tile turns red while a meeting is being captured — beside a row of
-  monochrome system glyphs it is the only red thing on the taskbar.
+  `Recording · your mic is muted · 4:07`, `Writing up · Standup`,
+  `Not recording`, or which setup check is failing. The tile turns red while a
+  meeting is being captured — beside a row of monochrome system glyphs it is
+  the only red thing on the taskbar — and amber, with a slash, while your
+  microphone is muted.
 - **Click it** to bring the page back.
 - **Right-click it** for the things worth doing without the page open: start or
   stop a recording, jump straight to the notes of the call that just finished,
@@ -192,27 +214,68 @@ redirected and a shortcut written to `%USERPROFILE%\Desktop` never appears.
 Elsewhere, `meetbot serve --open` is the same thing with a terminal, and your
 desktop environment's own startup applications list will run it at sign-in.
 
+#### The page
+
+![Home, light and dark](images/redesign/1-home.png)
+
+The page is a sheet of paper. Home has one thing to do — **Start recording** —
+and below it every meeting as a thin row by day: its name, who was there
+(`Priya, Alex +2`) and the time. Click a name to rename it; click anywhere
+else on the row to open it. **Ctrl+K** searches the list, **Ctrl+J** asks.
+
+#### Stopping by itself
+
+A recording nobody remembered to stop is an hour of silence written up as a
+meeting. So a recording on this machine ends by itself when:
+
+- **the call app lets go of the microphone** — Meet, Zoom, Teams and the rest
+  hold it for the whole call and release it when you leave (this needs call
+  alerts on, which is how Scribe can see it; a recording with no call app in
+  it is never ended this way);
+- **nothing has been heard for 15 minutes**, on either side;
+- **the computer was asleep** — audio devices do not survive sleep.
+
+None of them stops at once. The page shows **Stopping… 10** with **Keep
+recording**, and so does the floating bubble; keeping it means the same sign
+has to happen again from scratch before it counts. `AUTO_STOP=false` turns all
+three off.
+
 #### The notepad
 
 The transcript answers *what was said*. It cannot know what **you** thought
-mattered — two people in the same call want different notes out of it. So the
-notes tab is a plain textarea on the left and the finished notes on the right:
+mattered — two people in the same call want different notes out of it. So
+during a call the page is a notepad, with what is being said arriving live in
+a column beside it.
+
+![During a call, and its transcript](images/redesign/3-live.png)
 
 - **Type as the meeting runs.** Fragments are the point. `api behind?? 2wks`,
   `priya -> migration script, fri`. It autosaves about a second after you stop
-  typing, and leaving the tab or closing the page flushes it immediately.
-- **Press Enhance** (or `Ctrl`/`Cmd`+`Enter`). Your notes are sent with the
-  transcript, and what comes back follows *your* structure with the detail
-  filled in — the numbers, owners and dates you abbreviated or missed.
+  typing, and opening the transcript or closing the page flushes it at once.
+- **The pill at the foot** is the recording: green bars that move with the
+  room, grey and still while Scribe is starting, wrapping up or about to stop,
+  and an amber badge while your mic is muted.
+- **The live transcript** opens by itself beside the notes when a recording
+  starts: chat bubbles, *Them* on the left in grey and *Me* on the right in
+  green, with a quiet divider wherever your mic was muted. Close it with ×
+  and it stays closed for that meeting; the pill brings it back.
+- **When the call ends** the notes are written up from your notepad and the
+  transcript (or press **Enhance notes**, or `Ctrl`/`Cmd`+`Enter`). What you
+  typed stays in full ink; what the model added is a softer grey. Click any
+  line to edit it in place — Enter starts the next bullet, emptying a line
+  removes it — and a line you rewrite turns to ink: it is yours now.
 - **Your notes are never overwritten.** `notes.md` keeps exactly what you
-  typed; the enhanced version is a separate file. If enhancement produces
-  something worse, the original is still there, and you can re-enhance.
+  typed (**My notes**, above the write-up); the enhanced version is a separate
+  file, and the lines you edited are remembered in `notepad.json`.
+
+![After the call: your words in ink](images/redesign/2-notes.png)
 
 **Empty notes are a supported case, not a degenerate one.** The bot often runs
 unattended, so enhancing a meeting you never typed into writes the notes from
 the transcript alone, shaped by whichever template you picked.
 
-Templates change the shape of the output, not the machinery:
+Templates change the shape of the output, not the machinery. Type `/` in Ask
+to pick one, and the notes are rewritten in its shape:
 
 | Template | Produces |
 |---|---|
@@ -230,8 +293,14 @@ contain invented detail would be worse than no notes at all.
 
 #### Ask
 
-The **Ask** tab answers questions about one meeting from its transcript and
-notes, and nothing else. "What did I miss?", "What was decided?", "List every
+![Ask, with / for templates](images/redesign/5-ask.png)
+
+**Ctrl+J** opens Ask from anywhere, floating over whatever you were doing.
+*This meeting* answers about the meeting that is open from its transcript and
+notes, and nothing else; *All meetings* searches every transcript you can
+see. A citation is not a `[1]` in the prose: point at a sentence and a small
+quote mark appears after it, which opens the transcript at the line it came
+from. `/` offers the questions people ask most and the note templates. "What did I miss?", "What was decided?", "List every
 action item and who owns it." If the meeting did not cover it, the answer says
 so rather than reasoning outwards into what was probably meant. Questions and
 answers are kept per meeting in `chat.jsonl`, and earlier turns are replayed
@@ -313,6 +382,8 @@ Things it handles that the one-shot CLI never had to:
 | `POST /api/audio-devices/probe` | Listen briefly; catches muted output |
 | `GET /api/meetings/{id}` | Status plus live transcript |
 | `POST /api/meetings/{id}/stop` | Leave the call and write the summary |
+| `POST /api/meetings/{id}/mic` | `{"muted": true}` — stop hearing your microphone while the recording goes on. Local recordings only |
+| `POST /api/meetings/{id}/auto-stop/cancel` | Keep recording: cancel the countdown to stopping by itself |
 | `PUT /api/meetings/{id}/title` | `{"title": "..."}` — call it what it actually was |
 | `DELETE /api/meetings/{id}` | Delete the meeting, its recording and everything asked about it |
 | `GET /api/meetings/{id}/artifact/{name}` | `transcript.md`, `analysis.md`, `notes.md`, `enhanced.md`, … |
@@ -320,6 +391,7 @@ Things it handles that the one-shot CLI never had to:
 | `GET /api/meetings/{id}/transcript` | The whole transcript, in the lines citations point at |
 | `PUT /api/meetings/{id}/speakers` | `{"names": {"Speaker 0": "Priya"}}` — real names, once, everywhere |
 | `PUT /api/meetings/{id}/notes` | `{"notes": "..."}` — autosave the notepad |
+| `PUT /api/meetings/{id}/enhanced` | `{"enhanced": "...", "mine": ["- a line I rewrote"]}` — keep an edit to the write-up |
 | `POST /api/meetings/{id}/enhance` | `{"template": "standup"}` — write the notes up |
 | `POST /api/meetings/{id}/ask` | `{"question": "..."}` — ask about this meeting |
 | `DELETE /api/meetings/{id}/chat` | Forget the questions asked about it |

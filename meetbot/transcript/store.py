@@ -338,6 +338,93 @@ def read_marks(path: Path) -> list[float]:
     return sorted(marks)
 
 
+#: Event kind recording the microphone being muted or unmuted mid-recording.
+#: Details are ``{"muted": bool, "t": seconds}``, ``t`` on the same timeline
+#: as utterance start and end.
+MIC_EVENT = "mic"
+
+#: Event kind a local recording writes as it finishes, carrying how long it ran.
+#: A mute still open at that point lasted until then.
+CAPTURE_STOPPED_EVENT = "local_capture_stopped"
+
+
+@dataclass(frozen=True)
+class MicMute:
+    """A stretch during which the person recording had their microphone muted.
+
+    Not a gap in the recording. The other side was captured throughout; only
+    the microphone channel carried silence, because somebody asked it to.
+    Everything that reads a transcript - the Markdown, the notes, the answers
+    - is told about these, so that a quiet "You" reads as a choice rather than
+    as lost audio.
+    """
+
+    start: float
+    end: float
+
+    @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+    def to_dict(self) -> dict[str, float]:
+        return {"start": round(self.start, 2), "end": round(self.end, 2)}
+
+
+def read_mic_mutes(path: Path) -> tuple[list[MicMute], bool]:
+    """Replay the mute and unmute events into muted stretches.
+
+    Returns:
+        ``(stretches, muted_now)``. ``muted_now`` is the state the last event
+        left the microphone in - what a recording restored from this file
+        was doing when it stopped being written.
+
+    A mute still open when the file ends is closed at the best end the file
+    knows: the length the recording reported when it stopped, or failing that
+    - a process killed mid-meeting writes no stop record - the latest moment
+    anything was heard. Repeated events in the same direction are ignored, so
+    a double press cannot open a stretch inside a stretch.
+    """
+    stretches: list[MicMute] = []
+    opened: float | None = None
+    last_seen = 0.0
+    stopped_at: float | None = None
+    for record in iter_records(path):
+        kind = record.get("type")
+        if kind == "utterance":
+            with contextlib.suppress(TypeError, ValueError):
+                last_seen = max(last_seen, float(record.get("end", 0.0)))
+            continue
+        if kind != "event":
+            continue
+        details = record.get("details")
+        if not isinstance(details, dict):
+            continue
+        if record.get("kind") == CAPTURE_STOPPED_EVENT:
+            with contextlib.suppress(TypeError, ValueError):
+                stopped_at = float(details.get("elapsed_s"))
+            continue
+        if record.get("kind") != MIC_EVENT:
+            continue
+        try:
+            at = float(details.get("t"))
+        except (TypeError, ValueError):
+            continue
+        last_seen = max(last_seen, at)
+        if details.get("muted") is True and opened is None:
+            opened = at
+        elif details.get("muted") is False and opened is not None:
+            if at > opened:
+                stretches.append(MicMute(opened, at))
+            opened = None
+
+    muted_now = opened is not None
+    if opened is not None:
+        end = stopped_at if stopped_at is not None and stopped_at > opened else last_seen
+        if end > opened:
+            stretches.append(MicMute(opened, end))
+    return stretches, muted_now
+
+
 def read_meta(path: Path) -> dict[str, Any] | None:
     """Return the meeting header record, or ``None`` if the file has none."""
     for record in iter_records(path):

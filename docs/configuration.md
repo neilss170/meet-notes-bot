@@ -88,6 +88,7 @@ live ones: `GET {LLM_BASE_URL}/models` with your key.
 | Setting | Default | What it does |
 |---|---|---|
 | `CALL_ALERTS` | `true` | When any app starts using the microphone — a Meet tab, WhatsApp, Zoom, Teams, anything — offer to record it, with a card in the page and a Windows notification. Reads the per-app microphone state Windows keeps for its own privacy indicator; no audio is opened. Windows only. |
+| `AUTO_STOP` | `true` | Stop a recording on this machine by itself when the call app releases the microphone, after 15 minutes in which nothing was heard on either side, or when the computer wakes from sleep. Each shows a ten-second "Stopping…" notice in the page with **Keep recording** to cancel it. Leaving the call is only noticed when call alerts are on. |
 | `VOICE_COMMANDS` | `false` | Listen for "Scribe, start recording", "Scribe, stop", "Scribe, mark this" and "Scribe, call this &lt;name&gt;" using the speech recogniser built into Windows. It runs offline: the audio never leaves the machine, nothing is written down, and it can only hear those phrases — ordinary conversation never matches one. The cost is that Scribe holds the microphone the whole time it runs, so Windows shows its microphone indicator throughout. Off by default, because that is a thing to agree to rather than discover. |
 | `SAMPLE_RATE` | `16000` | What Deepgram is fed; device audio is resampled to it. |
 

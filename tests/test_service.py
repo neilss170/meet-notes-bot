@@ -477,15 +477,16 @@ class TestUiRendering:
         """Rebuilding on a timer threw away the reader's scroll position."""
         ui = self._ui()
         assert "state.sig" in ui
-        assert "if (signature === state.sig.list) return;" in ui
+        assert "if (signature === state.sig.list || state.renaming) return;" in ui
 
     def test_scroll_position_is_preserved_across_a_repaint(self) -> None:
         """The transcript follows a live call without yanking the page away
         from somebody who has scrolled up to re-read something."""
         ui = self._ui()
         assert "atBottom" in ui
-        assert "if (atBottom) pane.scrollTop = pane.scrollHeight;" in ui
-        assert "if (pane) pane.scrollTop = scroll;" in ui
+        assert "if (atBottom || (live && !shown)) scroller.scrollTop = scroller.scrollHeight;" in ui
+        # The Ask panel keeps its place when an answer lands mid-read.
+        assert "feed.scrollTop = scrollToEnd ? feed.scrollHeight : scroll;" in ui
 
     def test_documents_are_held_as_state_not_refetched_per_render(self) -> None:
         """Re-fetching on each render raced the poll loop.
@@ -590,8 +591,8 @@ class TestMarkdownRendering:
         """
         ui = self._ui()
         assert "const closePara" in ui
-        assert "para.push(inline(line.trim()));" in ui
-        assert "para.join(\" \")" in ui, "lines must be joined, not concatenated"
+        assert "para.push(content(line.trim(), line));" in ui
+        assert "para.map((p) => p.html).join(\" \")" in ui, "lines must be joined, not concatenated"
 
     def test_snake_case_is_protected_from_italics(self) -> None:
         """file_name_like_this and openai/gpt-oss-120b must survive.

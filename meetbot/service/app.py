@@ -13,6 +13,17 @@ only - guessing who they belonged to would be worse than showing nobody.
 Binding to a non-loopback address is now supportable, but stays a deliberate
 act: ``--host`` still warns, because sessions travel as cookies and only TLS
 in front of the service keeps them off the wire.
+
+**The desktop shell.** Packaged as an app, the server is a child of an
+Electron process that draws the window, the icon and the notifications. That
+process is the person sitting at this machine, in the same sense the
+in-process notification icon is: it is given a random control token at
+launch, in its environment, and a request carrying it acts as the machine's
+owner - the first admin. That is how the shell's tray starts and stops
+recordings through the ordinary routes, and how it signs its own window in.
+The token never appears in a page, a URL or a command line, and a web page
+cannot send it: a custom header on a cross-origin request needs a CORS
+preflight this server never grants.
 """
 
 from __future__ import annotations
@@ -20,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import hmac
 import logging
 import re
 import shutil
@@ -34,6 +46,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
+from meetbot import __version__
 from meetbot.analysis.llm import LLMError, build_client
 from meetbot.analysis.notepad import (
     DEFAULT_TEMPLATE,
@@ -84,18 +97,27 @@ from meetbot.preflight import (
     run_preflight,
 )
 from meetbot.profile import sweep_stale_profiles
-from meetbot.service.jobs import JobManager, JobStatus, MeetingJob, load_past_runs
+from meetbot.service.autostop import SLEEP_GAP_S, AutoStop
+from meetbot.service.jobs import (
+    JobManager,
+    JobStatus,
+    MeetingJob,
+    MicUnavailable,
+    load_past_runs,
+)
 from meetbot.transcript.notes import ChatLog, Notepad
 from meetbot.transcript.format import format_timestamp
 from meetbot.transcript.store import (
     MARK_EVENT,
     SPEAKER_NAMES_EVENT,
     TITLE_EVENT,
+    MicMute,
     Utterance,
     append_event,
     apply_speaker_names,
     read_marks,
     read_meta,
+    read_mic_mutes,
     read_speaker_names,
     read_utterances,
     speakers,
@@ -127,6 +149,9 @@ FOCUS_TTL_S = 30.0
 #: notes for the call somebody has just ended are the ones they are waiting
 #: for, so a fast exit is the wrong trade here.
 NOTES_ON_SHUTDOWN_GRACE_S = 20.0
+
+#: Header the desktop shell sends its control token in.
+CONTROL_HEADER = "x-scribe-control"
 
 #: Longest a speaker's name may be. Long enough for "Priya Raghunathan (QA)",
 #: short enough that nobody can push a paragraph into every transcript line.
@@ -172,10 +197,26 @@ class RecordRequest(BaseModel):
     anonymise_analysis: bool | None = None
 
 
+class MicRequest(BaseModel):
+    """Stop, or resume, hearing the microphone of a recording in progress."""
+
+    muted: bool
+
+
 class TitleRequest(BaseModel):
     """A new name for a meeting."""
 
     title: str = Field("", description="What to call it from now on")
+
+
+class EnhancedRequest(BaseModel):
+    """The enhanced notes after somebody edited them."""
+
+    enhanced: str = Field("", description="The whole document as it now reads")
+    mine: list[str] = Field(
+        default_factory=list,
+        description="Lines the person wrote or rewrote, shown in their ink",
+    )
 
 
 class NotesRequest(BaseModel):
@@ -225,13 +266,29 @@ class PasswordRequest(BaseModel):
     password: str
 
 
-def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
+def create_app(
+    config: Config,
+    *,
+    public_url: str | None = None,
+    control_token: str = "",
+    shell_notifications: bool = False,
+    notes_grace_s: float = NOTES_ON_SHUTDOWN_GRACE_S,
+) -> FastAPI:
     """Build the service around a validated base configuration.
 
     Args:
         config: Settings every meeting inherits.
         public_url: Where the page is served, for the links in call
             notifications. Learned from the page's own requests if omitted.
+        control_token: The desktop shell's token - see the module docstring.
+            Empty, the default, means there is no shell and no request is
+            treated as the owner's without signing in.
+        shell_notifications: The shell raises the call notifications itself,
+            from ``/api/calls``. Without this both would, and every call would
+            ask twice.
+        notes_grace_s: How long shutdown waits for notes still being written.
+            The shell waits longer than a terminal does: quitting from the
+            icon mid-call is exactly when somebody wants the notes.
     """
     manager = JobManager(config)
     state_dir = Path(config.service_state_dir).expanduser()
@@ -259,6 +316,9 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     #: garbage collector cannot drop one mid-write, and so shutdown can wait.
     notes_tasks: set[asyncio.Task[None]] = set()
 
+    #: Recordings that should end by themselves - see autostop.py.
+    auto_stop = AutoStop()
+
     def _payload(job: MeetingJob, *, include_progress: bool = True) -> dict[str, Any]:
         """A meeting as the page reads it, plus whether notes are on their way.
 
@@ -269,6 +329,10 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         return {
             **job.to_dict(include_progress=include_progress),
             "enhancing": f"{job.id}:enhance" in in_flight,
+            # Set by the notification-area icon once Windows has given it the
+            # keys, so the page only offers a shortcut that will work.
+            "mic_shortcut": getattr(app.state, "mic_shortcut", ""),
+            "auto_stop": auto_stop.pending(job.id),
         }
 
     def _take_focus(user: User) -> str:
@@ -353,6 +417,9 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 fresh = []
             for prompt in fresh:
                 logger.info("Call detected: %s (%s)", prompt.title, prompt.app)
+                if shell_notifications:
+                    # The shell reads /api/calls and asks natively.
+                    continue
                 base = (
                     public_url
                     or getattr(app.state, "base_url", "")
@@ -360,6 +427,49 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 )
                 await asyncio.to_thread(show_toast, prompt, base)
             await asyncio.sleep(POLL_INTERVAL_S)
+
+    async def _watch_endings() -> None:
+        """End a recording nobody remembered to stop. See autostop.py.
+
+        Ticks once a second. A tick that arrives long after the last one
+        means the machine was asleep in between.
+        """
+        last = time.time()
+        while True:
+            await asyncio.sleep(1.0)
+            now = time.time()
+            slept = now - last >= SLEEP_GAP_S
+            last = now
+            try:
+                job = _live_local_job()
+                auto_stop.keep_only({job.id} if job is not None else set())
+                if job is not None and job.status is JobStatus.IN_CALL:
+                    mic = job._mic
+                    quiet = getattr(mic, "quiet_for", None)
+                    if slept:
+                        started = auto_stop.slept(job.id)
+                    else:
+                        started = auto_stop.observe(
+                            job.id,
+                            call_on_mic=calls.others_on_mic() if watching_calls() else None,
+                            quiet_s=quiet() if callable(quiet) else None,
+                        )
+                    if started:
+                        logger.info("Stopping %s in a moment: %s", job.id, started)
+                for job_id, reason in auto_stop.due():
+                    ending = manager.get(job_id)
+                    if ending is None or ending.status.is_terminal:
+                        continue
+                    path = ending.artifact("transcript.jsonl")
+                    if path is not None:
+                        await asyncio.to_thread(append_event, path, "auto_stop", reason=reason)
+                    logger.info("Stopped %s by itself: %s", job_id, reason)
+                    await manager.stop(job_id)
+            except Exception:  # noqa: BLE001 - one bad tick must not end the watch
+                logger.warning("Could not check whether the meeting ended", exc_info=True)
+
+    def watching_calls() -> bool:
+        return getattr(app.state, "watching_calls", False)
 
     def _live_local_job() -> MeetingJob | None:
         """The recording happening on this machine right now, if any."""
@@ -419,6 +529,13 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         elif command.kind == "name" and command.title:
             await _rename(job, command.title)
             logger.info("Voice: named %s %r", job.id, command.title)
+        elif command.kind in ("mute", "unmute"):
+            # Heard by the recogniser, which opens the microphone itself, so
+            # "unmute" works even while the recording is not hearing you.
+            try:
+                manager.set_mic(job.id, command.kind == "mute")
+            except MicUnavailable as exc:
+                logger.info("Voice: cannot %s - %s", command.kind, exc)
 
     def _voice_heard(command: VoiceCommand) -> None:
         """Take a command off the listener's thread and onto the loop."""
@@ -476,8 +593,11 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         if restored:
             logger.info("Loaded %d past meeting(s) from %s", restored, config.output_dir)
         watching = None
+        app.state.watching_calls = False
         if config.call_alerts and detection_available()[0]:
             watching = asyncio.create_task(_watch_calls())
+            app.state.watching_calls = True
+        endings = asyncio.create_task(_watch_endings()) if config.auto_stop else None
         # Commands arrive on the listener's own thread and have to be carried
         # back here, so the loop has to be reachable from it.
         app.state.loop = asyncio.get_running_loop()
@@ -489,6 +609,10 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 logger.warning("Voice commands are on but unavailable: %s", why)
         yield
         await asyncio.to_thread(voice.stop)
+        if endings is not None:
+            endings.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await endings
         if watching is not None:
             watching.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -502,14 +626,31 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         # for that to land rather than killing the tasks on the way out.
         if notes_tasks:
             logger.info("Finishing the notes for %d meeting(s)", len(notes_tasks))
-            await asyncio.wait(set(notes_tasks), timeout=NOTES_ON_SHUTDOWN_GRACE_S)
+            await asyncio.wait(set(notes_tasks), timeout=notes_grace_s)
+        logger.info("Scribe has shut down cleanly.")
 
     app = FastAPI(title="Scribe", lifespan=lifespan)
 
     # -- authentication ----------------------------------------------------
 
+    def _owner() -> User | None:
+        """Whoever is sitting at this machine: the first admin.
+
+        The same answer the notification icon and voice commands give, for
+        the same reason - nobody signs in to a tray menu.
+        """
+        return next((user for user in users.list() if user.is_admin), None)
+
+    def _from_shell(request: Request) -> bool:
+        sent = request.headers.get(CONTROL_HEADER, "")
+        return bool(control_token) and bool(sent) and hmac.compare_digest(
+            sent.encode(), control_token.encode()
+        )
+
     def _user_of(request: Request) -> User | None:
         """The signed-in user, or ``None``. Never raises."""
+        if _from_shell(request):
+            return _owner()
         token = request.cookies.get(SESSION_COOKIE)
         if not token:
             return None
@@ -542,6 +683,63 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         if job is None or (not user.is_admin and job.owner != user.username):
             raise HTTPException(status_code=404, detail="No such meeting")
         return job
+
+    async def shell_only(request: Request) -> None:
+        if not _from_shell(request):
+            # 404, not 403: without a shell these routes do not exist.
+            raise HTTPException(status_code=404, detail="Not Found")
+
+    @app.get("/health")
+    async def liveness() -> dict[str, Any]:
+        """Whether this is Scribe and it is up. No account needed.
+
+        What the desktop shell polls before it shows a window. It says
+        nothing about meetings or setup - that is ``/api/health``, behind the
+        sign-in - so it is safe for anything on this machine to ask.
+        """
+        return {"ok": True, "app": "scribe", "version": __version__}
+
+    @app.post("/api/control/session", dependencies=[Depends(shell_only)])
+    async def shell_session(response: Response) -> dict[str, Any]:
+        """A session for the owner, for the shell to put in its own window.
+
+        The window the app opens belongs to whoever is sitting here, the way
+        the icon does; asking them for a password the first run only ever
+        printed to a log would be a hurdle with nothing behind it - the same
+        person can read every transcript straight off the disk. Signing out
+        still works, and leaves the login page for any other account.
+        """
+        owner = _owner()
+        if owner is None:
+            raise HTTPException(status_code=409, detail="There is no admin account yet.")
+        return {
+            "cookie": SESSION_COOKIE,
+            "value": issue_session(owner.username, secret),
+            "max_age": int(SESSION_TTL_S),
+            "username": owner.username,
+        }
+
+    @app.post("/api/control/shutdown", dependencies=[Depends(shell_only)])
+    async def shell_shutdown() -> dict[str, Any]:
+        """Stop everything properly, then exit.
+
+        Exactly the shutdown a terminal Ctrl+C gets: a live recording is
+        stopped, written up, and given ``notes_grace_s`` for its notes before
+        the process goes. This only starts it - the shell watches for the
+        process to end, and kills it only if it never does.
+        """
+        recording = manager.recording_locally
+        stop = getattr(app.state, "request_exit", None)
+        if stop is None:
+            raise HTTPException(
+                status_code=409, detail="This server was not started by the shell."
+            )
+        logger.info(
+            "Shutdown requested by the desktop app%s",
+            " - finishing the recording first" if recording else "",
+        )
+        stop()
+        return {"stopping": True, "recording": recording}
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request) -> Any:
@@ -725,6 +923,49 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
         job = _visible_job(job_id, user)
         stopped = await manager.stop(job_id)
         return {"stopped": stopped, **_payload(job, include_progress=False)}
+
+    @app.post("/api/meetings/{job_id}/mic")
+    async def set_mic(
+        job_id: str, request: MicRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Stop hearing the microphone, or start again, while recording goes on.
+
+        Muting in Zoom, Meet or Teams stops the call sending your voice; it
+        does not close the microphone, which is what a local recording reads.
+        This is the mute that reaches Scribe. The speakers keep being
+        recorded, so the other side of the call is unaffected.
+        """
+        job = _visible_job(job_id, user)
+        try:
+            await asyncio.to_thread(manager.set_mic, job.id, request.muted)
+        except MicUnavailable as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return _payload(job, include_progress=False)
+
+    @app.post("/api/meetings/{job_id}/mark")
+    async def mark_moment(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Mark this moment in a live meeting, to find again afterwards.
+
+        The same mark "Scribe, mark this" makes - placed at however far the
+        transcript has got - for when saying it out loud is not an option.
+        """
+        job = _visible_job(job_id, user)
+        if job.status.is_terminal:
+            raise HTTPException(
+                status_code=409, detail="This meeting is no longer recording."
+            )
+        path = job.output_dir / "transcript.jsonl" if job.output_dir else None
+        if path is None or not path.parent.exists():
+            raise HTTPException(
+                status_code=409,
+                detail="The recording has not started yet. Try again in a moment.",
+            )
+        at = float(job.read_progress().get("duration_s") or 0.0)
+        await asyncio.to_thread(append_event, path, MARK_EVENT, at=at, said="")
+        logger.info("Job %s: marked at %.1fs", job.id, at)
+        return {"marked": True, "at": at}
 
     async def _rename(job: MeetingJob, title: str) -> str:
         """Give a meeting a name, and make it stick.
@@ -988,6 +1229,16 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             return []
         return apply_speaker_names(utterances, read_speaker_names(path))
 
+    def _mutes_of(job: MeetingJob) -> list[MicMute]:
+        """When the person recording had their microphone muted."""
+        path = job.artifact("transcript.jsonl")
+        if path is None:
+            return []
+        try:
+            return read_mic_mutes(path)[0]
+        except (OSError, ValueError):
+            return []
+
     def _marks_of(job: MeetingJob) -> list[float]:
         """Moments somebody asked to be able to find again."""
         path = job.artifact("transcript.jsonl")
@@ -1051,6 +1302,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             started_at=started_at,
             utterances=utterances,
             speaker_alias=alias,
+            mic_muted=_mutes_of(job),
         )
 
     def _notepad_of(job: MeetingJob) -> Notepad:
@@ -1107,6 +1359,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 "enhanced": "",
                 "template": DEFAULT_TEMPLATE,
                 "chat": [],
+                "mine": [],
             }
         return {
             "ready": True,
@@ -1114,6 +1367,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             "enhanced": pad.read_enhanced(),
             "template": pad.template or DEFAULT_TEMPLATE,
             "chat": pad.read_chat(),
+            "mine": pad.edited_lines,
         }
 
     @app.get("/api/meetings/{job_id}/transcript")
@@ -1133,6 +1387,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             "utterance_count": len(utterances),
             "speakers": await asyncio.to_thread(_speakers_of, job),
             "marks": await asyncio.to_thread(_marks_of, job),
+            "mutes": [m.to_dict() for m in await asyncio.to_thread(_mutes_of, job)],
         }
 
     @app.put("/api/meetings/{job_id}/speakers")
@@ -1201,12 +1456,37 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             ) from exc
         return {"saved": True, "chars": len(request.notes)}
 
+    @app.put("/api/meetings/{job_id}/enhanced")
+    async def put_enhanced(
+        job_id: str, request: EnhancedRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Keep an edit to the enhanced notes, and which lines are now yours."""
+        pad = _notepad_of(_visible_job(job_id, user))
+        try:
+            await asyncio.to_thread(
+                pad.write_edited_enhanced, request.enhanced, request.mine
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Could not save the notes: {exc}"
+            ) from exc
+        return {"saved": True, "mine": pad.edited_lines}
+
+    @app.post("/api/meetings/{job_id}/auto-stop/cancel")
+    async def keep_recording(
+        job_id: str, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        """Cancel a recording's countdown to stopping by itself."""
+        _visible_job(job_id, user)
+        return {"cancelled": auto_stop.cancel(job_id)}
+
     def _enhance_sync(
         utterances: list[Utterance],
         notes: str,
         template: str,
         meet_url: str,
         duration: str,
+        mutes: list[MicMute] | None = None,
     ) -> str:
         """Blocking enhancement call, run in a worker thread."""
         return enhance_notes(
@@ -1216,6 +1496,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
             template_id=template,
             meeting_url=meet_url,
             duration=duration,
+            mic_muted=mutes or (),
         )
 
     @app.post("/api/meetings/{job_id}/enhance")
@@ -1257,7 +1538,13 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 else utterances
             )
             enhanced = await asyncio.to_thread(
-                _enhance_sync, for_llm, notes, template, job.meet_url, duration
+                _enhance_sync,
+                for_llm,
+                notes,
+                template,
+                job.meet_url,
+                duration,
+                _mutes_of(job),
             )
             await asyncio.to_thread(pad.write_enhanced, enhanced, template=template)
         except (NotepadError, LLMError) as exc:
@@ -1302,7 +1589,13 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
                 else utterances
             )
             enhanced = await asyncio.to_thread(
-                _enhance_sync, for_llm, notes, template, job.meet_url, duration
+                _enhance_sync,
+                for_llm,
+                notes,
+                template,
+                job.meet_url,
+                duration,
+                _mutes_of(job),
             )
             await asyncio.to_thread(pad.write_enhanced, enhanced, template=template)
             logger.info("Job %s: wrote the notes (%d chars)", job.id, len(enhanced))
@@ -1509,6 +1802,7 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     app.state.manager = manager
     app.state.users = users
     app.state.calls = calls
+    app.state.auto_stop = auto_stop
     # Read by the notification-area icon, which runs in this process: it is
     # how the tooltip can say "writing up the standup" rather than going quiet
     # for the twenty seconds a summary takes.
@@ -1516,6 +1810,9 @@ def create_app(config: Config, *, public_url: str | None = None) -> FastAPI:
     #: Set by the notification-area icon to ask the open page to show one
     #: meeting; ``(job id, time)`` or ``None``.
     app.state.focus = None
+    app.state.mic_shortcut = ""
+    #: Set by whoever runs the server to make it exit - see shell_shutdown.
+    app.state.request_exit = None
     return app
 
 
@@ -1523,6 +1820,7 @@ __all__ = [
     "ARTIFACTS",
     "FOCUS_TTL_S",
     "AskRequest",
+    "MicRequest",
     "MuteAppRequest",
     "RecordRequest",
     "CreateUserRequest",

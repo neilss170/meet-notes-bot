@@ -38,3 +38,8 @@ scribe*.ico
 
 # Where a windowless server's output goes, plus the rotated copies.
 scribe-server.log*
+
+# The desktop app: dependencies, build output, scripted-run reports.
+electron/node_modules/
+electron/release/
+electron/smoke-out/

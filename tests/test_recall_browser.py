@@ -174,6 +174,13 @@ async def _open(playwright_api, served, path: str = "/"):
     await page.fill("input[name=username]", "neil")
     await page.fill("input[name=password]", PASSWORD)
     await page.click("button[type=submit]")
+    # Nothing opens by itself any more - the page waits on its home screen -
+    # so open the newest meeting the way a person would.
+    await page.wait_for_selector(".mtg", state="attached", timeout=40_000)
+    # A recording in progress opens itself; anything else is clicked open.
+    await page.wait_for_timeout(500)
+    if await page.is_visible("#home-view"):
+        await page.click(".mtg .mtg-time")
     await page.wait_for_selector("#notepad", timeout=40_000)
     if path != "/":
         await page.goto(f"{served['url']}{path}")
@@ -181,7 +188,11 @@ async def _open(playwright_api, served, path: str = "/"):
 
 
 async def _ask_about_the_budget(page) -> None:
+    # Ask is a panel reached from anywhere with Ctrl+J; this question is
+    # about every meeting, not just the one open.
+    await page.keyboard.press("Control+j")
     await page.wait_for_selector("#chat-input")
+    await page.click('#ask-scope [data-scope="all"]')
     await page.fill("#chat-input", "What is the marketing budget?")
     await page.press("#chat-input", "Enter")
     await page.locator("#chat-feed .a .cite").first.wait_for(timeout=60_000)
@@ -195,22 +206,16 @@ class TestCitationsInTheBrowser:
             browser, page, errors = await _open(pw, served)
             try:
                 await _ask_about_the_budget(page)
-                pill = page.locator("#chat-feed .a .cite").first
-                assert await pill.text_content() == "1"
-                sources = await page.text_content("#chat-feed .sources")
-                assert "capped at forty thousand" in sources
-                assert "Finance sync" in sources
+                icon = page.locator("#chat-feed .a .cite").first
+                # A quiet icon, not a numbered marker - and it says where it
+                # goes before it is clicked.
+                assert (await icon.text_content()).strip() == ""
+                where = await icon.get_attribute("title")
+                assert "capped at forty thousand" in where
+                assert "Finance sync" in where
 
-                await pill.click()
-                card = page.locator(".citecard")
-                await card.wait_for()
-                text = await card.text_content()
-                assert "Finance sync" in text
-                assert "Let's look at next quarter." in text, "what led up to it"
-                assert "Anything above that needs sign-off." in text, "what came after"
-
-                await card.locator("[data-open]").click()
-                cited = page.locator("#pane .live-line.cited")
+                await icon.click()
+                cited = page.locator("#drawer .live-line.cited")
                 await cited.wait_for(timeout=30_000)
                 assert "capped at forty thousand" in await cited.text_content()
                 assert await page.text_content(".mtitle h2") == "Finance sync"
@@ -218,26 +223,25 @@ class TestCitationsInTheBrowser:
             finally:
                 await browser.close()
 
-    async def test_citations_can_be_switched_off_and_stay_off(self, served) -> None:
+    async def test_citations_stay_out_of_the_prose_until_pointed_at(self, served) -> None:
         from playwright.async_api import async_playwright
 
         async with async_playwright() as pw:
             browser, page, errors = await _open(pw, served)
             try:
                 await _ask_about_the_budget(page)
-                await page.click(".chat-head .switch")
-                await page.wait_for_function(
-                    "!document.querySelector('#chat-feed .cite')", timeout=10_000
-                )
                 answer = await page.text_content("#chat-feed .a")
                 assert "forty thousand" in answer
                 assert "[^1]" not in answer, "markers must not show as raw text"
-                assert await page.locator("#chat-feed .sources").count() == 0
-
-                await page.reload()
-                await page.wait_for_selector("#chat-feed .a", timeout=40_000)
-                assert not await page.is_checked(".chat-head .cite-switch")
-                assert await page.locator("#chat-feed .cite").count() == 0
+                assert "[1]" not in answer
+                icon = page.locator("#chat-feed .a .cite").first
+                opacity = "el => getComputedStyle(el).opacity"
+                assert await icon.evaluate(opacity) == "0", "visible before pointing"
+                await page.hover("#chat-feed .a .md-p")
+                await page.wait_for_function(
+                    "getComputedStyle(document.querySelector('#chat-feed .a .cite')).opacity === '1'",
+                    timeout=5_000,
+                )
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()
@@ -253,7 +257,7 @@ class TestCallAlertsInTheBrowser:
                 _start_call(served)
                 card = page.locator(".callcard")
                 await card.wait_for(timeout=30_000)
-                assert "WhatsApp call detected" in await card.text_content()
+                assert "WhatsApp call" in await card.text_content()
                 await card.locator('[data-act="record"]').click()
                 await page.wait_for_function(
                     "document.querySelector('.mtitle h2')?.textContent === 'WhatsApp call'",
@@ -300,7 +304,7 @@ class TestCallAlertsInTheBrowser:
             browser, page, errors = await _open(pw, served, "/?record=not-a-real-call")
             try:
                 await page.wait_for_function(
-                    "document.querySelector('#error')?.textContent.includes('already ended')",
+                    "document.querySelector('#toast-root')?.textContent.includes('already ended')",
                     timeout=30_000,
                 )
                 manager = served["app"].state.manager
@@ -320,7 +324,7 @@ class TestCallAlertsInTheBrowser:
                 await card.wait_for(timeout=30_000)
                 await card.locator('[data-act="mute"]').click()
                 await page.wait_for_selector(".callcard", state="detached", timeout=10_000)
-                await page.click("#call-opts summary")
+                await page.click("#settings-open")
                 await page.wait_for_function(
                     "document.querySelector('#muted-apps')?.textContent.includes('WhatsApp')",
                     timeout=10_000,
@@ -364,35 +368,34 @@ class TestLiveTranscriptInTheBrowser:
             browser, page, errors = await _open(pw, served)
             try:
                 assert await page.text_content(".mtitle h2") == "Live call"
-                await page.click('button[data-tab="transcript"]')
+                # During the call the transcript is in front of you, beside the
+                # notepad, without being asked for.
                 await page.wait_for_selector("#tx-lines .live-line", timeout=30_000)
-                await page.wait_for_selector("#tx-foot .thinking")
+                assert await page.is_visible("#notepad")
+                assert "docked" in (await page.get_attribute(".main", "class"))
+                await page.wait_for_selector("#tx-foot .dots")
                 assert "Listening" in await page.text_content("#tx-foot")
                 assert await page.locator("#tx-lines .w-in").count() == 0, (
                     "opening a transcript should show it, not perform it"
                 )
-
-                # The mark is one glyph that moves rather than a sequence of
-                # glyphs, so "is it animating" is "does the transform on the
-                # ::before change" - the content is the same turtle all the
-                # way through and proves nothing.
-                poses = set()
-                for _ in range(8):
-                    poses.add(await page.evaluate(
-                        "getComputedStyle(document.querySelector('#tx-foot .spark'), "
-                        "'::before').transform"
-                    ))
-                    await page.wait_for_timeout(120)
-                assert len(poses) > 2, f"the turtle should walk, saw {poses}"
+                # Your own words sit on the right, as "Me".
+                mine = page.locator("#tx-lines .live-line").first
+                assert "me" in (await mine.get_attribute("class")).split()
+                assert "Me" in await mine.text_content()
 
                 store.append(Utterance("Speaker 0", "Loud and clear, go ahead.", 3.0, 5.0))
                 fresh = page.locator("#tx-lines .live-line").nth(1)
                 await fresh.wait_for(timeout=30_000)
-                assert "Registering" in await page.text_content("#tx-foot")
+                assert "them" in (await fresh.get_attribute("class")).split()
                 assert await fresh.locator(".w-in").count() == 5
                 assert (await fresh.locator(".x").text_content()).strip() == (
                     "Loud and clear, go ahead."
                 )
+
+                # Closed by hand, it stays closed while the call goes on.
+                await page.click("#drawer-close")
+                await page.wait_for_timeout(4_500)
+                assert await page.is_hidden("#drawer")
                 assert not errors, f"the page logged errors: {errors}"
             finally:
                 await browser.close()

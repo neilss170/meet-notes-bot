@@ -37,9 +37,11 @@ from meetbot.transcript.format import format_timestamp, render_markdown
 from meetbot.transcript.store import (
     SPEAKER_NAMES_EVENT,
     MeetingMeta,
+    MicMute,
     TranscriptStore,
     Utterance,
     apply_speaker_names,
+    read_mic_mutes,
     read_speaker_names,
     read_utterances,
 )
@@ -421,6 +423,18 @@ def _named_utterances(path: Path) -> list[Utterance]:
     return apply_speaker_names(utterances, read_speaker_names(path))
 
 
+def _mic_mutes(path: Path) -> list[MicMute]:
+    """When the person recording had their microphone muted, if ever.
+
+    Never raises: the stretches add context to a write-up, and a write-up
+    without them is still worth having.
+    """
+    try:
+        return read_mic_mutes(path)[0]
+    except (OSError, ValueError):
+        return []
+
+
 def _write_transcript_markdown(config: Config, run: MeetingRun) -> None:
     """Render the JSONL transcript to Markdown, tolerating a failure."""
     try:
@@ -445,6 +459,7 @@ def _write_transcript_markdown(config: Config, run: MeetingRun) -> None:
                         timespec="seconds"
                     ),
                 },
+                mic_muted=_mic_mutes(run.transcript_jsonl),
             ),
             encoding="utf-8",
         )
@@ -475,7 +490,11 @@ async def _maybe_analyse(config: Config, run: MeetingRun) -> None:
         captured = max((u.end for u in utterances), default=0.0)
         # The provider SDKs are synchronous; keep the event loop free.
         analysis = await asyncio.to_thread(
-            _analyse_sync, config, utterances, format_timestamp(captured)
+            _analyse_sync,
+            config,
+            utterances,
+            format_timestamp(captured),
+            _mic_mutes(run.transcript_jsonl),
         )
     except (AnalysisError, LLMError) as exc:
         logger.error("Analysis failed: %s", exc)
@@ -540,7 +559,10 @@ def anonymised_utterances(utterances: list[Any]) -> list[Any]:
 
 
 def _analyse_sync(
-    config: Config, utterances: list[Any], duration: str
+    config: Config,
+    utterances: list[Any],
+    duration: str,
+    mic_muted: list[MicMute] | None = None,
 ) -> MeetingAnalysis:
     """Blocking analysis call, run in a worker thread."""
     if config.anonymise_analysis:
@@ -557,4 +579,5 @@ def _analyse_sync(
         provider=config.llm_provider,
         meeting_url=config.meet_url,
         duration=duration,
+        mic_muted=mic_muted or (),
     )

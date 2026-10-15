@@ -233,6 +233,13 @@ class Config:
     #: off on a metered key; tests turn it off unless they are testing it.
     auto_notes: bool = True
 
+    #: End a recording on this machine by itself when the call app lets go of
+    #: the microphone, after 15 minutes in which nothing was heard, or when
+    #: the computer wakes from sleep - each after a ten-second countdown the
+    #: page offers to cancel. A recording nobody remembered to stop is an
+    #: hour of silence written up as a meeting.
+    auto_stop: bool = True
+
     #: Listen for spoken commands - "Scribe, start recording" and the
     #: rest - through the speech recogniser built into Windows. Off unless
     #: asked for: it holds the microphone the whole time Scribe runs, which
@@ -457,6 +464,7 @@ def load_config(
         preflight_on_start=_env_bool(env, "PREFLIGHT_ON_START", True),
         call_alerts=_env_bool(env, "CALL_ALERTS", True),
         auto_notes=_env_bool(env, "AUTO_NOTES", True),
+        auto_stop=_env_bool(env, "AUTO_STOP", True),
         voice_commands=_env_bool(env, "VOICE_COMMANDS", False),
         deepgram_api_key=_env_str(env, "DEEPGRAM_API_KEY", ""),
         deepgram_model=_env_str(env, "DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL),

@@ -240,10 +240,33 @@ class Notepad:
         """Replace the enhanced notes and record how they were produced."""
         with _lock_for(self.directory):
             atomic_write(self.enhanced_path, text)
-            fields: dict[str, Any] = {"enhanced_at": _utc_now_iso()}
+            # A fresh write-up is all the model's again, so the lines edited
+            # in the last one no longer describe anything in it.
+            fields: dict[str, Any] = {"enhanced_at": _utc_now_iso(), "edited_lines": []}
             if template:
                 fields["template"] = template
             self.update_meta(**fields)
+
+    def write_edited_enhanced(self, text: str, edited_lines: list[str]) -> None:
+        """Keep the person's edits to the enhanced notes.
+
+        Args:
+            text: The whole document as it now reads.
+            edited_lines: The lines the person wrote or rewrote, which the
+                page shows in their ink rather than the model's. Only lines
+                still in ``text`` are kept.
+        """
+        present = {line.strip() for line in text.splitlines()}
+        kept = [line for line in dict.fromkeys(edited_lines) if line.strip() in present]
+        with _lock_for(self.directory):
+            atomic_write(self.enhanced_path, text[:MAX_NOTES_CHARS * 4])
+            self.update_meta(edited_lines=kept, enhanced_edited_at=_utc_now_iso())
+
+    @property
+    def edited_lines(self) -> list[str]:
+        """Lines of the enhanced notes the person wrote themselves."""
+        value = self.read_meta().get("edited_lines")
+        return [str(v) for v in value] if isinstance(value, list) else []
 
     @property
     def has_notes(self) -> bool:

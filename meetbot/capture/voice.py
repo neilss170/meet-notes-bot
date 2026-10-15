@@ -27,6 +27,12 @@ notifications are. Hosting it in a child process also means a recogniser that
 falls over cannot take the service with it, and that closing the process is
 all it takes to let go of the microphone.
 
+**It still hears you when the recording does not.** The recogniser opens the
+microphone for itself, in its own process, and never sends a sound anywhere.
+So muting a recording's microphone - which silences what goes to the
+transcriber - leaves this listening, and "Scribe, unmute my mic" works while
+muted. Nothing it hears reaches a transcript; it only ever acts.
+
 **What it costs.** The microphone is held while Scribe is idle, so Windows
 shows its microphone indicator the whole time. That is a real thing to
 consent to rather than a detail, which is why it is off unless VOICE_COMMANDS
@@ -87,6 +93,16 @@ PHRASES: dict[str, tuple[str, ...]] = {
         "scribe mark this",
         "scribe mark that",
         "scribe bookmark this",
+    ),
+    "mute": (
+        "scribe mute my mic",
+        "scribe mute my microphone",
+        "scribe mute me",
+    ),
+    "unmute": (
+        "scribe unmute my mic",
+        "scribe unmute my microphone",
+        "scribe unmute me",
     ),
 }
 
@@ -187,7 +203,8 @@ class VoiceCommand:
     """One instruction heard out loud.
 
     Attributes:
-        kind: ``"start"``, ``"stop"``, ``"mark"`` or ``"name"``.
+        kind: ``"start"``, ``"stop"``, ``"mark"``, ``"mute"``, ``"unmute"``
+            or ``"name"``.
         text: What was actually heard, for the log and for the page.
         confidence: What the recogniser thought of it, 0 to 1.
         title: For ``"name"``, the title that was dictated.

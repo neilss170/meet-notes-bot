@@ -31,6 +31,14 @@ rather than discovered after one.
 
 **It hears everything the machine plays**, not just the meeting - a video in
 another tab, a notification chime. That is the trade for not needing a bot.
+
+**Muting in the call app does not mute it.** Zoom, Meet and Teams mute by not
+sending your audio; the microphone itself stays open, and this reads the
+microphone, not the call. So the recorder has a mute of its own
+(:attr:`LocalRecorder.mic_muted`), which replaces channel 0 with silence
+while leaving channel 1 alone. Silence rather than nothing: the transcriber
+expects a block every 100 ms on both channels, and a channel that simply
+stopped would either close the stream or slide every timestamp after it.
 """
 
 from __future__ import annotations
@@ -80,6 +88,22 @@ GAIN_NOISE_FLOOR = 220
 #: devices free-run on separate clocks and drift apart; without a cap the
 #: faster one's buffer grows for the whole meeting and the streams desync.
 MAX_BUFFER_S = 2.0
+
+#: Microphone levels kept, one per emitted block: two seconds of them, which
+#: is one poll's worth. The page plays them back across the next poll, so a
+#: two-second status request can still drive a meter that moves with speech.
+LEVEL_HISTORY = 20
+
+#: A block at least this loud, on either channel, is somebody making a sound.
+#: Well above the hiss a gained-up laptop microphone produces in a quiet room,
+#: so a recording left running in an empty room still reads as silent.
+SOUND_LEVEL = 0.35
+
+#: The range a level is drawn across. Below the floor is a quiet room; at
+#: the ceiling somebody is talking close to the microphone. Decibels rather
+#: than raw amplitude, because that is roughly how loudness is heard.
+LEVEL_FLOOR_DB = -60.0
+LEVEL_CEILING_DB = -12.0
 
 
 class LocalCaptureError(RuntimeError):
@@ -177,6 +201,20 @@ def _close_portaudio(audio: Any) -> None:
     with _PORTAUDIO_LOCK:
         with contextlib.suppress(Exception):
             audio.terminate()
+
+
+def level_of(pcm: bytes) -> float:
+    """How loud one block of int16 PCM is, from 0 (silence) to 1 (loud)."""
+    np = _numpy()
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float64)
+    if samples.size == 0:
+        return 0.0
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    if rms <= 0.0:
+        return 0.0
+    db = 20.0 * np.log10(rms / 32768.0)
+    span = LEVEL_CEILING_DB - LEVEL_FLOOR_DB
+    return round(min(1.0, max(0.0, (db - LEVEL_FLOOR_DB) / span)), 2)
 
 
 def _numpy() -> Any:
@@ -597,6 +635,16 @@ class LocalRecorder:
             _Source(microphone, "me", auto_gain=auto_gain) if microphone else None
         )
         self._started_at: float | None = None
+        #: While true, channel 0 carries silence. Read on the capture thread
+        #: once per block and written from whichever thread the person
+        #: clicked on; a plain attribute is enough for one bool.
+        self.mic_muted = False
+        self._levels: deque[float] = deque(maxlen=LEVEL_HISTORY)
+        #: The room as a whole - the louder channel per block - for a meter
+        #: that shows the meeting is being heard, muted or not.
+        self._room: deque[float] = deque(maxlen=LEVEL_HISTORY)
+        #: ``time.monotonic()`` of the last block with a sound in it.
+        self.last_sound_at = time.monotonic()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -679,10 +727,52 @@ class LocalRecorder:
             else:
                 # Fell behind; resync rather than spiral.
                 next_at = time.monotonic()
-            yield self._interleave(
-                self._me.take(want) if self._me else b"\x00" * want,
-                self._them.take(want),
-            )
+            yield self._next_block(want)
+
+    def _next_block(self, want: int) -> bytes:
+        """One interleaved block, with the microphone silenced if muted.
+
+        The microphone is still read while muted, and what it heard is
+        thrown away. Left unread, its buffer would hold the last two seconds
+        of the muted conversation and send them the moment it was unmuted.
+        """
+        me = self._me.take(want) if self._me else b"\x00" * want
+        if self.mic_muted:
+            me = b"\x00" * want
+        mine = 0.0
+        if not self.mic_muted and self._me is not None:
+            mine = level_of(me)
+            self._levels.append(mine)
+        them = self._them.take(want)
+        loudest = max(mine, level_of(them))
+        self._room.append(loudest)
+        if loudest >= SOUND_LEVEL:
+            self.last_sound_at = time.monotonic()
+        return self._interleave(me, them)
+
+    def mic_levels(self) -> list[float]:
+        """The microphone's loudness over the last two seconds, oldest first.
+
+        Empty while muted, which is the point: a meter that keeps moving
+        while Scribe is not listening would be saying the opposite of what
+        the button says.
+        """
+        if self.mic_muted:
+            self._levels.clear()
+            return []
+        return list(self._levels)
+
+    def room_levels(self) -> list[float]:
+        """The louder of the two channels over the last two seconds.
+
+        Unlike :meth:`mic_levels` this keeps moving while the microphone is
+        muted: the meeting is still being recorded, and this says so.
+        """
+        return list(self._room)
+
+    def quiet_for(self) -> float:
+        """Seconds since either channel last carried a sound."""
+        return max(0.0, time.monotonic() - self.last_sound_at)
 
     def _interleave(self, me: bytes, them: bytes) -> bytes:
         np = _numpy()
@@ -835,6 +925,8 @@ def capture_available() -> tuple[bool, str]:
 
 __all__ = [
     "BLOCK_MS",
+    "LEVEL_HISTORY",
+    "SOUND_LEVEL",
     "GAIN_NOISE_FLOOR",
     "GAIN_TARGET",
     "MAX_GAIN",
@@ -852,6 +944,7 @@ __all__ = [
     "default_devices",
     "default_output_name",
     "find_device",
+    "level_of",
     "list_devices",
     "probe_loopback",
     "resolve_or_default",

@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src data:">
+<title>Scribe</title>
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  /* The window's picture. No shadow: the corners repaint the layer every
+     frame, and a 60px blurred shadow repainted with them was what dropped
+     frames. */
+  #shot {
+    position: absolute; display: none; transform-origin: 0 0; will-change: transform, opacity;
+    border-radius: 10px;
+  }
+</style>
+</head>
+<body>
+<img id="shot" alt="">
+<script src="overlay.js"></script>
+</body>
+</html>

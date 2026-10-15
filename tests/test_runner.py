@@ -142,7 +142,7 @@ def run_config(tmp_path: Path) -> Config:
 
 
 def _stub_analysis(monkeypatch, result=None, error=None):
-    def fake(config, utterances, duration):
+    def fake(config, utterances, duration, mic_muted=None):
         if error is not None:
             raise error
         return result

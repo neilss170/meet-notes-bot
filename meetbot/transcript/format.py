@@ -6,13 +6,18 @@ Two audiences, two renderers:
   grouped by speaker turn.
 * :func:`render_for_llm` is for the analysis prompt - no decorative markup,
   and a hard character budget so a four-hour meeting still fits in a request.
+
+Both are told when the person recording had their microphone muted. A muted
+stretch is not a hole in the recording - the other side was captured the
+whole time - and a reader, or a model, that cannot tell the difference will
+treat a deliberate silence as lost audio and say so in the notes.
 """
 
 from __future__ import annotations
 
 from typing import Iterable, Sequence
 
-from meetbot.transcript.store import Utterance
+from meetbot.transcript.store import MicMute, Utterance
 
 #: Gap (seconds) above which consecutive utterances from the same speaker are
 #: treated as separate turns rather than merged into one paragraph.
@@ -66,7 +71,10 @@ class Turn:
 
 
 def group_turns(
-    utterances: Iterable[Utterance], gap_s: float = TURN_GAP_S
+    utterances: Iterable[Utterance],
+    gap_s: float = TURN_GAP_S,
+    *,
+    breaks: Sequence[float] = (),
 ) -> list[Turn]:
     """Merge consecutive same-speaker utterances into conversational turns.
 
@@ -78,6 +86,9 @@ def group_turns(
     Args:
         utterances: Utterances in chronological order.
         gap_s: Silence threshold, in seconds, that starts a new turn.
+        breaks: Moments no turn may run across - where a microphone was
+            muted, so that the line saying so lands between two turns rather
+            than after one that started before it.
 
     Returns:
         The merged turns, in order.
@@ -91,6 +102,7 @@ def group_turns(
             turns
             and turns[-1].speaker == utterance.speaker
             and utterance.start - turns[-1].end <= gap_s
+            and not any(turns[-1].start < b <= utterance.start for b in breaks)
         ):
             previous = turns[-1]
             previous.text = f"{previous.text} {text}"
@@ -100,14 +112,75 @@ def group_turns(
     return turns
 
 
+def mute_marker(mute: MicMute) -> str:
+    """The one line a person reads where the microphone was muted."""
+    return (
+        f"\u2014 Your mic muted {format_timestamp(mute.start)}"
+        f"\u2013{format_timestamp(mute.end)} \u2014"
+    )
+
+
+def mute_note(mute: MicMute) -> str:
+    """The same moment, said so that a model cannot mistake it for lost audio."""
+    return (
+        "(The person recording muted their own microphone until "
+        f"{format_timestamp(mute.end)}. Their side was deliberately not "
+        "recorded; everyone else was recorded as normal.)"
+    )
+
+
+def mute_context(mutes: Sequence[MicMute]) -> str:
+    """One sentence for a prompt header, or ``""`` when nothing was muted."""
+    if not mutes:
+        return ""
+    spans = ", ".join(
+        f"{format_timestamp(m.start)}-{format_timestamp(m.end)}" for m in mutes
+    )
+    return (
+        "The person recording muted their own microphone during "
+        f"{spans}. Nothing they said then was recorded, on purpose; the other "
+        "participants were recorded throughout. Treat those stretches as a "
+        "choice, not as missing or failed audio, and do not mention them "
+        "unless asked about them."
+    )
+
+
+def _interleave(
+    turns: Sequence[Turn], mutes: Sequence[MicMute]
+) -> list[Turn | MicMute]:
+    """Turns and muted stretches in the order they happened."""
+    items: list[Turn | MicMute] = list(turns)
+    for mute in sorted(mutes, key=lambda m: m.start):
+        at = next(
+            (
+                i
+                for i, item in enumerate(items)
+                if isinstance(item, Turn) and item.start >= mute.start
+            ),
+            len(items),
+        )
+        items.insert(at, mute)
+    return items
+
+
 def render_text(
-    utterances: Sequence[Utterance], *, timestamps: bool = True
+    utterances: Sequence[Utterance],
+    *,
+    timestamps: bool = True,
+    mic_muted: Sequence[MicMute] = (),
 ) -> str:
-    """Render a plain-text transcript, one line per turn."""
+    """Render a plain-text transcript, one line per turn.
+
+    A muted stretch becomes a line of its own, at the time it began.
+    """
     lines: list[str] = []
-    for turn in group_turns(utterances):
-        prefix = f"[{format_timestamp(turn.start)}] " if timestamps else ""
-        lines.append(f"{prefix}{turn.speaker}: {turn.text}")
+    turns = group_turns(utterances, breaks=[m.start for m in mic_muted])
+    for item in _interleave(turns, mic_muted):
+        prefix = f"[{format_timestamp(item.start)}] " if timestamps else ""
+        if isinstance(item, MicMute):
+            lines.append(f"{prefix}{mute_note(item)}")
+        else:
+            lines.append(f"{prefix}{item.speaker}: {item.text}")
     return "\n".join(lines)
 
 
@@ -116,6 +189,7 @@ def render_markdown(
     *,
     title: str = "Meeting Transcript",
     meta: dict[str, object] | None = None,
+    mic_muted: Sequence[MicMute] = (),
 ) -> str:
     """Render a Markdown transcript with a short header.
 
@@ -124,6 +198,9 @@ def render_markdown(
         title: Document title.
         meta: Optional key/value pairs (meeting URL, start time, ...) rendered
             as a bullet list under the title.
+        mic_muted: Stretches the person recording had their microphone muted.
+            Each is one line where it happened, rather than an unexplained
+            silence from one side of the conversation.
 
     Returns:
         A complete Markdown document. Empty transcripts render a clear
@@ -138,7 +215,7 @@ def render_markdown(
             parts.append(f"- **{label}:** {value}")
         parts.append("")
 
-    turns = group_turns(utterances)
+    turns = group_turns(utterances, breaks=[m.start for m in mic_muted])
     if not turns:
         parts.append("_No speech was captured during this meeting._")
         return "\n".join(parts) + "\n"
@@ -152,17 +229,24 @@ def render_markdown(
     )
     parts.extend(["", "---", ""])
 
-    for turn in turns:
-        parts.append(f"**[{format_timestamp(turn.start)}] {turn.speaker}**")
+    for item in _interleave(turns, mic_muted):
+        if isinstance(item, MicMute):
+            parts.append(f"_{mute_marker(item)}_")
+            parts.append("")
+            continue
+        parts.append(f"**[{format_timestamp(item.start)}] {item.speaker}**")
         parts.append("")
-        parts.append(turn.text)
+        parts.append(item.text)
         parts.append("")
 
     return "\n".join(parts).rstrip() + "\n"
 
 
 def render_for_llm(
-    utterances: Sequence[Utterance], *, max_chars: int | None = None
+    utterances: Sequence[Utterance],
+    *,
+    max_chars: int | None = None,
+    mic_muted: Sequence[MicMute] = (),
 ) -> str:
     """Render a compact transcript for an LLM prompt.
 
@@ -173,11 +257,13 @@ def render_for_llm(
             marker - the opening (agenda, context) and the close (decisions,
             next steps) carry the most signal for a summary, so keeping both
             ends beats a head- or tail-truncation.
+        mic_muted: Stretches the person recording had their microphone muted,
+            written in as lines of their own - see :func:`mute_note`.
 
     Returns:
         A newline-delimited ``[HH:MM:SS] Speaker: text`` transcript.
     """
-    body = render_text(utterances, timestamps=True)
+    body = render_text(utterances, timestamps=True, mic_muted=mic_muted)
     if max_chars is None or len(body) <= max_chars:
         return body
 

@@ -157,8 +157,12 @@ async def _open(playwright_api, served):
     await page.fill("input[name=username]", "neil")
     await page.fill("input[name=password]", PASSWORD)
     await page.click("button[type=submit]")
-    # The newest meeting opens by itself; wait for its name rather than the
-    # pane, so the notepad behind it has been fetched too.
+    # Nothing opens by itself any more - the page waits on its home screen -
+    # so open the newest meeting the way a person would.
+    await page.wait_for_selector(".mtg", timeout=40_000)
+    await page.click(".mtg .mtg-time")
+    # Wait for its name rather than the pane, so the notepad behind it has
+    # been fetched too.
     await page.wait_for_selector("#copy", timeout=40_000)
     await page.wait_for_function(
         "document.querySelector('.mtitle h2')"
@@ -168,8 +172,7 @@ async def _open(playwright_api, served):
     # The notes are copied out of the notepad the page is holding, so there is
     # nothing to copy until that has arrived.
     await page.wait_for_function(
-        "document.querySelector('#notepad')"
-        " && document.querySelector('#notepad').value.includes('priya')",
+        "state.pad && state.pad.notes.includes('priya')",
         timeout=40_000,
     )
     return browser, page, errors
@@ -311,7 +314,8 @@ class TestTakingAMeetingWithYou:
         async with async_playwright() as pw:
             browser, page, errors = await _open(pw, served)
             try:
-                await page.click(".mtg:has-text('Standup')")
+                await page.click("#home")
+                await page.click(".mtg:has-text('Standup') .mtg-time")
                 await page.wait_for_function(
                     "document.querySelector('.mtitle h2')"
                     " && document.querySelector('.mtitle h2').textContent === 'Standup'",

@@ -23,8 +23,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Sequence
 
 from meetbot.analysis.llm import LLMClient, LLMError
-from meetbot.transcript.format import render_for_llm
-from meetbot.transcript.store import Utterance, speakers
+from meetbot.transcript.format import mute_context, render_for_llm
+from meetbot.transcript.store import MicMute, Utterance, speakers
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +286,10 @@ def chunk_transcript(text: str, chunk_chars: int = CHUNK_CHARS) -> list[str]:
 
 
 def _build_context_header(
-    participants: Sequence[str], meeting_url: str, duration: str
+    participants: Sequence[str],
+    meeting_url: str,
+    duration: str,
+    mic_muted: Sequence[MicMute] = (),
 ) -> str:
     lines = ["Meeting context:"]
     if meeting_url:
@@ -299,6 +302,8 @@ def _build_context_header(
             "- Note: labels like 'Speaker 0' come from automatic diarization "
             "and are not real names."
         )
+    if mic_muted:
+        lines.append(f"- {mute_context(mic_muted)}")
     return "\n".join(lines)
 
 
@@ -346,6 +351,7 @@ def analyze_transcript(
     provider: str = "",
     meeting_url: str = "",
     duration: str = "",
+    mic_muted: Sequence[MicMute] = (),
     max_single_pass_chars: int = MAX_SINGLE_PASS_CHARS,
 ) -> MeetingAnalysis:
     """Produce a :class:`MeetingAnalysis` for a finished meeting.
@@ -356,6 +362,8 @@ def analyze_transcript(
         provider: Provider name, recorded on the result for provenance.
         meeting_url: Meeting URL, included as prompt context.
         duration: Human-readable captured duration, e.g. ``"00:42:10"``.
+        mic_muted: Stretches the person recording muted their microphone,
+            so the summary does not report them as a fault.
         max_single_pass_chars: Threshold above which map-reduce kicks in.
 
     Returns:
@@ -370,8 +378,10 @@ def analyze_transcript(
             "nothing to analyse."
         )
 
-    transcript = render_for_llm(utterances)
-    header = _build_context_header(speakers(utterances), meeting_url, duration)
+    transcript = render_for_llm(utterances, mic_muted=mic_muted)
+    header = _build_context_header(
+        speakers(utterances), meeting_url, duration, mic_muted
+    )
 
     if len(transcript) > max_single_pass_chars:
         chunks = chunk_transcript(transcript)

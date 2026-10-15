@@ -37,8 +37,8 @@ from datetime import date, datetime
 from typing import Any, Iterable, Mapping, Sequence
 
 from meetbot.analysis.llm import LLMClient, LLMError
-from meetbot.transcript.format import format_timestamp
-from meetbot.transcript.store import Utterance
+from meetbot.transcript.format import format_timestamp, mute_context
+from meetbot.transcript.store import MicMute, Utterance
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +168,10 @@ class MeetingSource:
     #: unless anonymisation is on - the citations shown locally always carry
     #: the real names.
     speaker_alias: Mapping[str, str] = field(default_factory=dict)
+    #: Stretches the person recording had their microphone muted. Said once
+    #: under the meeting's heading, so a question about what "I" said in one
+    #: is answered as "you were muted", not as "that did not come up".
+    mic_muted: Sequence[MicMute] = ()
     segments: list[Segment] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -540,6 +544,8 @@ def _render(
     for s_index in order:
         source = sources[s_index]
         lines = [f"## {source.title} ({source.when})"]
+        if source.mic_muted:
+            lines.append(f"({mute_context(source.mic_muted)})")
         previous: int | None = None
         for seg_index in sorted(chosen[s_index]):
             if previous is not None and seg_index != previous + 1:
