@@ -7,7 +7,9 @@
 Records your meetings, transcribes them, and turns your rough notes into good
 ones. **Nothing joins the call.**
 
-![Scribe's meeting view: your rough notes on the left, the notes Scribe filled in from the transcript on the right](docs/images/scribe-meeting-notes.png)
+![Scribe after a meeting, light and dark: the words you typed in ink, what Scribe filled in from the transcript in grey](docs/images/redesign/2-notes.png)
+
+![During a call: a bare notepad, with the live transcript beside it](docs/images/redesign/3-live.png)
 
 Scribe listens to what your speakers are already playing and what your
 microphone is already hearing, so there is no bot in the participant list, no
@@ -98,7 +100,7 @@ first run, and press record. Change that password from **Accounts** once you
 are in.
 
 <p align="center">
-  <img src="docs/images/scribe-sign-in.png" alt="Scribe's sign-in screen" width="480">
+  <img src="docs/images/redesign/sign-in.png" alt="Scribe's sign-in screen" width="480">
 </p>
 
 Or stay in the terminal:
