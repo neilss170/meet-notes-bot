@@ -17,13 +17,17 @@ import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Final, Literal, Mapping
+from typing import Any, Final, Literal, Mapping, cast
 
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-LLMProvider = Literal["anthropic", "openai"]
+LLMProvider = Literal["anthropic", "openai", "gemini"]
+
+#: Every provider name accepted, in one place: validation, the env parser and
+#: the error messages all read it, so adding a fourth means touching one line.
+PROVIDERS: Final[tuple[str, ...]] = ("anthropic", "openai", "gemini")
 
 #: Default display name. It deliberately announces the bot and that it is
 #: recording - see ``README.md`` -> "Consent and disclosure".
@@ -31,6 +35,9 @@ DEFAULT_BOT_NAME: Final[str] = "Scribe (Recording)"
 
 DEFAULT_ANTHROPIC_MODEL: Final[str] = "claude-opus-5"
 DEFAULT_OPENAI_MODEL: Final[str] = "gpt-4o"
+#: Current stable Flash model. Google retires model ids on a schedule, so if
+#: this one 404s, ask the key what it can see: GET {LLM_BASE_URL}/models.
+DEFAULT_GEMINI_MODEL: Final[str] = "gemini-3.8-flash"
 DEFAULT_DEEPGRAM_MODEL: Final[str] = "nova-3"
 
 #: Substrings that make it obvious to other participants that this account is
@@ -256,12 +263,17 @@ class Config:
     analysis_enabled: bool = True
     llm_provider: LLMProvider = "anthropic"
     llm_model: str = ""
-    #: Override the OpenAI adapter's endpoint. Any OpenAI-compatible provider
-    #: (Groq, OpenRouter, a local Ollama) works with ``llm_provider="openai"``
-    #: and its key in ``OPENAI_API_KEY``. Blank uses api.openai.com.
+    #: Override the endpoint of whichever adapter speaks the OpenAI wire
+    #: format. Any compatible provider (Groq, OpenRouter, a local Ollama) works
+    #: with ``llm_provider="openai"`` and its key in ``OPENAI_API_KEY``. Blank
+    #: uses api.openai.com - or, for ``llm_provider="gemini"``, Google's own
+    #: compatibility endpoint.
     llm_base_url: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    #: Gemini key, from https://aistudio.google.com/apikey. It reaches Google
+    #: through the OpenAI-compatible endpoint, so it needs no extra package.
+    gemini_api_key: str = ""
 
     # --- Logging ----------------------------------------------------------
     log_level: str = "INFO"
@@ -282,6 +294,8 @@ class Config:
         """The model used when none is configured, for the active provider."""
         if self.llm_provider == "anthropic":
             return DEFAULT_ANTHROPIC_MODEL
+        if self.llm_provider == "gemini":
+            return DEFAULT_GEMINI_MODEL
         return DEFAULT_OPENAI_MODEL
 
     @property
@@ -289,7 +303,22 @@ class Config:
         """API key for the configured LLM provider (may be empty)."""
         if self.llm_provider == "anthropic":
             return self.anthropic_api_key
+        if self.llm_provider == "gemini":
+            return self.gemini_api_key
         return self.openai_api_key
+
+    @property
+    def llm_key_name(self) -> str:
+        """Which environment variable holds the active provider's key.
+
+        One place that knows the mapping, because three callers have to name it
+        in a message: validation, the readiness check and the first-run
+        walkthrough. A fourth provider should not mean a fourth copy of this.
+        """
+        return {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+        }.get(self.llm_provider, "OPENAI_API_KEY")
 
     @property
     def bridge_url(self) -> str:
@@ -337,17 +366,14 @@ class Config:
             if self.admission_timeout_s <= 0:
                 problems.append("admission_timeout_s must be positive")
 
-        if self.llm_provider not in ("anthropic", "openai"):
+        if self.llm_provider not in PROVIDERS:
             problems.append(
-                "llm_provider must be 'anthropic' or 'openai', "
+                "llm_provider must be one of "
+                f"{', '.join(repr(name) for name in PROVIDERS)}, "
                 f"got {self.llm_provider!r}"
             )
         elif self.analysis_enabled and not self.llm_api_key:
-            key_name = (
-                "ANTHROPIC_API_KEY"
-                if self.llm_provider == "anthropic"
-                else "OPENAI_API_KEY"
-            )
+            key_name = self.llm_key_name
             problems.append(
                 f"{key_name} is not set but analysis is enabled "
                 "(set the key, or pass --no-analysis)"
@@ -395,11 +421,12 @@ def load_config(
         env = os.environ
 
     provider_raw = _env_str(env, "LLM_PROVIDER", "anthropic").lower()
-    if provider_raw not in ("anthropic", "openai"):
+    if provider_raw not in PROVIDERS:
         raise ConfigError(
-            f"LLM_PROVIDER must be 'anthropic' or 'openai', got {provider_raw!r}"
+            "LLM_PROVIDER must be one of "
+            f"{', '.join(repr(name) for name in PROVIDERS)}, got {provider_raw!r}"
         )
-    provider: LLMProvider = "anthropic" if provider_raw == "anthropic" else "openai"
+    provider: LLMProvider = cast(LLMProvider, provider_raw)
 
     return Config(
         meet_url=_env_str(env, "MEET_URL", ""),
@@ -447,5 +474,12 @@ def load_config(
         llm_base_url=_env_str(env, "LLM_BASE_URL", ""),
         anthropic_api_key=_env_str(env, "ANTHROPIC_API_KEY", ""),
         openai_api_key=_env_str(env, "OPENAI_API_KEY", ""),
+        # Google's own tools read either name, and somebody who already has
+        # GOOGLE_API_KEY exported should not have to discover which one we
+        # chose.
+        gemini_api_key=(
+            _env_str(env, "GEMINI_API_KEY", "")
+            or _env_str(env, "GOOGLE_API_KEY", "")
+        ),
         log_level=_env_str(env, "LOG_LEVEL", "INFO").upper(),
     )

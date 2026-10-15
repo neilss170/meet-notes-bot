@@ -1,6 +1,6 @@
 """LLM provider adapters for the post-meeting analysis step.
 
-Both adapters expose the same one-shot JSON interface,
+Every adapter exposes the same one-shot JSON interface,
 :meth:`LLMClient.complete_json`, so :mod:`meetbot.analysis.summarize` never
 branches on the provider. Each provider uses its own native structured-output
 mechanism, so the response is schema-valid JSON rather than free text we have
@@ -23,9 +23,26 @@ logger = logging.getLogger(__name__)
 #: staying inside the SDK's default HTTP timeout.
 DEFAULT_MAX_TOKENS = 16_000
 
+#: Google serves the OpenAI wire format here, so Gemini rides the OpenAI
+#: adapter instead of needing its own SDK. The compatibility is not total -
+#: see :class:`GeminiClient` for the two places it runs out.
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
 
 class LLMError(RuntimeError):
     """Raised when an LLM call fails or returns something unusable."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        """Create the error.
+
+        Args:
+            message: What went wrong, phrased for whoever has to fix it.
+            status_code: HTTP status behind it, where there was one. It lets a
+                caller tell "this endpoint rejected the shape of my request"
+                (400) from "it is busy" (429) without matching on prose.
+        """
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @runtime_checkable
@@ -177,7 +194,19 @@ class OpenAIClient:
     Kept deliberately separate from :class:`AnthropicClient` rather than
     unified behind a compatibility shim, so each provider uses its own
     structured-output and error-handling surface.
+
+    Other vendors implement this wire format without implementing all of it,
+    so the two places they diverge are class attributes rather than literals -
+    see :class:`GeminiClient`.
     """
+
+    #: Named in error messages, so a Gemini failure does not read as an OpenAI
+    #: one to somebody who never configured OpenAI.
+    _label = "OpenAI"
+
+    #: Field carrying the output cap. OpenAI renamed it from ``max_tokens``;
+    #: the endpoints that copied this format did not all follow.
+    _max_tokens_field = "max_completion_tokens"
 
     def __init__(
         self,
@@ -217,18 +246,56 @@ class OpenAIClient:
 
     def _call(self, **kwargs: Any) -> Any:
         openai = self._openai
+        label = self._label
         try:
             return self._client.chat.completions.create(model=self.model, **kwargs)
         except openai.AuthenticationError as exc:
-            raise LLMError("OpenAI rejected the API key (401)") from exc
+            raise LLMError(
+                f"{label} rejected the API key (401)", status_code=401
+            ) from exc
         except openai.NotFoundError as exc:
-            raise LLMError(f"Unknown OpenAI model {self.model!r} (404)") from exc
+            raise LLMError(
+                f"Unknown {label} model {self.model!r} (404)", status_code=404
+            ) from exc
         except openai.RateLimitError as exc:
-            raise LLMError(f"OpenAI rate limit hit: {exc}") from exc
+            raise LLMError(f"{label} rate limit hit: {exc}", status_code=429) from exc
         except openai.APIStatusError as exc:
-            raise LLMError(f"OpenAI API error {exc.status_code}: {exc}") from exc
+            raise LLMError(
+                f"{label} API error {exc.status_code}: {exc}",
+                status_code=getattr(exc, "status_code", None),
+            ) from exc
         except openai.APIConnectionError as exc:
-            raise LLMError(f"Could not reach the OpenAI API: {exc}") from exc
+            raise LLMError(f"Could not reach the {label} API: {exc}") from exc
+
+    def _tokens(self, max_tokens: int) -> dict[str, int]:
+        """The output cap, under the field name this endpoint understands."""
+        return {self._max_tokens_field: max_tokens}
+
+    def _json_format(
+        self, schema: dict[str, Any], schema_name: str
+    ) -> dict[str, Any]:
+        """The ``response_format`` that asks for schema-valid JSON."""
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            },
+        }
+
+    def _parse_json(self, response: Any) -> dict[str, Any]:
+        """The response body as a JSON object, or an :class:`LLMError`."""
+        content = response.choices[0].message.content
+        if not content:
+            raise LLMError(f"{self._label} returned an empty response")
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"{self._label} returned invalid JSON: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise LLMError(f"{self._label} returned JSON that is not an object")
+        return parsed
 
     def complete_json(
         self,
@@ -241,37 +308,21 @@ class OpenAIClient:
     ) -> dict[str, Any]:
         """See :meth:`LLMClient.complete_json`."""
         response = self._call(
-            max_completion_tokens=max_tokens,
+            **self._tokens(max_tokens),
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": schema_name,
-                    "strict": True,
-                    "schema": schema,
-                },
-            },
+            response_format=self._json_format(schema, schema_name),
         )
-        content = response.choices[0].message.content
-        if not content:
-            raise LLMError("OpenAI returned an empty response")
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise LLMError(f"OpenAI returned invalid JSON: {exc}") from exc
-        if not isinstance(parsed, dict):
-            raise LLMError("OpenAI returned JSON that is not an object")
-        return parsed
+        return self._parse_json(response)
 
     def complete_text(
         self, *, system: str, user: str, max_tokens: int = DEFAULT_MAX_TOKENS
     ) -> str:
         """See :meth:`LLMClient.complete_text`."""
         response = self._call(
-            max_completion_tokens=max_tokens,
+            **self._tokens(max_tokens),
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -279,8 +330,122 @@ class OpenAIClient:
         )
         content = response.choices[0].message.content
         if not content:
-            raise LLMError("OpenAI returned an empty response")
+            raise LLMError(f"{self._label} returned an empty response")
         return content
+
+
+def _plain_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``schema`` without the keywords Gemini refuses.
+
+    Its schema dialect is a subset of OpenAPI rather than JSON Schema, and
+    ``additionalProperties`` - which both of our schemas set - is rejected
+    outright. Dropping it loosens validation and changes nothing else: the
+    caller parses what comes back and ignores fields it did not ask for.
+    """
+    dropped = ("additionalProperties", "$schema")
+    cleaned: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in dropped:
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = _plain_schema(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _plain_schema(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+def _schema_instruction(schema: dict[str, Any]) -> str:
+    """Prompt text standing in for a schema the endpoint would not accept."""
+    return (
+        "Reply with a single JSON object and nothing else - no prose, no code "
+        "fence. It must conform to this JSON Schema:\n"
+        f"{json.dumps(_plain_schema(schema), indent=2)}"
+    )
+
+
+class GeminiClient(OpenAIClient):
+    """Gemini, through Google's OpenAI-compatible endpoint.
+
+    Google serves this wire format at :data:`GEMINI_BASE_URL`, so the whole
+    OpenAI adapter is reused and only the incomplete parts are replaced. A
+    Gemini key therefore buys the notes, the enhancement and the chat with no
+    new dependency: the ``openai`` package talks to it unchanged.
+
+    **The output cap is ``max_tokens``.** OpenAI's newer
+    ``max_completion_tokens`` is not understood here.
+
+    **Strict JSON schemas are not accepted.** ``strict`` and
+    ``additionalProperties`` are both refused, so neither is sent; and if the
+    endpoint turns down ``json_schema`` altogether, the request is retried in
+    plain JSON mode with the schema written into the prompt. Losing schema
+    enforcement beats losing the feature, because the caller validates what
+    comes back either way.
+    """
+
+    _label = "Gemini"
+    _max_tokens_field = "max_tokens"
+
+    def _json_format(
+        self, schema: dict[str, Any], schema_name: str
+    ) -> dict[str, Any]:
+        """See :meth:`OpenAIClient._json_format`. Without ``strict``."""
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": _plain_schema(schema),
+            },
+        }
+
+    def complete_json(
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        schema_name: str = "response",
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> dict[str, Any]:
+        """See :meth:`LLMClient.complete_json`.
+
+        Falls back to JSON mode when the endpoint rejects the schema, which it
+        does with a 400. Any other failure - a bad key, a rate limit, an
+        unknown model - is raised as it stands, because retrying would spend
+        the same quota to be told the same thing.
+        """
+        try:
+            return super().complete_json(
+                system=system,
+                user=user,
+                schema=schema,
+                schema_name=schema_name,
+                max_tokens=max_tokens,
+            )
+        except LLMError as exc:
+            if exc.status_code != 400:
+                raise
+            logger.info(
+                "Gemini would not take the JSON schema (%s); asking for plain "
+                "JSON instead",
+                exc,
+            )
+        response = self._call(
+            **self._tokens(max_tokens),
+            messages=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": f"{user}\n\n{_schema_instruction(schema)}",
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        return self._parse_json(response)
 
 
 def probe_llm(client: LLMClient) -> str:
@@ -316,12 +481,14 @@ def build_client(
     """Instantiate the adapter for ``provider``.
 
     Args:
-        provider: ``"anthropic"`` or ``"openai"``.
+        provider: ``"anthropic"``, ``"openai"`` or ``"gemini"``.
         api_key: Provider API key.
         model: Model id.
-        base_url: Endpoint override, honoured by the ``"openai"`` provider
-            only - it is the adapter whose wire format other vendors
-            implement. Ignored for ``"anthropic"``.
+        base_url: Endpoint override, honoured by the adapters built on the
+            OpenAI wire format - it is the one other vendors implement.
+            ``"gemini"`` defaults to :data:`GEMINI_BASE_URL`; a base URL
+            overrides it, which is how a proxy in front of Gemini works.
+            Ignored for ``"anthropic"``.
 
     Raises:
         LLMError: For an unknown provider, a missing key, or a missing SDK.
@@ -332,6 +499,9 @@ def build_client(
         return AnthropicClient(api_key, model)
     if provider == "openai":
         return OpenAIClient(api_key, model, base_url=base_url)
+    if provider == "gemini":
+        return GeminiClient(api_key, model, base_url=base_url or GEMINI_BASE_URL)
     raise LLMError(
-        f"Unknown LLM provider {provider!r}; expected 'anthropic' or 'openai'"
+        f"Unknown LLM provider {provider!r}; "
+        "expected 'anthropic', 'openai' or 'gemini'"
     )

@@ -9,6 +9,7 @@ import pytest
 from meetbot.config import (
     DEFAULT_ANTHROPIC_MODEL,
     DEFAULT_BOT_NAME,
+    DEFAULT_GEMINI_MODEL,
     DEFAULT_OPENAI_MODEL,
     Config,
     ConfigError,
@@ -133,6 +134,16 @@ def test_openai_provider_asks_for_the_openai_key() -> None:
         config.validate()
 
 
+def test_gemini_provider_asks_for_the_gemini_key() -> None:
+    config = Config(
+        meet_url="https://meet.google.com/abc-defg-hij",
+        deepgram_api_key="dg",
+        llm_provider="gemini",
+    )
+    with pytest.raises(ConfigError, match="GEMINI_API_KEY"):
+        config.validate()
+
+
 def test_all_problems_are_reported_together() -> None:
     with pytest.raises(ConfigError) as excinfo:
         Config(sample_rate=12_345).validate()
@@ -153,6 +164,7 @@ def test_require_meeting_false_skips_meeting_checks() -> None:
 def test_default_model_follows_the_provider() -> None:
     assert Config().llm_model == DEFAULT_ANTHROPIC_MODEL
     assert Config(llm_provider="openai").llm_model == DEFAULT_OPENAI_MODEL
+    assert Config(llm_provider="gemini").llm_model == DEFAULT_GEMINI_MODEL
 
 
 def test_explicit_model_is_kept() -> None:
@@ -160,9 +172,18 @@ def test_explicit_model_is_kept() -> None:
 
 
 def test_llm_api_key_follows_the_provider() -> None:
-    config = Config(anthropic_api_key="a", openai_api_key="o")
+    config = Config(anthropic_api_key="a", openai_api_key="o", gemini_api_key="g")
     assert config.llm_api_key == "a"
     assert config.override(llm_provider="openai").llm_api_key == "o"
+    assert config.override(llm_provider="gemini").llm_api_key == "g"
+
+
+def test_the_key_name_follows_the_provider() -> None:
+    """Three callers name this variable in a message; one place decides it."""
+    config = Config()
+    assert config.llm_key_name == "ANTHROPIC_API_KEY"
+    assert config.override(llm_provider="openai").llm_key_name == "OPENAI_API_KEY"
+    assert config.override(llm_provider="gemini").llm_key_name == "GEMINI_API_KEY"
 
 
 def test_override_ignores_none_values(config: Config) -> None:
@@ -227,7 +248,18 @@ def test_load_config_uses_defaults_for_an_empty_environment() -> None:
 
 def test_load_config_rejects_a_bad_provider() -> None:
     with pytest.raises(ConfigError, match="LLM_PROVIDER"):
-        load_config(env={"LLM_PROVIDER": "gemini"})
+        load_config(env={"LLM_PROVIDER": "mistral"})
+
+
+def test_load_config_accepts_gemini_under_either_key_name() -> None:
+    """Google's own tooling sets GOOGLE_API_KEY, so both names are read."""
+    config = load_config(env={"LLM_PROVIDER": "gemini", "GEMINI_API_KEY": "g"})
+    assert config.llm_provider == "gemini"
+    assert config.llm_api_key == "g"
+    assert config.llm_model == DEFAULT_GEMINI_MODEL
+
+    fallback = load_config(env={"LLM_PROVIDER": "gemini", "GOOGLE_API_KEY": "g2"})
+    assert fallback.llm_api_key == "g2"
 
 
 def test_load_config_rejects_a_non_integer() -> None:

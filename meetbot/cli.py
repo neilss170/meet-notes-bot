@@ -421,7 +421,7 @@ def _add_llm_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--llm-provider",
         dest="llm_provider",
-        choices=["anthropic", "openai"],
+        choices=["anthropic", "openai", "gemini"],
         default=None,
         help="Which LLM provider generates the analysis.",
     )

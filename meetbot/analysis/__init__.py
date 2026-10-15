@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from meetbot.analysis.llm import (
     AnthropicClient,
+    GeminiClient,
     LLMClient,
     LLMError,
     OpenAIClient,
@@ -40,6 +41,7 @@ __all__ = [
     "ActionItem",
     "AnalysisError",
     "AnthropicClient",
+    "GeminiClient",
     "Citation",
     "DEFAULT_TEMPLATE",
     "LLMClient",

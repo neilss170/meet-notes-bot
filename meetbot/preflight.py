@@ -302,7 +302,7 @@ def check_llm(config: Config) -> CheckResult:
     if not config.analysis_enabled:
         return CheckResult(name, ok=True, detail="disabled", blocking=False)
     if not config.llm_api_key:
-        key = "ANTHROPIC_API_KEY" if config.llm_provider == "anthropic" else "OPENAI_API_KEY"
+        key = config.llm_key_name
         return CheckResult(
             name, ok=False, detail=f"{key} is not set", blocking=False,
             fix=f"Add {key} to .env, or set ANALYSIS_ENABLED=false",

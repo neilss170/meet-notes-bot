@@ -153,23 +153,19 @@ def blanks_in(config: Config) -> tuple[Blank, ...]:
     # The summary is the only thing an LLM key buys, and it can be turned
     # off, so a deliberate ANALYSIS_ENABLED=false is a finished install.
     if config.analysis_enabled and not config.llm_api_key:
-        if config.llm_provider == "anthropic":
-            found.append(
-                Blank(
-                    "ANTHROPIC_API_KEY",
-                    "writing the notes up after a meeting",
-                    "https://console.anthropic.com/settings/keys",
-                )
+        where = {
+            "anthropic": "https://console.anthropic.com/settings/keys",
+            "openai": "https://platform.openai.com/api-keys, or any "
+            "OpenAI-compatible endpoint via LLM_BASE_URL",
+            "gemini": "https://aistudio.google.com/apikey",
+        }.get(config.llm_provider, "")
+        found.append(
+            Blank(
+                config.llm_key_name,
+                "writing the notes up after a meeting",
+                where,
             )
-        else:
-            found.append(
-                Blank(
-                    "OPENAI_API_KEY",
-                    "writing the notes up after a meeting",
-                    "https://platform.openai.com/api-keys, or any "
-                    "OpenAI-compatible endpoint via LLM_BASE_URL",
-                )
-            )
+        )
 
     return tuple(found)
 

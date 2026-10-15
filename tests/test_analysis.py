@@ -10,7 +10,7 @@ import types
 
 import pytest
 
-from meetbot.analysis.llm import LLMError, build_client
+from meetbot.analysis.llm import GEMINI_BASE_URL, LLMError, build_client
 from meetbot.analysis.summarize import (
     ActionItem,
     AnalysisError,
@@ -222,7 +222,7 @@ def test_analysis_to_dict_is_json_friendly(fake_llm: FakeLLMClient) -> None:
 
 def test_build_client_rejects_unknown_provider() -> None:
     with pytest.raises(LLMError, match="Unknown LLM provider"):
-        build_client("gemini", "key", "model")
+        build_client("mistral", "key", "model")
 
 
 def test_build_client_requires_a_key() -> None:
@@ -290,6 +290,183 @@ def test_anthropic_client_ignores_the_base_url(
 
     build_client("anthropic", "key", "claude-opus-5", "https://example.invalid")
     assert "base_url" not in seen
+
+
+# --- the Gemini adapter ----------------------------------------------------
+
+
+class _Reply:
+    """The parts of a chat completion the adapter actually reads."""
+
+    def __init__(self, content: str) -> None:
+        self.choices = [types.SimpleNamespace(message=types.SimpleNamespace(content=content))]
+
+
+class _ScriptedOpenAIModule(types.ModuleType):
+    """A fake ``openai`` that records requests and replays scripted answers.
+
+    Each entry in ``script`` is either text to return or an exception to raise.
+    The exceptions have to come from the module itself - the adapter catches
+    ``openai.APIStatusError`` and friends - which is why a test takes the
+    module first and fills in its script afterwards.
+    """
+
+    def __init__(self, script: list[object]) -> None:
+        super().__init__("openai")
+        self.script = list(script)
+        self.requests: list[dict] = []
+        self.kwargs: dict = {}
+
+        class APIError(Exception):
+            pass
+
+        class APIStatusError(APIError):
+            def __init__(self, status_code: int = 400) -> None:
+                super().__init__(f"HTTP {status_code}")
+                self.status_code = status_code
+
+        class APIConnectionError(APIError):
+            pass
+
+        self.APIError = APIError
+        self.APIStatusError = APIStatusError
+        self.APIConnectionError = APIConnectionError
+        self.AuthenticationError = type("AuthenticationError", (APIStatusError,), {})
+        self.NotFoundError = type("NotFoundError", (APIStatusError,), {})
+        self.RateLimitError = type("RateLimitError", (APIStatusError,), {})
+
+        module = self
+
+        def _create(**kwargs: object) -> object:
+            module.requests.append(kwargs)
+            answer = module.script.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return _Reply(str(answer))
+
+        def _factory(**kwargs: object) -> object:
+            module.kwargs = kwargs
+            return types.SimpleNamespace(
+                chat=types.SimpleNamespace(
+                    completions=types.SimpleNamespace(create=_create)
+                )
+            )
+
+        self.OpenAI = _factory
+
+
+def _scripted(
+    monkeypatch: pytest.MonkeyPatch, *script: object
+) -> _ScriptedOpenAIModule:
+    module = _ScriptedOpenAIModule(list(script))
+    monkeypatch.setitem(sys.modules, "openai", module)
+    return module
+
+
+#: A schema shaped like the real ones: ``additionalProperties`` and all.
+SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+}
+
+
+def test_gemini_talks_to_googles_compatibility_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Gemini key needs no new SDK: Google serves the OpenAI wire format."""
+    module = _scripted(monkeypatch)
+    build_client("gemini", "g-key", "gemini-3.8-flash")
+    assert module.kwargs["base_url"] == GEMINI_BASE_URL
+    assert module.kwargs["api_key"] == "g-key"
+
+
+def test_a_base_url_still_wins_for_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
+    """So a proxy in front of Gemini stays configurable."""
+    module = _scripted(monkeypatch)
+    build_client("gemini", "g-key", "gemini-3.8-flash", "https://proxy.invalid/v1")
+    assert module.kwargs["base_url"] == "https://proxy.invalid/v1"
+
+
+def test_gemini_sends_the_output_cap_as_max_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It does not understand OpenAI's newer max_completion_tokens."""
+    module = _scripted(monkeypatch, "fine")
+    client = build_client("gemini", "g-key", "gemini-3.8-flash")
+    assert client.complete_text(system="s", user="u", max_tokens=1234) == "fine"
+    request = module.requests[0]
+    assert request["max_tokens"] == 1234
+    assert "max_completion_tokens" not in request
+
+
+def test_openai_still_sends_max_completion_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Gemini overrides must not leak into the OpenAI path."""
+    module = _scripted(monkeypatch, "fine")
+    client = build_client("openai", "key", "gpt-4o")
+    client.complete_text(system="s", user="u", max_tokens=99)
+    assert module.requests[0]["max_completion_tokens"] == 99
+
+
+def test_gemini_asks_for_a_schema_without_strict_or_additional_properties(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both are refused by the compatibility layer; the rest of it still goes."""
+    module = _scripted(monkeypatch, '{"answer": "yes"}')
+    client = build_client("gemini", "g-key", "gemini-3.8-flash")
+    assert client.complete_json(system="s", user="u", schema=SCHEMA) == {
+        "answer": "yes"
+    }
+    sent = module.requests[0]["response_format"]
+    assert sent["type"] == "json_schema"
+    assert "strict" not in sent["json_schema"]
+    assert "additionalProperties" not in sent["json_schema"]["schema"]
+    assert sent["json_schema"]["schema"]["required"] == ["answer"]
+
+
+def test_gemini_falls_back_to_json_mode_when_the_schema_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Losing schema enforcement beats losing the write-up entirely."""
+    module = _scripted(monkeypatch)
+    module.script = [module.APIStatusError(400), '{"answer": "yes"}']
+    client = build_client("gemini", "g-key", "gemini-3.8-flash")
+
+    assert client.complete_json(system="s", user="u", schema=SCHEMA) == {
+        "answer": "yes"
+    }
+
+    assert len(module.requests) == 2
+    retry = module.requests[1]
+    assert retry["response_format"] == {"type": "json_object"}
+    # The schema has to survive somewhere, so it goes into the prompt.
+    asked = retry["messages"][1]["content"]
+    assert "JSON Schema" in asked
+    assert '"answer"' in asked
+
+
+def test_gemini_does_not_retry_a_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retrying a 429 spends the same quota to be told the same thing."""
+    module = _scripted(monkeypatch)
+    module.script = [module.RateLimitError(429)]
+    client = build_client("gemini", "g-key", "gemini-3.8-flash")
+    with pytest.raises(LLMError, match="rate limit"):
+        client.complete_json(system="s", user="u", schema=SCHEMA)
+    assert len(module.requests) == 1
+
+
+def test_a_gemini_failure_does_not_blame_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Somebody who never configured OpenAI should not be told OpenAI failed."""
+    module = _scripted(monkeypatch)
+    module.script = [module.AuthenticationError(401)]
+    client = build_client("gemini", "g-key", "gemini-3.8-flash")
+    with pytest.raises(LLMError, match="Gemini rejected the API key"):
+        client.complete_text(system="s", user="u")
 
 
 class TestDecisions:

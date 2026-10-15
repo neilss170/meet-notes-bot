@@ -51,12 +51,13 @@ Both change how accurate the transcript is, more than anything else here.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `LLM_PROVIDER` | `anthropic` | `anthropic` or `openai`. |
+| `LLM_PROVIDER` | `anthropic` | `anthropic`, `openai` or `gemini`. |
 | `ANTHROPIC_API_KEY` | — | Required when the provider is `anthropic`. |
 | `OPENAI_API_KEY` | — | Required when the provider is `openai`. |
-| `LLM_MODEL` | provider default | Blank means `claude-opus-5` / `gpt-4o`. |
+| `GEMINI_API_KEY` | — | Required when the provider is `gemini`. `GOOGLE_API_KEY` is read as well, because Google's own tools set that one. |
+| `LLM_MODEL` | provider default | Blank means `claude-opus-5` / `gpt-4o` / `gemini-3.8-flash`. |
 | `ANALYSIS_ENABLED` | `true` | `false` gives transcripts only, and needs no LLM key. |
-| `LLM_BASE_URL` | — | Points the `openai` provider at any OpenAI-compatible endpoint. |
+| `LLM_BASE_URL` | — | Points the `openai` provider at any OpenAI-compatible endpoint. For `gemini` it overrides Google's compatibility endpoint, which is how a proxy in front of Gemini works. |
 | `AUTO_NOTES` | `true` | Write the notes up as soon as a recording ends, rather than waiting for somebody to press **Enhance notes**. Same model, same template, same result — it just happens without being asked, which is the point of a notetaker. Costs one LLM call per finished meeting, so `false` on a metered key lets you choose. |
 | `ANONYMISE_ANALYSIS` | `false` | Replace real names with "Speaker A" in the transcript text **sent to the LLM**. The local transcript keeps the real names; only the third-party request is anonymised. For meetings where personal names should not leave the machine. |
 
