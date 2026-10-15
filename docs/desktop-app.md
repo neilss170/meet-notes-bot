@@ -71,7 +71,7 @@ and it remembers where it was on each display.
 ![Every state of the bubble](images/bubble/states.png)
 
 - It wears the page's recording bars. **Idle**: just the spiral.
-  **Recording**: green bars moving with the room. **Held** (starting,
+  **Recording**: iris bars moving with the room, and a soft halo. **Held** (starting,
   wrapping up, about to stop): grey and still. **Mic muted**: an amber badge.
   **Writing notes**: the spiral turns.
 - **Hover** for a moment and it opens: Start/Stop recording (the one accented

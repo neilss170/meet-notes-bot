@@ -218,7 +218,11 @@ desktop environment's own startup applications list will run it at sign-in.
 
 ![Home, light and dark](images/redesign/1-home.png)
 
-The page is a sheet of paper. Home has one thing to do — **Start recording** —
+The page is quiet: ink on near-white (or near-black), and one colour — a
+violet-to-teal *iris* — that only ever means Scribe is doing something:
+listening, thinking, writing. While a call is recorded the edge of the window
+glows with it, brighter as people talk. Home greets you and has one thing to
+do — **Start recording** —
 and below it every meeting as a thin row by day: its name, who was there
 (`Priya, Alex +2`) and the time. Click a name to rename it; click anywhere
 else on the row to open it. **Ctrl+K** searches the list, **Ctrl+J** asks.
@@ -252,12 +256,12 @@ a column beside it.
 - **Type as the meeting runs.** Fragments are the point. `api behind?? 2wks`,
   `priya -> migration script, fri`. It autosaves about a second after you stop
   typing, and opening the transcript or closing the page flushes it at once.
-- **The pill at the foot** is the recording: green bars that move with the
+- **The pill at the foot** is the recording: iris bars that move with the
   room, grey and still while Scribe is starting, wrapping up or about to stop,
   and an amber badge while your mic is muted.
 - **The live transcript** opens by itself beside the notes when a recording
   starts: chat bubbles, *Them* on the left in grey and *Me* on the right in
-  green, with a quiet divider wherever your mic was muted. Close it with ×
+  iris, with a quiet divider wherever your mic was muted. Close it with ×
   and it stays closed for that meeting; the pill brings it back.
 - **When the call ends** the notes are written up from your notepad and the
   transcript (or press **Enhance notes**, or `Ctrl`/`Cmd`+`Enter`). What you

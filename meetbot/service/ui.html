@@ -5,69 +5,76 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scribe</title>
 <style>
-  /* Paper, ink, and one colour.
+  /* Ink, air, and one living colour.
 
-     The page is a quiet sheet to write on during a call, so almost nothing
-     on it asks to be looked at. Text is ink; what the model added is a
-     softer grey, so your own words stand out in the write-up; and the one
-     accent - a low green - means "recording" or "you". Amber is kept for
-     the one state worth a glance mid-call: your microphone is muted. */
+     The page stays quiet: near-white (or near-black) space, ink for what you
+     wrote, a cooler grey for what the model added. The one colour is "iris" -
+     violet into blue into teal - and it only ever means *Scribe is doing
+     something*: listening, thinking, writing. It glows at the window's edge
+     while a call is recorded, turns in the mark while it works, and fills the
+     single button a screen is for. Amber is kept for a muted microphone. */
+  @property --spin { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
   :root {
     color-scheme: light;
-    --bg: #f6f5f1;
-    --side: #efeee9;
-    --raised: #fdfcfa;
-    --sunk: #ebe9e3;
-    --ink: #1f1e1b;
-    --ink-2: #57554f;
-    --ai: #7a776f;
-    --faint: #9d9a92;
-    --line: #e4e1da;
-    --line-2: #d8d5cd;
-    --hover: rgba(31, 30, 27, .05);
-    --press: rgba(31, 30, 27, .08);
-    --accent: #3f7b51;
+    --bg: #f7f7f9;
+    --side: #f1f1f5;
+    --raised: #ffffff;
+    --sunk: #ededf2;
+    --ink: #0f0f14;
+    --ink-2: #4a4a57;
+    --ai: #7d7d8c;
+    --faint: #9a9aa8;
+    --line: #e6e6ec;
+    --line-2: #d8d8e1;
+    --hover: rgba(15, 15, 30, .045);
+    --press: rgba(15, 15, 30, .075);
+    --accent: #6b5cff;
     --accent-ink: #ffffff;
-    --accent-soft: #e2ece2;
-    --accent-line: #c8dbc9;
-    --amber: #a8701c;
-    --amber-soft: #f5e9d3;
-    --bad: #b4432f;
-    --bad-soft: #f6e2dc;
-    --shadow: 0 1px 2px rgba(40, 36, 28, .05), 0 10px 30px -12px rgba(40, 36, 28, .18);
-    --float: 0 2px 6px rgba(40, 36, 28, .06), 0 28px 70px -20px rgba(40, 36, 28, .32);
-    --focus: color-mix(in srgb, var(--accent) 55%, transparent);
-    --radius: 14px;
+    --accent-soft: rgba(107, 92, 255, .09);
+    --accent-line: rgba(107, 92, 255, .28);
+    --iris-1: #7b61ff; --iris-2: #4d8dff; --iris-3: #1fc4a8; --iris-4: #c46cff;
+    --iris: linear-gradient(115deg, var(--iris-1) 0%, var(--iris-2) 48%, var(--iris-3) 100%);
+    --iris-ring: conic-gradient(from var(--spin), var(--iris-1), var(--iris-2), var(--iris-3), var(--iris-4), var(--iris-1));
+    --amber: #b0731a;
+    --amber-soft: #f7ecd8;
+    --bad: #c2412d;
+    --bad-soft: #fbe6e1;
+    --shadow: 0 1px 2px rgba(15, 15, 40, .05), 0 12px 32px -14px rgba(30, 30, 80, .22);
+    --float: 0 2px 6px rgba(15, 15, 40, .06), 0 30px 80px -24px rgba(40, 30, 120, .35);
+    --focus: color-mix(in srgb, var(--accent) 50%, transparent);
+    --radius: 16px;
     --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont,
             Inter, Roboto, "Helvetica Neue", sans-serif;
     --display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont,
                Inter, Roboto, "Helvetica Neue", sans-serif;
+    --lv: 0;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       color-scheme: dark;
-      --bg: #1b1b19;
-      --side: #171715;
-      --raised: #232321;
-      --sunk: #2a2a27;
-      --ink: #ecebe6;
-      --ink-2: #b6b3aa;
-      --ai: #8f8c84;
-      --faint: #74716a;
-      --line: #2e2d2a;
-      --line-2: #3a3935;
-      --hover: rgba(255, 255, 255, .05);
-      --press: rgba(255, 255, 255, .08);
-      --accent: #7cb987;
-      --accent-ink: #13210f;
-      --accent-soft: rgba(124, 185, 135, .14);
-      --accent-line: rgba(124, 185, 135, .3);
-      --amber: #e0a84f;
-      --amber-soft: rgba(224, 168, 79, .15);
-      --bad: #e2826f;
-      --bad-soft: rgba(226, 130, 111, .14);
-      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 14px 34px -14px rgba(0, 0, 0, .6);
-      --float: 0 2px 8px rgba(0, 0, 0, .35), 0 30px 80px -20px rgba(0, 0, 0, .75);
+      --bg: #0b0b0f;
+      --side: #09090c;
+      --raised: #141419;
+      --sunk: #1b1b22;
+      --ink: #f3f3f7;
+      --ink-2: #b2b2c0;
+      --ai: #8b8b9b;
+      --faint: #6c6c7a;
+      --line: #21212a;
+      --line-2: #2d2d38;
+      --hover: rgba(255, 255, 255, .045);
+      --press: rgba(255, 255, 255, .075);
+      --accent: #a194ff;
+      --accent-ink: #0b0b0f;
+      --accent-soft: rgba(161, 148, 255, .13);
+      --accent-line: rgba(161, 148, 255, .32);
+      --iris-1: #8f78ff; --iris-2: #5aa2ff; --iris-3: #2fe0bd; --iris-4: #d282ff;
+      --amber: #e6ad52;
+      --amber-soft: rgba(230, 173, 82, .14);
+      --bad: #ff8a73;
+      --bad-soft: rgba(255, 138, 115, .13);
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 16px 40px -16px rgba(0, 0, 0, .8);
+      --float: 0 2px 8px rgba(0, 0, 0, .4), 0 34px 90px -24px rgba(0, 0, 0, .9);
     }
   }
 
@@ -628,10 +635,215 @@
     .busy .word { color: var(--faint); background: none; }
     .w-in { opacity: 1; }
   }
+
+  /* ======================================================================
+     The iris layer. Everything above is structure; this is the light.
+     ====================================================================== */
+
+  /* Air: two faint pools of colour at the top of the page, far behind
+     everything, so the white is lit rather than blank. */
+  body {
+    background:
+      radial-gradient(900px 420px at 18% -12%, color-mix(in srgb, var(--iris-1) 9%, transparent), transparent 70%),
+      radial-gradient(800px 380px at 92% -8%, color-mix(in srgb, var(--iris-3) 7%, transparent), transparent 70%),
+      var(--bg);
+    background-attachment: fixed;
+  }
+  .side { background: color-mix(in srgb, var(--side) 82%, transparent); backdrop-filter: blur(20px); }
+
+  /* The mark takes the iris, and turns while Scribe works. */
+  .brand .dot { background: var(--iris); }
+  .brand { font-weight: 650; letter-spacing: -0.02em; }
+
+  /* The one button a screen is for: filled with the iris, lit on hover. */
+  .btn.primary {
+    background: var(--iris); color: #fff; border: 0; position: relative; isolation: isolate;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 8px 22px -10px color-mix(in srgb, var(--iris-1) 70%, transparent);
+    transition: box-shadow .25s ease, transform .15s ease, filter .2s ease;
+  }
+  .btn.primary:hover:not(:disabled) {
+    background: var(--iris); filter: saturate(1.15) brightness(1.04); transform: translateY(-1px);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .3) inset, 0 14px 30px -10px color-mix(in srgb, var(--iris-2) 75%, transparent);
+  }
+  .btn.primary:active:not(:disabled) { transform: translateY(0); }
+  .rec-dot { background: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, .25); animation: beat 2.4s ease-in-out infinite; }
+  @keyframes beat { 50% { box-shadow: 0 0 0 6px rgba(255, 255, 255, 0); } }
+  .btn { border-radius: 10px; }
+  .btn.quiet { color: var(--ink-2); }
+
+  /* -- home ------------------------------------------------------------- */
+  .hello { margin: 18px 0 26px; }
+  .hello .date { font-size: 13px; color: var(--faint); letter-spacing: .01em; margin-bottom: 6px; }
+  .page h1#greeting {
+    font: 650 40px/1.1 var(--display); letter-spacing: -0.035em; margin: 0;
+  }
+  #greeting .name {
+    background: var(--iris); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  /* The start box: a hairline that becomes a slowly turning ring of iris
+     the moment you go to use it. */
+  .start {
+    position: relative; border-radius: 18px; padding: 10px; box-shadow: var(--shadow);
+    border: 1px solid var(--line);
+  }
+  .start::before {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px;
+    background: var(--iris-ring); opacity: 0; transition: opacity .35s ease;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+    animation: spin 6s linear infinite;
+  }
+  .start::after {
+    content: ""; position: absolute; inset: 8px; border-radius: inherit; z-index: -1;
+    background: var(--iris-ring); filter: blur(26px); opacity: 0; transition: opacity .4s ease;
+    animation: spin 6s linear infinite;
+  }
+  .start:focus-within::before { opacity: 1; }
+  .start:focus-within::after { opacity: .28; }
+  @keyframes spin { to { --spin: 360deg; } }
+  .start-row input { font-size: 16px; }
+  .daygroup { font-size: 12px; letter-spacing: .02em; }
+  .mtg { position: relative; border-radius: 12px; transition: background .15s ease; }
+  .mtg::before {
+    content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px;
+    background: var(--iris); opacity: 0; transition: opacity .2s ease;
+  }
+  .mtg:hover::before { opacity: 1; }
+  .mtg-ic { background: var(--sunk); border-radius: 9px; }
+  .mtg:hover .mtg-ic { color: var(--accent); }
+  .mtg-state.live { color: var(--accent); }
+  .homebar {
+    border-radius: 18px; background: color-mix(in srgb, var(--raised) 86%, transparent);
+    backdrop-filter: blur(18px); box-shadow: var(--float);
+  }
+  .homebar::before {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
+    background: var(--iris); opacity: .35;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+  }
+  .homebar button.ask-open::before {
+    content: "\2726"; margin-right: 10px; background: var(--iris); -webkit-background-clip: text;
+    background-clip: text; color: transparent;
+  }
+  .slash-key { background: var(--iris); color: #fff; }
+
+  /* -- recording: the edge of the window listens --------------------------- */
+  /* A ring of iris around the whole window while a call is recorded. It
+     turns slowly, and breathes with the room - brighter as people talk. */
+  .halo {
+    position: fixed; inset: 0; z-index: 60; pointer-events: none; opacity: 0;
+    transition: opacity .8s ease;
+  }
+  .halo::before, .halo::after {
+    content: ""; position: absolute; inset: 0; padding: 1.5px; background: var(--iris-ring);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; animation: spin 8s linear infinite;
+  }
+  /* The glow: a band centred on the window's edge, so half of it falls off
+     screen and what is left fades inward rather than sitting as a frame. */
+  .halo::after {
+    inset: -12px; padding: 18px; filter: blur(14px);
+    opacity: calc(.3 + var(--lv) * .7); transition: opacity .15s linear;
+  }
+  .app.rec .halo { opacity: .75; }
+  @media (prefers-color-scheme: dark) { .app.rec .halo { opacity: .9; } }
+
+  /* The pill wears the same light, as an aura that swells with the room. */
+  .recpill {
+    border-radius: 999px; background: color-mix(in srgb, var(--raised) 88%, transparent);
+    backdrop-filter: blur(18px); border: 1px solid var(--line);
+  }
+  .recpill:not(.done):not(.paused) {
+    box-shadow: 0 0 0 1px var(--accent-line),
+                0 0 calc(18px + var(--lv) * 34px) calc(var(--lv) * 6px) color-mix(in srgb, var(--iris-2) 38%, transparent),
+                var(--shadow);
+  }
+  .bars i { background: var(--iris); }
+  .recpill.paused .bars i, .recpill.done .bars i { background: var(--faint); }
+
+  /* -- the live transcript ------------------------------------------------- */
+  .drawer { background: color-mix(in srgb, var(--raised) 92%, transparent); backdrop-filter: blur(24px); }
+  .main.docked .drawer { background: color-mix(in srgb, var(--raised) 70%, transparent); }
+  .drawer-title { letter-spacing: -0.01em; }
+  .live-line .bubble { border-radius: 18px 18px 18px 6px; background: var(--sunk); }
+  .live-line.me .bubble {
+    background: linear-gradient(115deg, color-mix(in srgb, var(--iris-1) 16%, var(--raised)),
+                                        color-mix(in srgb, var(--iris-2) 12%, var(--raised)));
+    border-radius: 18px 18px 6px 18px;
+  }
+  /* Words arrive out of focus and settle - heard, then understood. */
+  .w-in { opacity: 0; filter: blur(6px); animation: settle .55s cubic-bezier(.2, .75, .25, 1) forwards; animation-delay: var(--d, 0ms); }
+  @keyframes settle { to { opacity: 1; filter: blur(0); } }
+  .tx-foot .dots i { background: var(--accent); opacity: .5; }
+
+  /* -- thinking ------------------------------------------------------------ */
+  .busy .word {
+    background: linear-gradient(100deg, var(--faint) 0%, var(--faint) 35%, var(--iris-1) 45%,
+                var(--iris-3) 55%, var(--faint) 65%, var(--faint) 100%);
+    background-size: 250% 100%; -webkit-background-clip: text; background-clip: text;
+  }
+  .busy svg { color: var(--accent); animation: twinkle 1.6s ease-in-out infinite; }
+  @keyframes twinkle { 50% { transform: scale(.75) rotate(45deg); opacity: .6; } }
+  /* While the notes are written: lines of light where they will appear. */
+  .skeleton { display: grid; gap: 12px; margin: 6px 0 26px; }
+  .skeleton i {
+    display: block; height: 11px; border-radius: 6px;
+    background: linear-gradient(100deg, var(--sunk) 0%, var(--sunk) 35%,
+                color-mix(in srgb, var(--iris-1) 22%, var(--sunk)) 50%, var(--sunk) 65%, var(--sunk) 100%);
+    background-size: 250% 100%; animation: shimmer 1.8s linear infinite;
+  }
+  .skeleton i:nth-child(1) { width: 38%; height: 14px; }
+  .skeleton i:nth-child(2) { width: 92%; } .skeleton i:nth-child(3) { width: 84%; }
+  .skeleton i:nth-child(4) { width: 70%; } .skeleton i:nth-child(5) { width: 30%; height: 14px; margin-top: 10px; }
+  .skeleton i:nth-child(6) { width: 88%; } .skeleton i:nth-child(7) { width: 64%; }
+  /* And then they arrive, one block after another. */
+  .reveal > * { animation: arrive .6s cubic-bezier(.2, .75, .25, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+  @keyframes arrive { from { opacity: 0; transform: translateY(6px); filter: blur(4px); } }
+
+  /* Your words: ink. The model's: grey - and on hover, a whisper of iris. */
+  .doc li::marker { color: var(--accent); }
+  #enhanced .mine, #enhanced .ink { color: var(--ink); }
+  .doc .md-task.done .box { background: var(--iris); border: 0; }
+  .doc .md-h1, .doc .md-h2, .doc .md-h3 { letter-spacing: -0.02em; }
+
+  /* -- ask --------------------------------------------------------------- */
+  .ask { border-radius: 22px; background: color-mix(in srgb, var(--raised) 88%, transparent); backdrop-filter: blur(28px) saturate(140%); }
+  .ask::before {
+    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
+    background: var(--iris); opacity: .45; pointer-events: none;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+  .ask-head::before {
+    content: "\2726"; font-size: 15px; margin-right: 4px; background: var(--iris);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .turn .q { background: var(--iris); color: #fff; border-radius: 18px 18px 6px 18px; }
+  .composer { border-radius: 16px; background: var(--raised); }
+  .composer:focus-within { border-color: transparent; box-shadow: 0 0 0 1.5px var(--accent-line), 0 0 24px -6px color-mix(in srgb, var(--iris-2) 45%, transparent); }
+  .cite { color: var(--accent); }
+  .toast { border-radius: 14px; background: color-mix(in srgb, var(--ink) 92%, transparent); backdrop-filter: blur(16px); }
+
+  /* -- the meeting page ----------------------------------------------------- */
+  .mtitle h2 { font-size: 34px; letter-spacing: -0.035em; }
+  .who-chip { background: var(--sunk); }
+  .mode { background: var(--sunk); border-radius: 10px; }
+  .mode button.on { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), 0 0 0 1px var(--line); }
+  .nav-item.on { background: var(--raised); box-shadow: var(--shadow); }
+  .find { background: var(--raised); border-radius: 10px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .halo::before, .halo::after, .start::before, .start::after { animation: none; }
+    .w-in { filter: none; }
+    .reveal > * { animation: none; }
+    .skeleton i, .rec-dot, .busy svg { animation: none; }
+  }
 </style>
 </head>
 <body>
 <div class="app" id="app">
+  <div class="halo" aria-hidden="true"></div>
   <aside class="side">
     <button class="brand" id="home" type="button" title="Home"><span class="dot"></span>Scribe</button>
     <label class="find">
@@ -667,7 +879,10 @@
 
     <div class="view" id="home-view">
       <div class="page">
-        <h1>Home</h1>
+        <div class="hello">
+          <div class="date" id="today"></div>
+          <h1 id="greeting">Hello</h1>
+        </div>
         <section class="start" id="form-local">
           <div class="start-row">
             <input type="text" id="rec-title" placeholder="What is this meeting?" autocomplete="off" aria-label="Meeting name">
@@ -1418,15 +1633,24 @@ function renderNotes(rebuild) {
   const status = $("busy");
   status.hidden = !busy;
   status.innerHTML = busy
-    ? `<div class="busy">${ICON.spark}<span class="word">Enhancing notes</span></div>` : "";
+    ? `<div class="busy">${ICON.spark}<span class="word">Scribe is writing your notes</span></div>` +
+      (pad.enhanced ? "" : '<div class="skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>')
+    : "";
   if (pad.enhanced) {
     host.innerHTML = renderMarkdown(pad.enhanced, {
       lines: true, notes: String(pad.notes || "").split("\n"), mine: pad.mine || [],
     });
+    // Fresh from the model, or opened just now: the notes arrive block by
+    // block. An edit to one line is not an arrival, and repaints in place.
+    const arriving = state.revealFor !== state.selected || state.wasWriting;
+    host.classList.toggle("reveal", arriving);
+    if (arriving) [...host.children].forEach((el, i) => el.style.setProperty("--i", String(Math.min(i, 14))));
+    state.revealFor = state.selected;
   } else {
-    // Written up right now: what you typed, in your ink, while it happens.
-    host.innerHTML = renderMarkdown(pad.notes || "", { notes: String(pad.notes || "").split("\n") });
+    host.classList.remove("reveal");
+    host.innerHTML = busy ? "" : renderMarkdown(pad.notes || "", { notes: String(pad.notes || "").split("\n") });
   }
+  state.wasWriting = busy;
   renderDock(job);
 }
 
@@ -1679,6 +1903,7 @@ function renderDock(job) {
 const BAR_SHAPE = [0.55, 0.85, 1, 0.8, 0.5];
 
 function setBars(level) {
+  document.documentElement.style.setProperty("--lv", String(Math.max(0, Math.min(1, level || 0)).toFixed(2)));
   document.querySelectorAll(".recpill:not(.paused) .bars i, #side-live .bars i, .mtg-state .bars i, .drawer-title .bars i").forEach((bar, i) => {
     const shape = BAR_SHAPE[i % BAR_SHAPE.length];
     const wobble = REDUCED.matches ? 1 : 0.75 + Math.random() * 0.5;
@@ -2110,7 +2335,7 @@ function sourceWhere(c, acrossMeetings) {
 }
 
 /** One question and its answer, with each citation a quiet icon. */
-function turnHtml(turn, index, acrossMeetings) {
+function turnHtml(turn, index, acrossMeetings, fresh = false) {
   const cites = Array.isArray(turn.citations) ? turn.citations : [];
   const answer = cites.length ? turn.answer : String(turn.answer || "").replace(/\[\^\d+\]/g, "");
   let html = renderMarkdown(answer);
@@ -2122,7 +2347,7 @@ function turnHtml(turn, index, acrossMeetings) {
   return (
     `<div class="turn" data-turn="${index}">` +
       `<div class="q">${esc(turn.question)}</div>` +
-      `<div class="a doc">${html}</div>` +
+      `<div class="a doc${fresh ? " reveal" : ""}">${html}</div>` +
       (acrossMeetings && turn.searched != null
         ? `<div class="turn-meta">Searched ${esc(turn.searched)} meeting${turn.searched === 1 ? "" : "s"}</div>`
         : "") +
@@ -2146,7 +2371,7 @@ function renderChat(scrollToEnd) {
     return;
   }
   feed.innerHTML =
-    (turns.length ? turns.map((turn, i) => turnHtml(turn, i, across)).join("")
+    (turns.length ? turns.map((turn, i) => turnHtml(turn, i, across, i === state.chat.fresh)).join("")
       : asking ? "" : `<div class="chat-empty">${across ? "Ask about any meeting" : `Ask about ${esc(meetingName(state.detail || {}))}`}</div>`) +
     (asking
       ? '<div class="turn">' +
@@ -2199,7 +2424,10 @@ async function askQuestion(preset) {
   } finally {
     slot.asking = false;
     state.chat.sig = "";
+    state.chat.fresh = (across ? state.chat.turns : (state.pad?.chat || [])).length - 1;
     renderChat(true);
+    state.chat.fresh = -1;
+    document.querySelectorAll("#chat-feed .a.reveal > *").forEach((el, i) => el.style.setProperty("--i", String(Math.min(i, 14))));
   }
 }
 
@@ -3086,6 +3314,8 @@ async function poll() {
     state.meetings = data.meetings || [];
     // Anything running or being written up turns the logo.
     $("app").classList.toggle("working", state.meetings.some((job) => isLive(job) || job.enhancing));
+    // The window's edge listens while a call is being recorded.
+    $("app").classList.toggle("rec", state.meetings.some((job) => job.status === "in_call" && !job.auto_stop));
     // The notification area asked for a meeting to be shown - once.
     if (data.focus && data.focus !== state.selected) {
       await select(data.focus);
@@ -3293,6 +3523,7 @@ async function init() {
     state.templates = templates.templates || [];
     state.defaultTemplate = templates.default || "general";
     $("me").textContent = me.username;
+    greet(me.username);
     $("admin-open").hidden = me.role !== "admin";
     $("opt-names").checked = !!config.speaker_names_from_captions;
     $("opt-overlay").checked = !!config.live_captions_overlay;
@@ -3397,6 +3628,16 @@ async function init() {
   state.pollTimer = setInterval(poll, 2000);
   setInterval(advanceLevels, 100);
   setInterval(renderAutoStopTick, 1000);
+}
+
+/** "Good evening, Neil", over today's date. */
+function greet(username) {
+  const hour = new Date().getHours();
+  const part = hour < 5 ? "Good evening" : hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const name = String(username || "").replace(/[._-].*$/, "");
+  const shown = name ? name.charAt(0).toUpperCase() + name.slice(1) : "";
+  $("greeting").innerHTML = shown ? `${part}, <span class="name">${esc(shown)}</span>` : part;
+  $("today").textContent = new Date().toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
 }
 
 /** Between polls, the countdown still counts down. */
