@@ -284,7 +284,12 @@ class TestCitations:
         assert citations == []
 
     @pytest.mark.parametrize(
-        "written", ["[S2, S3]", "[S2][S3]", "[S2-S3]", "【S2】【S3】", "[S2; S3]"]
+        "written",
+        [
+            "[S2, S3]", "[S2][S3]", "[S2-S3]", "【S2】【S3】", "[S2; S3]",
+            # A zero-width space inside the brackets, as a real answer had it.
+            "[​S2][​S3]", "[S2,​ S3]",
+        ],
     )
     def test_the_ways_models_write_citations_are_understood(
         self, source, written: str

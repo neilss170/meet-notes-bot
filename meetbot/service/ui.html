@@ -2650,7 +2650,11 @@ function sourceWhere(c, acrossMeetings) {
 /** One question and its answer, each citation a small numbered chip. */
 function turnHtml(turn, index, acrossMeetings, fresh = false) {
   const cites = Array.isArray(turn.citations) ? turn.citations : [];
-  const answer = cites.length ? turn.answer : String(turn.answer || "").replace(/\[\^\d+\]/g, "");
+  // An answer saved before its IDs could be read may still carry them raw
+  // - "[​S66]" - with no source behind them; they are left out.
+  const answer = cites.length ? turn.answer : String(turn.answer || "")
+    .replace(/\[\^\d+\]/g, "")
+    .replace(/[ \t]*[[【][\s​-‍⁠﻿]*S\d+[^\]】\n]*[\]】]/gi, "");
   const html = renderMarkdown(answer);
   return (
     `<div class="turn" data-turn="${index}">` +

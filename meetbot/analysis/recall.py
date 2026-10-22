@@ -592,12 +592,18 @@ class Citation:
         }
 
 
+#: Characters that take no space. Models put them inside the brackets -
+#: "[​S66]" - where ``\s`` does not see them, and a citation written
+#: that way used to reach the page as the raw "[S66]".
+_INVISIBLE = "​‌‍⁠﻿"
+_GAP = rf"[\s{_INVISIBLE}]*"
+
 #: A group of citation IDs as the model writes them: ``[S12]``, ``[S3, S7]``,
 #: ``[S4-S6]``, and the ``【S12】`` form some open-weight models prefer.
 #: Leading spaces and tabs are consumed so "claim [S1]." renders as "claim¹."
 #: - but not newlines, which would join a citation onto the previous line.
 _CITE_GROUP_RE = re.compile(
-    r"[ \t]*[\[【(]\s*(S\d+(?:\s*(?:[,;]|[-–])\s*S?\d+)*)\s*[\]】)]",
+    rf"[ \t{_INVISIBLE}]*[\[【(]{_GAP}(S\d+(?:{_GAP}(?:[,;]|[-–]){_GAP}S?\d+)*){_GAP}[\]】)]",
     re.IGNORECASE,
 )
 _CITE_RANGE_RE = re.compile(r"S?(\d+)\s*[-–]\s*S?(\d+)", re.IGNORECASE)
@@ -607,6 +613,7 @@ _MARKER_RE = re.compile(r"\[\^(\d+)\]")
 
 def _ids_in(group: str) -> list[str]:
     ids: list[str] = []
+    group = re.sub(f"[{_INVISIBLE}]", "", group)
     for part in re.split(r"\s*[,;]\s*", group.strip()):
         span = _CITE_RANGE_RE.fullmatch(part)
         if span:
