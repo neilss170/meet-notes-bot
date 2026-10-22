@@ -31,6 +31,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -52,6 +53,9 @@ MAX_NOTES_CHARS = 200_000
 
 #: Questions kept per conversation. Older turns fall off the front.
 MAX_CHAT_TURNS = 200
+
+#: A task line in a write-up: "- [ ] Write the script - Priya (Friday)".
+_TASK_LINE = re.compile(r"^(\s*[-*]\s+\[)([ xX])(\]\s+)(.*\S)\s*$")
 
 #: Windows will not replace a file that another handle has open - a save
 #: landing at the same moment, a request reading the notes, an indexer or a
@@ -104,6 +108,25 @@ def atomic_write(path: Path, text: str) -> None:
 
 _LOCKS_GUARD = threading.Lock()
 _DIRECTORY_LOCKS: dict[str, threading.RLock] = {}
+
+
+@dataclass(frozen=True)
+class Task:
+    """One action item in a write-up, and the line it is on."""
+
+    line: int
+    text: str
+    done: bool
+
+
+def tasks_in(markdown: str) -> list[Task]:
+    """Every task line in ``markdown``, in order, ticked or not."""
+    found = []
+    for index, line in enumerate(markdown.splitlines()):
+        match = _TASK_LINE.match(line)
+        if match:
+            found.append(Task(index, match.group(4).strip(), match.group(2) != " "))
+    return found
 
 
 def _lock_for(directory: Path) -> threading.RLock:
@@ -261,6 +284,30 @@ class Notepad:
         with _lock_for(self.directory):
             atomic_write(self.enhanced_path, text[:MAX_NOTES_CHARS * 4])
             self.update_meta(edited_lines=kept, enhanced_edited_at=_utc_now_iso())
+
+    def set_task(self, line: int, text: str, done: bool) -> bool:
+        """Tick or untick the task on ``line`` of the write-up.
+
+        ``text`` is what the caller saw on that line. The home page lists
+        tasks from many meetings and may be minutes old; if the write-up has
+        been edited since and the line now says something else, nothing is
+        changed and ``False`` comes back, rather than ticking whatever task
+        moved into that place.
+        """
+        with _lock_for(self.directory):
+            lines = self.read_enhanced().splitlines(keepends=True)
+            if not 0 <= line < len(lines):
+                return False
+            match = _TASK_LINE.match(lines[line].rstrip("\r\n"))
+            if not match or match.group(4).strip() != text.strip():
+                return False
+            was = lines[line].rstrip("\r\n")
+            now = f"{match.group(1)}{'x' if done else ' '}{match.group(3)}{match.group(4)}"
+            lines[line] = now + lines[line][len(was):]
+            # A line the person wrote stays theirs after it is ticked.
+            mine = [now if kept.strip() == was.strip() else kept for kept in self.edited_lines]
+            self.write_edited_enhanced("".join(lines), mine)
+            return True
 
     @property
     def edited_lines(self) -> list[str]:

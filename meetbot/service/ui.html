@@ -728,6 +728,8 @@
 
   .list { margin-top: 36px; }
   .daygroup { font-size: 13px; font-weight: 500; color: var(--faint); padding: 22px 12px 6px; }
+  .list-head { margin: 0 0 2px; padding: 0 12px; font: 400 18px/1.2 var(--serif); letter-spacing: -0.01em; }
+  .list-head + .daygroup { padding-top: 10px; }
   .mtg { min-height: 56px; border-radius: 12px; gap: 14px; transition: background .15s ease; }
   /* A tile per meeting: its initial, in the serif, on a soft paper. */
   .mtg-ic {
@@ -759,6 +761,67 @@
   .homebar button.ask-open::before { content: "\2726"; margin-right: 10px; color: var(--faint); }
   .chip { background: var(--sunk); border-color: transparent; }
   .slash-key { background: var(--raised); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+  /* The week at a glance: three numbers, quiet, in the serif. */
+  .glance {
+    display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 18px;
+    border: 1px solid var(--line); border-radius: 16px; background: var(--raised);
+  }
+  .glance > div { padding: 14px 18px 13px; min-width: 0; }
+  .glance > div + div { border-left: 1px solid var(--line); }
+  .glance b { display: block; font: 400 26px/1.15 var(--serif); color: var(--ink); letter-spacing: -0.01em; }
+  .glance span { font-size: 12.5px; color: var(--faint); white-space: nowrap; }
+
+  /* What is still open, from every write-up: tick it here, or go to it. */
+  .todo {
+    margin-top: 14px; border: 1px solid var(--line); border-radius: 16px;
+    background: var(--raised); padding: 6px 6px 8px;
+  }
+  .todo-head { display: flex; align-items: baseline; gap: 8px; padding: 10px 12px 6px; }
+  .todo-head h2 { margin: 0; font: 400 18px/1.2 var(--serif); letter-spacing: -0.01em; }
+  .todo-head .n { font-size: 12.5px; color: var(--faint); }
+  .todo-row {
+    display: flex; align-items: flex-start; gap: 12px; padding: 8px 12px; border-radius: 10px;
+    transition: opacity .3s ease;
+  }
+  .todo-row:hover { background: var(--hover); }
+  .todo-box {
+    flex: 0 0 18px; height: 18px; margin-top: 2px; border-radius: 6px;
+    border: 1.5px solid var(--line-2); color: var(--bg); font-size: 11px; line-height: 15px;
+    text-align: center; transition: background .15s ease, border-color .15s ease;
+  }
+  .todo-box:hover { border-color: var(--ink-2); }
+  .todo-row.done .todo-box { background: var(--ink); border-color: var(--ink); }
+  .todo-row.done .todo-text { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line-2); }
+  .todo-row.done { opacity: .55; }
+  .todo-main { flex: 1 1 auto; min-width: 0; }
+  .todo-text { font-size: 14.5px; color: var(--ink); line-height: 1.45; }
+  .todo-from {
+    display: block; font-size: 12.5px; color: var(--faint); margin-top: 1px; text-align: left;
+    max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .todo-from:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+  .todo-more { margin: 2px 0 0 42px; font-size: 12.5px; color: var(--ink-2); height: 28px; padding: 0 8px; border-radius: 8px; }
+  .todo-more:hover { background: var(--hover); color: var(--ink); }
+  .todo-empty { padding: 4px 12px 8px; font-size: 13.5px; color: var(--faint); }
+
+  /* Before the first meeting: what Scribe does, in three lines. */
+  .first { margin-top: 34px; padding: 4px 0; }
+  .first h2 { margin: 0 0 4px; font: 400 22px/1.25 var(--serif); }
+  .first p { margin: 0 0 18px; color: var(--faint); font-size: 14px; }
+  .first ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .first li { display: flex; gap: 14px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; }
+  .first li:hover { background: var(--hover); }
+  .first .num {
+    flex: 0 0 26px; height: 26px; border-radius: 8px; background: var(--sunk); color: var(--ink-2);
+    font: 400 15px/26px var(--serif); text-align: center;
+  }
+  .first b { display: block; font-weight: 600; font-size: 14.5px; }
+  .first span { color: var(--ink-2); font-size: 13.5px; }
+  @media (max-width: 640px) {
+    .glance { grid-template-columns: 1fr; }
+    .glance > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  }
 
   /* -- a meeting -------------------------------------------------------- */
   .mtitle h2 { font: 400 36px/1.15 var(--serif); letter-spacing: -0.015em; }
@@ -984,6 +1047,8 @@
             </details>
           </div>
         </section>
+        <section class="glance" id="glance" hidden></section>
+        <section class="todo" id="todo" hidden></section>
         <section class="list" id="meetings"></section>
       </div>
       <div class="homebar">
@@ -1118,6 +1183,8 @@ const state = {
   callBusy: false,
   callLink: null,
   autoStop: { sig: "", cancelled: new Set() },
+  /* Action items open across the write-ups, for the home page. */
+  tasks: { items: [], loaded: false, loading: false, all: false, ticking: new Set(), sig: "" },
 };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
@@ -1387,8 +1454,10 @@ function renderList() {
   state.sig.list = signature;
 
   const host = $("meetings");
+  renderGlance();
+  if (!state.selected) loadTasks();
   if (!state.meetings.length) {
-    host.innerHTML = "";
+    host.innerHTML = FIRST_RUN;
     return;
   }
   if (!shown.length) {
@@ -1396,7 +1465,7 @@ function renderList() {
     return;
   }
 
-  const parts = [];
+  const parts = find ? [] : ['<h2 class="list-head">Meetings</h2>'];
   let group = null;
   for (const job of shown) {
     const bucket = dayGroup(job.created_at);
@@ -1438,6 +1507,153 @@ function tileHtml(job, small = false) {
 
 /** "5:30 PM" with the PM set small, the way a printed timetable has it. */
 const clockHtml = (epoch) => esc(clock(epoch)).replace(/\s*([AaPp]\.?\s?[Mm]\.?)$/, " <small>$1</small>");
+
+/* ----------------------------------------------------------- home: at a glance */
+
+const FIRST_RUN =
+  '<div class="first">' +
+    "<h2>Your meetings will gather here</h2>" +
+    "<p>Nothing recorded yet. Here is how Scribe works.</p>" +
+    "<ol>" +
+      '<li><span class="num">1</span><span><b>Record a meeting</b>' +
+        "<span>Name it above and start - or say yes when Scribe notices a call begin.</span></span></li>" +
+      '<li><span class="num">2</span><span><b>Jot down what matters</b>' +
+        "<span>Type rough notes as you talk. When the call ends Scribe writes them up from the transcript.</span></span></li>" +
+      '<li><span class="num">3</span><span><b>Ask anything later</b>' +
+        "<span>Press Ctrl J to ask across every meeting - each answer links to the moment it came from.</span></span></li>" +
+    "</ol>" +
+  "</div>";
+
+/** Monday 00:00 this week, local time. */
+function weekStart() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime() / 1000;
+}
+
+/** "3h 20m", "45m", "0m". */
+function spoken(seconds) {
+  const m = Math.round((seconds || 0) / 60);
+  return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}` : `${m}m`;
+}
+
+/** This week in three numbers: meetings, time recorded, what is still open. */
+function renderGlance() {
+  const host = $("glance");
+  const since = weekStart();
+  const week = state.meetings.filter((job) => (job.created_at || 0) >= since);
+  const seconds = week.reduce((sum, job) => sum + (job.elapsed_s || 0), 0);
+  const open = state.tasks.loaded ? String(state.tasks.items.length) : "–";
+  host.hidden = !state.meetings.length;
+  const cell = (n, label) => `<div><b>${esc(n)}</b><span>${esc(label)}</span></div>`;
+  host.innerHTML =
+    cell(week.length, week.length === 1 ? "meeting this week" : "meetings this week") +
+    cell(spoken(seconds), "recorded this week") +
+    cell(open, open === "1" ? "action item open" : "action items open");
+}
+
+async function loadTasks() {
+  const t = state.tasks;
+  if (t.loading) return;
+  t.loading = true;
+  try {
+    t.items = (await api("/api/tasks")).tasks || [];
+    t.loaded = true;
+  } catch (error) {
+    if (!String(error.message).includes("signed out")) t.loaded = true;
+  } finally {
+    t.loading = false;
+  }
+  renderTasks();
+  renderGlance();
+}
+
+const TASKS_SHOWN = 5;
+
+function renderTasks() {
+  const host = $("todo");
+  const t = state.tasks;
+  const known = new Set(state.meetings.map((job) => job.id));
+  const items = t.items.filter((task) => known.has(task.meeting_id));
+  const anyWriteUp = state.meetings.some((job) => job.has_enhanced);
+  host.hidden = !t.loaded || !anyWriteUp;
+  if (host.hidden) return;
+  const shown = t.all ? items : items.slice(0, TASKS_SHOWN);
+  const signature = JSON.stringify([shown, items.length, t.all, [...t.ticking]]);
+  if (signature === t.sig) return;
+  t.sig = signature;
+  const key = (task) => `${task.meeting_id}:${task.line}`;
+  host.innerHTML =
+    '<div class="todo-head"><h2>Action items</h2>' +
+      (items.length ? `<span class="n">${items.length} open</span>` : "") + "</div>" +
+    (items.length
+      ? shown.map((task) => {
+          const job = state.meetings.find((j) => j.id === task.meeting_id);
+          const done = t.ticking.has(key(task));
+          return `<div class="todo-row${done ? " done" : ""}" data-key="${esc(key(task))}">` +
+            `<button class="todo-box" type="button" role="checkbox" aria-checked="${done}" ` +
+              `aria-label="Done: ${esc(task.text)}">${done ? "&#10003;" : ""}</button>` +
+            '<div class="todo-main">' +
+              `<div class="todo-text">${esc(task.text)}</div>` +
+              `<button class="todo-from" type="button" data-open="${esc(task.meeting_id)}">` +
+                `${esc(meetingName(job))} &middot; ${esc(dayGroup(job.created_at))}</button>` +
+            "</div></div>";
+        }).join("") +
+        (items.length > TASKS_SHOWN
+          ? `<button class="todo-more" id="todo-more" type="button">${t.all ? "Show fewer" : `Show all ${items.length}`}</button>`
+          : "")
+      : '<div class="todo-empty">Nothing open. Action items from your write-ups land here.</div>');
+}
+
+/** Tick one off. It stays a moment, struck through, then leaves the list. */
+async function tickTask(task) {
+  const t = state.tasks;
+  const key = `${task.meeting_id}:${task.line}`;
+  if (t.ticking.has(key)) return;
+  t.ticking.add(key);
+  renderTasks();
+  try {
+    await api(`/api/meetings/${task.meeting_id}/tasks`, {
+      method: "POST", body: JSON.stringify({ line: task.line, text: task.text, done: true }),
+    });
+    toast("Marked done", { key: "task", timeout: 5000, actions: [{
+      label: "Undo",
+      run: async () => {
+        try {
+          await api(`/api/meetings/${task.meeting_id}/tasks`, {
+            method: "POST", body: JSON.stringify({ line: task.line, text: task.text, done: false }),
+          });
+        } catch (error) { showError(error.message); }
+        loadTasks();
+      },
+    }] });
+    await new Promise((resolve) => setTimeout(resolve, REDUCED.matches ? 0 : 650));
+    t.items = t.items.filter((x) => `${x.meeting_id}:${x.line}` !== key);
+  } catch (error) {
+    showError(error.message);
+    loadTasks();
+  } finally {
+    t.ticking.delete(key);
+    renderTasks();
+    renderGlance();
+  }
+}
+
+function onTodoClick(event) {
+  const open = event.target.closest("[data-open]");
+  if (open) { select(open.dataset.open); return; }
+  if (event.target.closest("#todo-more")) {
+    state.tasks.all = !state.tasks.all;
+    renderTasks();
+    return;
+  }
+  const box = event.target.closest(".todo-box");
+  const row = box && box.closest(".todo-row");
+  if (!row) return;
+  const task = state.tasks.items.find((x) => `${x.meeting_id}:${x.line}` === row.dataset.key);
+  if (task) tickTask(task);
+}
 
 /** A click on a row opens it - except on the name, where it renames. */
 function onListClick(event) {
@@ -3734,6 +3950,7 @@ async function init() {
     if (item) select(item.dataset.id);
   });
   $("meetings").addEventListener("click", onListClick);
+  $("todo").addEventListener("click", onTodoClick);
   $("meetings").addEventListener("keydown", (event) => {
     const row = event.target.closest(".mtg");
     if (row && event.key === "Enter" && event.target === row) select(row.dataset.id);

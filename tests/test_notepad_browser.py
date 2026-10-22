@@ -591,6 +591,78 @@ class TestTheHomeScreen:
                 await browser.close()
 
 
+class TestActionItemsAtHome:
+    """Home gathers the action items still open in every write-up, and one
+    can be ticked off there without opening its meeting."""
+
+    async def test_ticking_one_at_home_writes_it_to_the_meeting(self, served) -> None:
+        from playwright.async_api import async_playwright
+
+        from meetbot.transcript.notes import Notepad
+
+        pad = Notepad(served["dir"])
+        pad.write_enhanced(ENHANCED + "- [ ] Draft the partner email - Neil\n")
+        # The fixture's folder is also found on disk as a past meeting; keep
+        # only the one it set up, so each task is listed once.
+        jobs = served["app"].state.manager._jobs
+        for job_id in [j for j in jobs if j != "browser-test"]:
+            del jobs[job_id]
+        async with async_playwright() as pw:
+            try:
+                browser = await pw.chromium.launch(headless=True)
+            except Exception as exc:  # noqa: BLE001
+                pytest.skip(f"Chromium is not available: {exc}")
+            errors: list[str] = []
+            page = await (await browser.new_context()).new_page()
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            try:
+                await page.goto(f"{served['url']}/login")
+                await page.fill("input[name=username]", "neil")
+                await page.fill("input[name=password]", PASSWORD)
+                await page.click("button[type=submit]")
+                await page.wait_for_selector(".todo-row", timeout=40_000)
+                rows = page.locator(".todo-row")
+                assert await rows.count() == 2
+                assert "2" in await page.locator("#glance").inner_text()
+
+                await rows.nth(0).locator(".todo-box").click()
+                await page.wait_for_function(
+                    "document.querySelectorAll('.todo-row').length === 1", timeout=10_000,
+                )
+                assert "- [x] Write the migration script - Priya (Friday)" in pad.read_enhanced()
+                assert "- [ ] Draft the partner email - Neil" in pad.read_enhanced()
+
+                # The meeting it came from is one click away.
+                await page.click(".todo-from")
+                await page.wait_for_selector("#enhanced", timeout=20_000)
+                assert await page.is_hidden("#home-view")
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+    async def test_nobody_s_first_visit_says_what_scribe_does(self, served) -> None:
+        from playwright.async_api import async_playwright
+
+        served["app"].state.manager._jobs.clear()
+        async with async_playwright() as pw:
+            try:
+                browser = await pw.chromium.launch(headless=True)
+            except Exception as exc:  # noqa: BLE001
+                pytest.skip(f"Chromium is not available: {exc}")
+            page = await (await browser.new_context()).new_page()
+            try:
+                await page.goto(f"{served['url']}/login")
+                await page.fill("input[name=username]", "neil")
+                await page.fill("input[name=password]", PASSWORD)
+                await page.click("button[type=submit]")
+                await page.wait_for_selector(".first", timeout=40_000)
+                assert "Record a meeting" in await page.inner_text(".first")
+                assert await page.is_hidden("#glance")
+                assert await page.is_hidden("#todo")
+            finally:
+                await browser.close()
+
+
 class TestArrivingFromTheIcon:
     """The notification area's "Latest notes" names the meeting to open."""
 

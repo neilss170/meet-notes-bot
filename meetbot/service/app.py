@@ -105,7 +105,7 @@ from meetbot.service.jobs import (
     MicUnavailable,
     load_past_runs,
 )
-from meetbot.transcript.notes import ChatLog, Notepad
+from meetbot.transcript.notes import ChatLog, Notepad, tasks_in
 from meetbot.transcript.format import format_timestamp
 from meetbot.transcript.store import (
     MARK_EVENT,
@@ -207,6 +207,18 @@ class TitleRequest(BaseModel):
     """A new name for a meeting."""
 
     title: str = Field("", description="What to call it from now on")
+
+
+#: How many of the newest write-ups the home page's action items come from.
+TASK_MEETINGS = 30
+
+
+class TaskRequest(BaseModel):
+    """Tick or untick one action item in a meeting's write-up."""
+
+    line: int = Field(..., ge=0, description="The line of the write-up the task is on")
+    text: str = Field(..., min_length=1, max_length=2_000, description="What the line said when read")
+    done: bool = Field(..., description="Ticked or not")
 
 
 class EnhancedRequest(BaseModel):
@@ -1471,6 +1483,43 @@ def create_app(
                 status_code=500, detail=f"Could not save the notes: {exc}"
             ) from exc
         return {"saved": True, "mine": pad.edited_lines}
+
+    @app.get("/api/tasks")
+    async def list_tasks(user: User = Depends(current_user)) -> dict[str, Any]:
+        """The action items still open, across the recent write-ups.
+
+        For the home page. Newest meeting first, each task in the order its
+        write-up has it. Only the most recent meetings are read - each one is
+        a file - and a task from long ago is one nobody is still chasing.
+        """
+        mine = [
+            job for job in manager.visible_to(user.username, user.is_admin)
+            if job.status.is_terminal and job.notepad is not None and job.notepad.has_enhanced
+        ]
+        mine.sort(key=lambda job: job.created_at, reverse=True)
+
+        def read() -> list[dict[str, Any]]:
+            found = []
+            for job in mine[:TASK_MEETINGS]:
+                for task in tasks_in(job.notepad.read_enhanced()):
+                    if not task.done:
+                        found.append({"meeting_id": job.id, "line": task.line, "text": task.text})
+            return found
+
+        return {"tasks": await asyncio.to_thread(read)}
+
+    @app.post("/api/meetings/{job_id}/tasks")
+    async def set_task(
+        job_id: str, request: TaskRequest, user: User = Depends(current_user)
+    ) -> dict[str, Any]:
+        pad = _notepad_of(_visible_job(job_id, user))
+        changed = await asyncio.to_thread(pad.set_task, request.line, request.text, request.done)
+        if not changed:
+            raise HTTPException(
+                status_code=409,
+                detail="That task has changed since the page read it. Refresh and try again.",
+            )
+        return {"saved": True, "done": request.done}
 
     @app.post("/api/meetings/{job_id}/auto-stop/cancel")
     async def keep_recording(

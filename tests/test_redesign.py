@@ -335,3 +335,76 @@ class TestCitationChips:
     def test_the_spaces_models_put_before_markers_are_dropped(self) -> None:
         """Real answers put a narrow no-break space before [^1]."""
         assert r"\u202f" in self._ui()
+
+
+# -- action items on the home page ---------------------------------------------
+
+WRITE_UP = """## Action items
+
+- [ ] Write the migration script - Priya (Friday)
+- [x] Book the review slot
+- [ ] Draft the partner email - Neil
+"""
+
+
+class TestTasks:
+    def test_open_and_done_are_both_found_with_their_lines(self) -> None:
+        from meetbot.transcript.notes import Task, tasks_in
+
+        assert tasks_in(WRITE_UP) == [
+            Task(2, "Write the migration script - Priya (Friday)", False),
+            Task(3, "Book the review slot", True),
+            Task(4, "Draft the partner email - Neil", False),
+        ]
+
+    def test_ticking_changes_that_line_and_nothing_else(self, tmp_path: Path) -> None:
+        pad = Notepad(tmp_path)
+        pad.write_enhanced(WRITE_UP)
+        assert pad.set_task(4, "Draft the partner email - Neil", True)
+        assert pad.read_enhanced() == WRITE_UP.replace("- [ ] Draft", "- [x] Draft")
+
+    def test_a_line_that_says_something_else_now_is_left_alone(self, tmp_path: Path) -> None:
+        pad = Notepad(tmp_path)
+        pad.write_enhanced(WRITE_UP)
+        assert not pad.set_task(2, "Draft the partner email - Neil", True)
+        assert not pad.set_task(99, "Write the migration script - Priya (Friday)", True)
+        assert pad.read_enhanced() == WRITE_UP
+
+    def test_a_task_you_wrote_stays_yours_when_ticked(self, tmp_path: Path) -> None:
+        pad = Notepad(tmp_path)
+        pad.write_enhanced(WRITE_UP)
+        pad.write_edited_enhanced(WRITE_UP, ["- [ ] Draft the partner email - Neil"])
+        pad.set_task(4, "Draft the partner email - Neil", True)
+        assert pad.edited_lines == ["- [x] Draft the partner email - Neil"]
+
+
+def _launch_tasks(client) -> list[dict]:
+    """The fixture's folder is also found on disk as a past meeting; this
+    is the one the test set up."""
+    return [t for t in client.get("/api/tasks").json()["tasks"] if t["meeting_id"] == "launch"]
+
+
+class TestTasksAtHome:
+    def test_only_open_tasks_are_listed_with_their_meeting(self, served) -> None:
+        Notepad(served.app.state.manager.get("launch").output_dir).write_enhanced(WRITE_UP)
+        assert _launch_tasks(served) == [
+            {"meeting_id": "launch", "line": 2, "text": "Write the migration script - Priya (Friday)"},
+            {"meeting_id": "launch", "line": 4, "text": "Draft the partner email - Neil"},
+        ]
+
+    def test_ticking_one_takes_it_off_the_list(self, served) -> None:
+        Notepad(served.app.state.manager.get("launch").output_dir).write_enhanced(WRITE_UP)
+        response = served.post("/api/meetings/launch/tasks",
+                               json={"line": 2, "text": "Write the migration script - Priya (Friday)", "done": True})
+        assert response.status_code == 200
+        assert [t["line"] for t in _launch_tasks(served)] == [4]
+
+    def test_a_stale_tick_is_refused(self, served) -> None:
+        Notepad(served.app.state.manager.get("launch").output_dir).write_enhanced(WRITE_UP)
+        response = served.post("/api/meetings/launch/tasks",
+                               json={"line": 2, "text": "Something it no longer says", "done": True})
+        assert response.status_code == 409
+
+    def test_someone_elses_meeting_is_not_found(self, served) -> None:
+        response = served.post("/api/meetings/nope/tasks", json={"line": 0, "text": "x", "done": True})
+        assert response.status_code == 404
