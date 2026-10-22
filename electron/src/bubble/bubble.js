@@ -15,9 +15,9 @@ const $ = (id) => document.getElementById(id);
 const root = $('root');
 const pill = $('pill');
 
-/** The handle, the gap beside it, and the pill's padding and border - the
-    pill is exactly as wide as what it holds. */
-const PILL_FRAME = 36 + 6 + 10 + 2;
+/** The handle, the gap beside it, and the pill's padding - the pill is
+    exactly as wide as what it holds. */
+const PILL_FRAME = 36 + 6 + 8 + 2;
 const LEVEL_MS = 100;
 const BAR_SHAPE = [0.55, 0.85, 1, 0.8, 0.5];
 const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -65,7 +65,7 @@ function paintState() {
   const record = $('act-record');
   record.classList.toggle('primary', !status.recording);
   record.classList.toggle('stop', status.recording);
-  record.innerHTML = status.recording ? SQUARE : DOT;
+  record.innerHTML = status.recording ? `${SQUARE}<span>Stop</span>` : `${DOT}<span>Record</span>`;
   const recordTip = status.recording ? 'Stop recording (R)' : 'Start recording (R)';
   record.dataset.tip = recordTip;
   record.setAttribute('aria-label', recordTip.replace(/ \(.\)$/, ''));
@@ -73,6 +73,7 @@ function paintState() {
   const mute = $('act-mute');
   mute.hidden = !(status.recording && status.micAvailable);
   mute.innerHTML = status.micMuted ? MIC_OFF : MIC;
+  mute.classList.toggle('on', Boolean(status.micMuted));
   mute.dataset.tip = status.micMuted ? 'Unmute my mic (M)' : 'Mute my mic (M)';
   $('act-mark').hidden = !status.recording;
   // When recording, Stop is the action; nothing else wears the accent.

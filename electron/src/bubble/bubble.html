@@ -5,41 +5,35 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src data:">
 <title>Scribe</title>
 <style>
-  /* The page's recording pill, stood on its end against the screen edge.
-     Tokens are ui.html's: paper, ink, one green; amber for a muted mic. */
+  /* A small dark console against the screen edge: a grip to hold it by, and
+     when it opens, a recessed track of big rounded keys - green to record,
+     red to stop. It is the same dark in a light or dark desktop, so it reads
+     as one object wherever it is parked. Iris is kept for the level bars;
+     amber for a muted mic. */
   :root {
-    color-scheme: light;
-    --raised: #ffffff;
-    --sunk: #ededf2;
-    --line: #e6e6ec;
-    --ink: #0f0f14; --ink-2: #4a4a57; --faint: #9a9aa8;
-    --accent: #6b5cff; --accent-ink: #ffffff;
-    --iris: linear-gradient(115deg, #7b61ff 0%, #4d8dff 48%, #1fc4a8 100%);
-    --amber: #a8701c; --bad: #b4432f;
-    --hover: rgba(31, 30, 27, .06);
-    --focus: color-mix(in srgb, var(--accent) 55%, transparent);
-    --shadow: 0 1px 2px rgba(40, 36, 28, .12), 0 8px 20px -6px rgba(40, 36, 28, .35);
+    color-scheme: dark;
+    --pill: #2a2a2d;
+    --track: #18181a;
+    --key: linear-gradient(180deg, #3d3d41, #303034);
+    --go: linear-gradient(180deg, #34c262, #1f9b46);
+    --stop: linear-gradient(180deg, #e2625f, #c3454a);
+    --warn: linear-gradient(180deg, #f0b04a, #d68f22);
+    --text: #f4f4f6; --text-2: #b9b9c0; --dim: rgba(255, 255, 255, .34);
+    --iris: linear-gradient(115deg, #8f78ff 0%, #5aa2ff 48%, #2fe0bd 100%);
+    --amber: #e9a63c;
+    --hover: rgba(255, 255, 255, .07);
+    --focus: rgba(160, 150, 255, .9);
+    --bevel: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 -1px 0 rgba(0, 0, 0, .25), 0 1px 2px rgba(0, 0, 0, .45);
+    --shadow: 0 1px 1px rgba(0, 0, 0, .25), 0 10px 22px -8px rgba(0, 0, 0, .55);
     --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Inter, sans-serif;
     --m: 12px;      /* room around the pill for its shadow - bubble-window.js knows it too */
     --w: 36px;      /* the pill, collapsed */
     --h: 76px;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color-scheme: dark;
-      --raised: #141419; --sunk: #1f1f27; --line: #2a2a35;
-      --ink: #f3f3f7; --ink-2: #b2b2c0; --faint: #6c6c7a;
-      --accent: #a194ff; --accent-ink: #0b0b0f;
-      --iris: linear-gradient(115deg, #8f78ff 0%, #5aa2ff 48%, #2fe0bd 100%);
-      --amber: #e0a84f; --bad: #e2826f;
-      --hover: rgba(255, 255, 255, .07);
-      --shadow: 0 10px 26px -8px rgba(0, 0, 0, .8);
-    }
-  }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-  body { font: 12.5px/1.3 var(--sans); color: var(--ink); -webkit-user-select: none; user-select: none; }
+  body { font: 12.5px/1.3 var(--sans); color: var(--text); -webkit-user-select: none; user-select: none; }
   button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; padding: 0; }
 
   /* Collapsed it is exactly the handle. It grows away from the screen edge
@@ -47,53 +41,59 @@
   .pill {
     position: absolute; top: var(--m); height: var(--h); width: var(--w);
     display: flex; align-items: center; gap: 6px; border-radius: 999px;
-    background: var(--raised); border: 1px solid var(--line); box-shadow: var(--shadow);
-    transition: width .2s cubic-bezier(.2, .8, .2, 1); overflow: hidden;
+    background: var(--pill); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07), var(--shadow);
+    transition: width .2s cubic-bezier(.2, .8, .2, 1); overflow: clip;
   }
-  .side-right .pill { right: var(--m); flex-direction: row-reverse; padding-left: 10px; }
-  .side-left .pill { left: var(--m); padding-right: 10px; }
-  .open .pill { width: var(--open-w, 240px); border-radius: 22px; }
+  /* Open, a key's tooltip may hang below the pill into the window's margin. */
+  .open .pill { overflow-clip-margin: var(--m); }
+  .side-right .pill { right: var(--m); flex-direction: row-reverse; padding-left: 8px; }
+  .side-left .pill { left: var(--m); padding-right: 8px; }
+  .open .pill { width: var(--open-w, 240px); }
 
-  /* The handle: bars over a small mark. Drag it; click it to go back. */
+  /* The handle: the level bars over a grip. Drag it; click it to go back. */
   .orb {
     position: relative; flex: 0 0 auto; width: calc(var(--w) - 2px); height: calc(var(--h) - 2px);
     border-radius: 999px; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; gap: 9px; touch-action: none; cursor: grab;
+    justify-content: center; gap: 8px; touch-action: none; cursor: grab;
   }
   .orb:hover { background: var(--hover); }
   .orb:active { cursor: grabbing; }
+  .grip { display: grid; grid-template-columns: repeat(2, 3px); gap: 3px; }
+  .grip i { width: 3px; height: 3px; border-radius: 50%; background: var(--dim); }
+  .orb:hover .grip i { background: rgba(255, 255, 255, .55); }
   .mark {
-    width: 14px; height: 14px; background-color: var(--faint);
+    display: none; width: 16px; height: 16px; background: var(--iris);
     -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12.00,10.85 L12.14,10.80 L12.29,10.76 L12.45,10.74 L12.61,10.75 L12.78,10.77 L12.96,10.82 L13.13,10.89 L13.29,10.99 L13.45,11.11 L13.60,11.26 L13.73,11.42 L13.84,11.61 L13.94,11.82 L14.01,12.04 L14.05,12.27 L14.06,12.52 L14.05,12.77 L14.00,13.03 L13.92,13.28 L13.81,13.53 L13.67,13.77 L13.50,14.00 L13.29,14.21 L13.06,14.39 L12.80,14.56 L12.51,14.69 L12.21,14.79 L11.89,14.86 L11.56,14.89 L11.22,14.88 L10.87,14.83 L10.53,14.74 L10.19,14.60 L9.87,14.43 L9.56,14.21 L9.28,13.96 L9.02,13.67 L8.80,13.34 L8.61,12.99 L8.46,12.61 L8.35,12.20 L8.29,11.78 L8.28,11.35 L8.31,10.92 L8.40,10.49 L8.55,10.06 L8.74,9.64 L8.98,9.25 L9.27,8.88 L9.61,8.54 L9.99,8.23 L10.41,7.97 L10.86,7.76 L11.34,7.60 L11.84,7.49 L12.35,7.44 L12.88,7.45 L13.41,7.52 L13.93,7.65 L14.44,7.85 L14.93,8.10 L15.40,8.41 L15.83,8.78 L16.22,9.20 L16.57,9.67 L16.86,10.18 L17.09,10.73 L17.26,11.31 L17.37,11.91 L17.41,12.52 L17.37,13.15 L17.26,13.77 L17.09,14.38 L16.84,14.97 L16.52,15.54 L16.13,16.07 L15.68,16.56 L15.17,17.00 L14.61,17.38 L14.01,17.70 L13.36,17.95 L12.68,18.13 L11.98,18.23 L11.27,18.24 L10.56,18.18 L9.84,18.04 L9.15,17.81 L8.47,17.50 L7.83,17.11 L7.24,16.65 L6.69,16.12 L6.21,15.52 L5.79,14.87 L5.45,14.16 L5.19,13.42 L5.01,12.64 L4.92,11.85 L4.92,11.04 L5.02,10.23 L5.21,9.42 L5.49,8.64 L5.86,7.89 L6.32,7.18 L6.86,6.53 L7.48,5.93 L8.16,5.40 L8.91,4.95 L9.71,4.59 L10.55,4.32 L11.43,4.14 L12.33,4.07 L13.23,4.10 L14.14,4.23 L15.03,4.46 L15.89,4.80 L16.72,5.24 L17.49,5.77 L18.21,6.39 L18.85,7.10 L19.42,7.87 L19.89,8.72 L20.27,9.62 L20.55,10.56 L20.72,11.54 L20.78,12.53 L20.72,13.53 L20.55,14.53 L20.26,15.51 L19.87,16.45 L19.36,17.35' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12.00,10.85 L12.14,10.80 L12.29,10.76 L12.45,10.74 L12.61,10.75 L12.78,10.77 L12.96,10.82 L13.13,10.89 L13.29,10.99 L13.45,11.11 L13.60,11.26 L13.73,11.42 L13.84,11.61 L13.94,11.82 L14.01,12.04 L14.05,12.27 L14.06,12.52 L14.05,12.77 L14.00,13.03 L13.92,13.28 L13.81,13.53 L13.67,13.77 L13.50,14.00 L13.29,14.21 L13.06,14.39 L12.80,14.56 L12.51,14.69 L12.21,14.79 L11.89,14.86 L11.56,14.89 L11.22,14.88 L10.87,14.83 L10.53,14.74 L10.19,14.60 L9.87,14.43 L9.56,14.21 L9.28,13.96 L9.02,13.67 L8.80,13.34 L8.61,12.99 L8.46,12.61 L8.35,12.20 L8.29,11.78 L8.28,11.35 L8.31,10.92 L8.40,10.49 L8.55,10.06 L8.74,9.64 L8.98,9.25 L9.27,8.88 L9.61,8.54 L9.99,8.23 L10.41,7.97 L10.86,7.76 L11.34,7.60 L11.84,7.49 L12.35,7.44 L12.88,7.45 L13.41,7.52 L13.93,7.65 L14.44,7.85 L14.93,8.10 L15.40,8.41 L15.83,8.78 L16.22,9.20 L16.57,9.67 L16.86,10.18 L17.09,10.73 L17.26,11.31 L17.37,11.91 L17.41,12.52 L17.37,13.15 L17.26,13.77 L17.09,14.38 L16.84,14.97 L16.52,15.54 L16.13,16.07 L15.68,16.56 L15.17,17.00 L14.61,17.38 L14.01,17.70 L13.36,17.95 L12.68,18.13 L11.98,18.23 L11.27,18.24 L10.56,18.18 L9.84,18.04 L9.15,17.81 L8.47,17.50 L7.83,17.11 L7.24,16.65 L6.69,16.12 L6.21,15.52 L5.79,14.87 L5.45,14.16 L5.19,13.42 L5.01,12.64 L4.92,11.85 L4.92,11.04 L5.02,10.23 L5.21,9.42 L5.49,8.64 L5.86,7.89 L6.32,7.18 L6.86,6.53 L7.48,5.93 L8.16,5.40 L8.91,4.95 L9.71,4.59 L10.55,4.32 L11.43,4.14 L12.33,4.07 L13.23,4.10 L14.14,4.23 L15.03,4.46 L15.89,4.80 L16.72,5.24 L17.49,5.77 L18.21,6.39 L18.85,7.10 L19.42,7.87 L19.89,8.72 L20.27,9.62 L20.55,10.56 L20.72,11.54 L20.78,12.53 L20.72,13.53 L20.55,14.53 L20.26,15.51 L19.87,16.45 L19.36,17.35' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
   }
-  .recording .mark, .writing.idle .mark { background: var(--iris); }
   .bars { display: flex; align-items: center; gap: 2px; height: 20px; }
   .bars i {
     display: block; width: 2.5px; border-radius: 2px; height: calc(3px + var(--b, .2) * 17px);
-    background: var(--faint); transition: height .1s linear;
+    background: var(--dim); transition: height .1s linear;
   }
   .bars i:nth-child(1) { --b: .25; } .bars i:nth-child(2) { --b: .55; } .bars i:nth-child(3) { --b: .8; }
   .bars i:nth-child(4) { --b: .5; } .bars i:nth-child(5) { --b: .2; }
   .recording:not(.paused) .bars i { background: var(--iris); }
-  /* Recording: the pill wears a soft halo of iris. */
-  .recording:not(.paused) .pill { box-shadow: 0 0 0 1px rgba(123, 97, 255, .35), 0 0 18px -2px rgba(77, 141, 255, .45), var(--shadow); }
+  /* Recording: the console wears a soft halo of iris. */
+  .recording:not(.paused) .pill {
+    box-shadow: inset 0 0 0 1px rgba(143, 120, 255, .45), 0 0 18px -2px rgba(90, 162, 255, .5), var(--shadow);
+  }
   /* Held - starting, wrapping up, about to stop: grey and still. */
   .paused .bars i { --b: .15 !important; transition: none; }
   .idle .bars { display: none; }
-  .idle .mark { width: 18px; height: 18px; }
 
   /* Your mic is muted: an amber badge on the handle. */
   .badge {
-    position: absolute; left: 50%; top: 4px; transform: translateX(-50%); width: 18px; height: 18px;
-    border-radius: 50%; background: var(--amber); color: #fff; display: none; place-items: center;
+    position: absolute; left: 50%; top: 5px; transform: translateX(-50%); width: 18px; height: 18px;
+    border-radius: 50%; background: var(--amber); color: #18181a; display: none; place-items: center;
   }
   .badge svg { width: 11px; height: 11px; }
   .muted .badge { display: grid; }
-  .muted .orb { justify-content: flex-end; padding-bottom: 10px; gap: 7px; }
+  .muted .orb { justify-content: flex-end; padding-bottom: 12px; gap: 7px; }
 
-  /* Writing the notes up: the mark turns. */
-  .writing.idle .mark { background-color: var(--accent); animation: spin 1.6s linear infinite; }
+  /* Writing the notes up: the grip gives way to the mark, turning. */
+  .writing.idle .grip { display: none; }
+  .writing.idle .mark { display: block; animation: spin 1.6s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* A call has started: one nudge out from the edge, then the question. */
@@ -103,38 +103,47 @@
   .pop .pill { animation: pop .22s cubic-bezier(.2, .8, .2, 1) 1; }
   @keyframes pop { from { transform: scale(.85); opacity: .6; } }
 
-  /* What the pill holds when open. Hidden while collapsed, so nothing in it
-     can be tabbed to or clicked through the handle. */
+  /* What the pill holds when open: a recessed track the keys sit in. Hidden
+     while collapsed, so nothing in it can be tabbed to or clicked through
+     the handle. */
   .content {
-    display: flex; align-items: center; gap: 6px; opacity: 0; visibility: hidden;
-    transition: opacity .14s ease; white-space: nowrap;
+    display: flex; align-items: center; gap: 5px; height: 60px; padding: 5px; border-radius: 19px;
+    background: var(--track); box-shadow: inset 0 1px 3px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(0, 0, 0, .35);
+    opacity: 0; visibility: hidden; transition: opacity .14s ease; white-space: nowrap;
   }
   .side-right .content { flex-direction: row-reverse; }
   .open .content { opacity: 1; visibility: visible; transition-delay: .08s; }
   .content > [hidden] { display: none !important; }
 
-  .act {
-    position: relative; width: 32px; height: 32px; border-radius: 10px; flex: 0 0 auto;
-    display: grid; place-items: center; color: var(--ink-2); transition: background .15s ease;
+  /* The keys: big, rounded, lit from above. */
+  .act, .text-btn {
+    position: relative; height: 50px; min-width: 50px; border-radius: 14px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    background: var(--key); color: var(--text); box-shadow: var(--bevel);
+    font: 600 14.5px/1 var(--sans); letter-spacing: .005em;
+    transition: filter .15s ease, transform .1s ease;
   }
-  .act svg { width: 16px; height: 16px; }
-  .act:hover { background: var(--hover); color: var(--ink); }
-  .act.primary { color: #fff; background: var(--iris); }
-  .act.stop { color: var(--bad); }
-  .act.on { color: var(--amber); }
-  .act:focus-visible, .text-btn:focus-visible, .orb:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  .act svg { width: 18px; height: 18px; flex: 0 0 auto; }
+  .act.labelled { padding: 0 20px 0 16px; }
+  .act:hover, .text-btn:hover { filter: brightness(1.12); }
+  .act:active, .text-btn:active { transform: translateY(1px); filter: brightness(.95); }
+  .act.primary, .text-btn.primary { background: var(--go); color: #fff; text-shadow: 0 1px 1px rgba(0, 0, 0, .25); }
+  .act.stop { background: var(--stop); color: #fff; text-shadow: 0 1px 1px rgba(0, 0, 0, .25); }
+  .act.on { background: var(--warn); color: #18181a; }
+  .act:focus-visible, .text-btn:focus-visible, .orb:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   /* Tooltips drawn here: a window that never takes focus cannot rely on the
-     system's. */
+     system's. Below the key, where the window has room for them; above,
+     they would be cut off by its top edge. */
   .act[data-tip]:hover::after, .act[data-tip]:focus-visible::after {
-    content: attr(data-tip); position: absolute; bottom: calc(100% + 2px); left: 50%;
-    transform: translateX(-50%); font-size: 10.5px; padding: 2px 7px; border-radius: 6px;
-    background: var(--ink); color: var(--raised); white-space: nowrap; pointer-events: none;
+    content: attr(data-tip); position: absolute; top: calc(100% + 9px); left: 50%; z-index: 2;
+    transform: translateX(-50%); font: 500 10.5px/1 var(--sans); padding: 4px 8px; border-radius: 999px;
+    background: #111113; color: var(--text); white-space: nowrap; pointer-events: none;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, .1);
   }
-  .clock { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-2); padding: 0 4px; }
-  .say { font-weight: 600; padding: 0 4px; }
-  .hint { color: var(--ink-2); padding: 0 6px; }
-  .text-btn { height: 30px; padding: 0 12px; border-radius: 9px; font-weight: 600; font-size: 12px; background: var(--sunk); }
-  .text-btn.primary { background: var(--iris); color: #fff; }
+  .clock { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; color: var(--text-2); padding: 0 8px 0 10px; }
+  .say { font-weight: 600; font-size: 13px; color: var(--text); padding: 0 8px 0 12px; }
+  .hint { color: var(--text-2); font-size: 12.5px; padding: 0 14px; }
+  .text-btn { padding: 0 18px; }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition-duration: .01ms !important; }
@@ -149,13 +158,14 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M15 9.5V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 5.1 2.1M19 11a7 7 0 0 1-1.1 3.8M5 11a7 7 0 0 0 11.2 5.6M3 3l18 18"/></svg>
       </span>
       <span class="bars" id="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+      <span class="grip" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
       <span class="mark"></span>
     </div>
 
     <div class="content" id="actions">
       <span class="clock" id="clock" hidden></span>
-      <button class="act primary" id="act-record" data-key="r" data-tip="Start recording (R)" aria-label="Start recording">
-        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>
+      <button class="act primary labelled" id="act-record" data-key="r" data-tip="Start recording (R)" aria-label="Start recording">
+        <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg><span>Record</span>
       </button>
       <button class="act" id="act-mute" data-key="m" data-tip="Mute my mic (M)" aria-label="Mute my mic" hidden></button>
       <button class="act" id="act-mark" data-key="k" data-tip="Mark this moment (K)" aria-label="Mark this moment" hidden>
@@ -168,7 +178,7 @@
 
     <div class="content" id="call" hidden>
       <span class="say" id="call-say">Record?</span>
-      <button class="text-btn primary" id="call-yes" data-key="y">Yes</button>
+      <button class="text-btn primary" id="call-yes" data-key="y">Record</button>
       <button class="text-btn" id="call-no" data-key="n">Ignore</button>
     </div>
 
