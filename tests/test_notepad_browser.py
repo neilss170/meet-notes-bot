@@ -399,15 +399,15 @@ class TestFindingAndNamingInTheBrowser:
                 await browser.close()
 
     async def test_a_meeting_is_renamed_from_the_list(self, served) -> None:
-        """The list has no edit buttons: click the name, type, press Enter."""
+        """The list has no edit buttons: double-click the name, type, press
+        Enter. A single click opens the meeting."""
         from meetbot.transcript.store import read_title
         from playwright.async_api import async_playwright
 
         async with async_playwright() as pw:
             browser, page, errors = await _signed_in_page(pw, served)
             try:
-                await page.click("#home")
-                await page.click(".mtg .mtg-name")
+                await page.dblclick(".mtg .mtg-name")
                 await page.fill(".mtg-edit", "Planning, renamed")
                 await page.press(".mtg-edit", "Enter")
                 await page.wait_for_function(
@@ -415,7 +415,6 @@ class TestFindingAndNamingInTheBrowser:
                     "?.textContent.includes('Planning, renamed')",
                     timeout=20_000,
                 )
-                assert await page.is_visible("#home-view"), "renaming opened the meeting"
                 assert read_title(served["dir"] / "transcript.jsonl") == "Planning, renamed"
                 assert not errors, f"the page logged errors: {errors}"
             finally:
@@ -591,11 +590,12 @@ class TestTheHomeScreen:
                 await browser.close()
 
 
-class TestActionItemsAtHome:
-    """Home gathers the action items still open in every write-up, and one
-    can be ticked off there without opening its meeting."""
+class TestTheSidebar:
+    """The sidebar gathers the action items still open in every write-up -
+    one can be ticked off there without opening its meeting - and the
+    meetings. Home holds only the box to start one."""
 
-    async def test_ticking_one_at_home_writes_it_to_the_meeting(self, served) -> None:
+    async def test_ticking_one_in_the_sidebar_writes_it_to_the_meeting(self, served) -> None:
         from playwright.async_api import async_playwright
 
         from meetbot.transcript.notes import Notepad
@@ -623,7 +623,6 @@ class TestActionItemsAtHome:
                 await page.wait_for_selector(".todo-row", timeout=40_000)
                 rows = page.locator(".todo-row")
                 assert await rows.count() == 2
-                assert "2" in await page.locator("#glance").inner_text()
 
                 await rows.nth(0).locator(".todo-box").click()
                 await page.wait_for_function(
@@ -655,9 +654,9 @@ class TestActionItemsAtHome:
                 await page.fill("input[name=username]", "neil")
                 await page.fill("input[name=password]", PASSWORD)
                 await page.click("button[type=submit]")
-                await page.wait_for_selector(".first", timeout=40_000)
-                assert "Record a meeting" in await page.inner_text(".first")
-                assert await page.is_hidden("#glance")
+                await page.wait_for_selector("#first-run", state="visible", timeout=40_000)
+                assert "Record a meeting" in await page.inner_text("#first-run")
+                assert "No meetings yet" in await page.inner_text("#meetings")
                 assert await page.is_hidden("#todo")
             finally:
                 await browser.close()

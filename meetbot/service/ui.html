@@ -669,7 +669,7 @@
   .src { font-size: 11px; color: var(--faint); }
 
   @media (max-width: 860px) {
-    .side { display: none; }
+    .side { width: 220px; flex-basis: 220px; }
     .page, .sheet { padding-left: 20px; padding-right: 20px; }
   }
   /* Somebody who has asked for less movement gets every state still - each
@@ -697,7 +697,6 @@
   .nav-item.on { background: var(--press); box-shadow: none; }
   .nav-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .side-label { padding-top: 2px; }
-  .side-label.gap { margin-top: 14px; }
 
   /* The one button a screen is for: ink, the way a pen is. */
   .btn { border-radius: 10px; }
@@ -713,11 +712,17 @@
   .ok { color: var(--ink-2); }
   .opt input { accent-color: var(--ink); }
 
-  /* -- home ------------------------------------------------------------- */
-  .page { padding-top: 56px; }
-  .hello { margin: 0 0 22px; }
+  /* -- home: one thing on it ------------------------------------------ */
+  /* Home is for starting a meeting and nothing else: the greeting and the
+     box, in the middle of the page. Everything to go back to - the meetings,
+     what is still open - is in the sidebar. */
+  .page {
+    max-width: 640px; min-height: 100vh; display: flex; flex-direction: column;
+    justify-content: center; padding: 40px 32px 160px;
+  }
+  .hello { margin: 0 0 24px; text-align: center; }
   .hello .date { font-size: 13px; color: var(--faint); margin-bottom: 8px; }
-  .page h1#greeting { font: 400 38px/1.15 var(--serif); letter-spacing: -0.015em; margin: 0; }
+  .page h1#greeting { font: 400 40px/1.15 var(--serif); letter-spacing: -0.015em; margin: 0; }
   .start {
     border-radius: 16px; padding: 10px; border: 1px solid var(--line);
     background: var(--raised); box-shadow: 0 1px 2px rgba(40, 32, 12, .04);
@@ -725,34 +730,6 @@
   }
   .start:focus-within { border-color: var(--line-2); box-shadow: var(--shadow); }
   .start-row input { font-size: 16px; }
-
-  .list { margin-top: 36px; }
-  .daygroup { font-size: 13px; font-weight: 500; color: var(--faint); padding: 22px 12px 6px; }
-  .list-head { margin: 0 0 2px; padding: 0 12px; font: 400 18px/1.2 var(--serif); letter-spacing: -0.01em; }
-  .list-head + .daygroup { padding-top: 10px; }
-  .mtg { min-height: 56px; border-radius: 12px; gap: 14px; transition: background .15s ease; }
-  /* A tile per meeting: its initial, in the serif, on a soft paper. */
-  .mtg-ic {
-    width: 32px; height: 32px; border-radius: 9px; font: 400 17px/1 var(--serif);
-    color: var(--tile-ink); background: var(--tile);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tile-ink) 14%, transparent);
-  }
-  .mtg-ic.sm { width: 20px; height: 20px; border-radius: 6px; font-size: 12px; flex: 0 0 auto;
-    display: inline-flex; align-items: center; justify-content: center; }
-  .mtg-ic.t0 { --tile: #fbe3ee; --tile-ink: #a3365f; }
-  .mtg-ic.t1 { --tile: #dfe8fb; --tile-ink: #3756a6; }
-  .mtg-ic.t2 { --tile: #e2f1e4; --tile-ink: #2f7240; }
-  .mtg-ic.t3 { --tile: #fbecd8; --tile-ink: #9a5b12; }
-  .mtg-ic.t4 { --tile: #ebe4fa; --tile-ink: #6343b0; }
-  .mtg-ic.t5 { --tile: #dff0f1; --tile-ink: #2a6f75; }
-  @media (prefers-color-scheme: dark) {
-    .mtg-ic { background: color-mix(in srgb, var(--tile-ink) 30%, var(--raised)); color: color-mix(in srgb, var(--tile) 85%, #fff); }
-  }
-  .mtg-name { font-size: 15px; }
-  .mtg-who { font-size: 13px; }
-  .mtg-time { font-size: 13px; color: var(--faint); }
-  .mtg-time small { font-size: 10.5px; letter-spacing: .04em; }
-  .mtg-state.live { color: var(--iris-1); }
 
   .homebar {
     border-radius: 16px; background: color-mix(in srgb, var(--raised) 92%, transparent);
@@ -762,32 +739,74 @@
   .chip { background: var(--sunk); border-color: transparent; }
   .slash-key { background: var(--raised); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); }
 
-  /* The week at a glance: three numbers, quiet, in the serif. */
-  .glance {
-    display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 18px;
-    border: 1px solid var(--line); border-radius: 16px; background: var(--raised);
+  /* Before the first meeting: what Scribe does, in three lines. */
+  .first { margin-top: 30px; }
+  .first ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .first li { display: flex; gap: 14px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; }
+  .first .num {
+    flex: 0 0 26px; height: 26px; border-radius: 8px; background: var(--sunk); color: var(--ink-2);
+    font: 400 15px/26px var(--serif); text-align: center;
   }
-  .glance > div { padding: 14px 18px 13px; min-width: 0; }
-  .glance > div + div { border-left: 1px solid var(--line); }
-  .glance b { display: block; font: 400 26px/1.15 var(--serif); color: var(--ink); letter-spacing: -0.01em; }
-  .glance span { font-size: 12.5px; color: var(--faint); white-space: nowrap; }
+  .first b { display: block; font-weight: 600; font-size: 14.5px; }
+  .first span { color: var(--ink-2); font-size: 13.5px; }
+
+  /* -- the sidebar: everything to go back to ----------------------------- */
+  .side { width: 264px; flex-basis: 264px; }
+  /* Search and the two places stay put; what is below scrolls. */
+  .side-scroll {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 6px -10px 0; padding: 0 10px 14px;
+  }
+  .side .list-head, .todo-head h2 {
+    margin: 0; padding: 0 10px 4px; font: 500 12px/1.4 var(--sans); color: var(--faint);
+  }
+  .side .list { margin-top: 18px; }
+  .side .daygroup { font-size: 11.5px; font-weight: 500; color: var(--faint); padding: 10px 10px 3px; opacity: .85; }
+  .side .mtg { min-height: 0; padding: 5px 8px; gap: 9px; border-radius: 8px; transition: background .15s ease; }
+  .side .mtg.on { background: var(--press); }
+  /* A tile per meeting: its initial, in the serif, on a soft paper - the
+     same paper every time, so a weekly meeting is known before it is read. */
+  .mtg-ic {
+    width: 22px; height: 22px; border-radius: 6px; font: 400 13px/1 var(--serif);
+    color: var(--tile-ink); background: var(--tile);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tile-ink) 14%, transparent);
+  }
+  .mtg-ic.t0 { --tile: #fbe3ee; --tile-ink: #a3365f; }
+  .mtg-ic.t1 { --tile: #dfe8fb; --tile-ink: #3756a6; }
+  .mtg-ic.t2 { --tile: #e2f1e4; --tile-ink: #2f7240; }
+  .mtg-ic.t3 { --tile: #fbecd8; --tile-ink: #9a5b12; }
+  .mtg-ic.t4 { --tile: #ebe4fa; --tile-ink: #6343b0; }
+  .mtg-ic.t5 { --tile: #dff0f1; --tile-ink: #2a6f75; }
+  @media (prefers-color-scheme: dark) {
+    .mtg-ic { background: color-mix(in srgb, var(--tile-ink) 30%, var(--raised)); color: color-mix(in srgb, var(--tile) 85%, #fff); }
+  }
+  .side .mtg-name { font-size: 13.5px; font-weight: 450; color: var(--ink-2); cursor: pointer; }
+  .side .mtg:hover .mtg-name, .side .mtg.on .mtg-name { color: var(--ink); }
+  .side .mtg.on .mtg-name { font-weight: 550; }
+  .side .mtg-name:hover { box-shadow: none; }
+  .side .mtg-who { display: none; }
+  .side .mtg-edit { font-size: 13.5px; padding: 1px 5px; margin: -2px 0 -2px -6px; width: 100%; }
+  .side .mtg-time { font-size: 11.5px; min-width: 0; }
+  .mtg-time small { font-size: 9.5px; letter-spacing: .04em; }
+  /* Its state says itself without words here: bars, a spinner, or red. */
+  .side .mtg-state { font-size: 0; gap: 0; }
+  .side .mtg-state.bad::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--bad); }
+  .side .mtg-state .bars { height: 12px; gap: 2px; }
+  .side .mtg-state .bars i { width: 2px; height: calc(3px + var(--h, 0) * 9px); }
+  .side .mtg-state .spin { width: 10px; height: 10px; font-size: 12px; }
+  .side .placeholder { padding: 6px 10px; font-size: 12.5px; }
 
   /* What is still open, from every write-up: tick it here, or go to it. */
-  .todo {
-    margin-top: 14px; border: 1px solid var(--line); border-radius: 16px;
-    background: var(--raised); padding: 6px 6px 8px;
-  }
-  .todo-head { display: flex; align-items: baseline; gap: 8px; padding: 10px 12px 6px; }
-  .todo-head h2 { margin: 0; font: 400 18px/1.2 var(--serif); letter-spacing: -0.01em; }
-  .todo-head .n { font-size: 12.5px; color: var(--faint); }
+  .todo { margin-top: 14px; }
+  .todo-head { display: flex; align-items: baseline; }
+  .todo-head .n { margin-left: auto; padding-right: 10px; font-size: 11.5px; color: var(--faint); }
   .todo-row {
-    display: flex; align-items: flex-start; gap: 12px; padding: 8px 12px; border-radius: 10px;
+    display: flex; align-items: flex-start; gap: 9px; padding: 5px 8px; border-radius: 8px;
     transition: opacity .3s ease;
   }
   .todo-row:hover { background: var(--hover); }
   .todo-box {
-    flex: 0 0 18px; height: 18px; margin-top: 2px; border-radius: 6px;
-    border: 1.5px solid var(--line-2); color: var(--bg); font-size: 11px; line-height: 15px;
+    flex: 0 0 15px; height: 15px; margin-top: 2px; border-radius: 5px;
+    border: 1.5px solid var(--line-2); color: var(--bg); font-size: 9.5px; line-height: 12px;
     text-align: center; transition: background .15s ease, border-color .15s ease;
   }
   .todo-box:hover { border-color: var(--ink-2); }
@@ -795,33 +814,18 @@
   .todo-row.done .todo-text { color: var(--faint); text-decoration: line-through; text-decoration-color: var(--line-2); }
   .todo-row.done { opacity: .55; }
   .todo-main { flex: 1 1 auto; min-width: 0; }
-  .todo-text { font-size: 14.5px; color: var(--ink); line-height: 1.45; }
+  .todo-text {
+    font-size: 13px; color: var(--ink); line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
   .todo-from {
-    display: block; font-size: 12.5px; color: var(--faint); margin-top: 1px; text-align: left;
+    display: block; font-size: 11.5px; color: var(--faint); margin-top: 1px; text-align: left;
     max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .todo-from:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
-  .todo-more { margin: 2px 0 0 42px; font-size: 12.5px; color: var(--ink-2); height: 28px; padding: 0 8px; border-radius: 8px; }
+  .todo-more { margin: 0 0 0 30px; font-size: 12px; color: var(--ink-2); height: 24px; padding: 0 6px; border-radius: 6px; }
   .todo-more:hover { background: var(--hover); color: var(--ink); }
-  .todo-empty { padding: 4px 12px 8px; font-size: 13.5px; color: var(--faint); }
-
-  /* Before the first meeting: what Scribe does, in three lines. */
-  .first { margin-top: 34px; padding: 4px 0; }
-  .first h2 { margin: 0 0 4px; font: 400 22px/1.25 var(--serif); }
-  .first p { margin: 0 0 18px; color: var(--faint); font-size: 14px; }
-  .first ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
-  .first li { display: flex; gap: 14px; align-items: flex-start; padding: 10px 12px; border-radius: 12px; }
-  .first li:hover { background: var(--hover); }
-  .first .num {
-    flex: 0 0 26px; height: 26px; border-radius: 8px; background: var(--sunk); color: var(--ink-2);
-    font: 400 15px/26px var(--serif); text-align: center;
-  }
-  .first b { display: block; font-weight: 600; font-size: 14.5px; }
-  .first span { color: var(--ink-2); font-size: 13.5px; }
-  @media (max-width: 640px) {
-    .glance { grid-template-columns: 1fr; }
-    .glance > div + div { border-left: 0; border-top: 1px solid var(--line); }
-  }
+  .todo-empty { padding: 0 10px 2px; font-size: 12.5px; color: var(--faint); }
 
   /* -- a meeting -------------------------------------------------------- */
   .mtitle h2 { font: 400 36px/1.15 var(--serif); letter-spacing: -0.015em; }
@@ -1000,7 +1004,11 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.2A8 8 0 1 1 20 12z"/></svg>
       Chat <kbd>Ctrl J</kbd>
     </button>
-    <div class="side-live" id="side-live"></div>
+    <div class="side-scroll">
+      <div class="side-live" id="side-live"></div>
+      <section class="todo" id="todo" hidden></section>
+      <section class="list" id="meetings"></section>
+    </div>
     <div class="side-foot">
       <span class="whoami" id="me"></span>
       <button class="icon-btn" id="settings-open" type="button" title="Settings" aria-label="Settings">
@@ -1047,9 +1055,16 @@
             </details>
           </div>
         </section>
-        <section class="glance" id="glance" hidden></section>
-        <section class="todo" id="todo" hidden></section>
-        <section class="list" id="meetings"></section>
+        <section class="first" id="first-run" hidden>
+          <ol>
+            <li><span class="num">1</span><span><b>Record a meeting</b>
+              <span>Name it above and start, or say yes when Scribe notices a call begin.</span></span></li>
+            <li><span class="num">2</span><span><b>Jot down what matters</b>
+              <span>Type rough notes as you talk. When the call ends Scribe writes them up from the transcript.</span></span></li>
+            <li><span class="num">3</span><span><b>Ask anything later</b>
+              <span>Press Ctrl J to ask across every meeting. Each answer links to the moment it came from.</span></span></li>
+          </ol>
+        </section>
       </div>
       <div class="homebar">
         <button class="ask-open" id="home-ask" type="button">Ask anything</button>
@@ -1431,6 +1446,7 @@ function showView() {
   $("home-view").hidden = !home;
   $("meeting-view").hidden = home;
   $("nav-home").classList.toggle("on", home);
+  markSelected();
   if (home) closeDrawer();
 }
 
@@ -1447,17 +1463,20 @@ function renderList() {
           .toLowerCase().includes(find))
     : state.meetings;
 
+  // Which row is open is not part of this: it is marked in place, so the
+  // click that opens a meeting does not rebuild the row a double-click to
+  // rename it is still landing on.
   const signature = JSON.stringify([find, shown.map((j) => [
-    j.id, j.status, j.has_enhanced, j.enhancing, meetingName(j), j.attendees, j.id === state.selected,
+    j.id, j.status, j.has_enhanced, j.enhancing, meetingName(j), j.attendees,
   ])]);
   if (signature === state.sig.list || state.renaming) return;
   state.sig.list = signature;
 
   const host = $("meetings");
-  renderGlance();
-  if (!state.selected) loadTasks();
+  $("first-run").hidden = state.meetings.length > 0;
+  loadTasks();
   if (!state.meetings.length) {
-    host.innerHTML = FIRST_RUN;
+    host.innerHTML = '<div class="placeholder">No meetings yet</div>';
     return;
   }
   if (!shown.length) {
@@ -1465,7 +1484,7 @@ function renderList() {
     return;
   }
 
-  const parts = find ? [] : ['<h2 class="list-head">Meetings</h2>'];
+  const parts = ['<h2 class="list-head">Meetings</h2>'];
   let group = null;
   for (const job of shown) {
     const bucket = dayGroup(job.created_at);
@@ -1479,10 +1498,10 @@ function renderList() {
           ? '<span class="mtg-state"><span class="spin"></span>Writing notes</span>'
           : "";
     parts.push(
-      `<div class="mtg${job.id === state.selected ? " on" : ""}" data-id="${esc(job.id)}" role="button" tabindex="0">` +
+      `<div class="mtg" data-id="${esc(job.id)}" role="button" tabindex="0">` +
         tileHtml(job) +
         '<span class="mtg-main">' +
-          `<span class="mtg-name" title="Click to rename">${esc(meetingName(job))}</span>` +
+          `<span class="mtg-name" title="Double-click to rename">${esc(meetingName(job))}</span>` +
           (job.attendees && job.attendees.length
             ? `<span class="mtg-who">${esc(whoLine(job.attendees, 3))}</span>` : "") +
         "</span>" +
@@ -1492,66 +1511,30 @@ function renderList() {
     );
   }
   host.innerHTML = parts.join("");
+  markSelected();
+}
+
+/** The open meeting's row, picked out without rebuilding the list. */
+function markSelected() {
+  document.querySelectorAll("#meetings .mtg").forEach((row) =>
+    row.classList.toggle("on", row.dataset.id === state.selected));
 }
 
 /** A meeting's tile: its first letter on one of six soft papers, the same
     one every time for the same name, so a regular meeting is recognised
     before it is read. */
-function tileHtml(job, small = false) {
+function tileHtml(job) {
   const name = meetingName(job);
   let hash = 0;
   for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
   const letter = (name.match(/[\p{L}\p{N}]/u) || ["·"])[0].toUpperCase();
-  return `<span class="mtg-ic t${hash % 6}${small ? " sm" : ""}" aria-hidden="true">${esc(letter)}</span>`;
+  return `<span class="mtg-ic t${hash % 6}" aria-hidden="true">${esc(letter)}</span>`;
 }
 
 /** "5:30 PM" with the PM set small, the way a printed timetable has it. */
 const clockHtml = (epoch) => esc(clock(epoch)).replace(/\s*([AaPp]\.?\s?[Mm]\.?)$/, " <small>$1</small>");
 
-/* ----------------------------------------------------------- home: at a glance */
-
-const FIRST_RUN =
-  '<div class="first">' +
-    "<h2>Your meetings will gather here</h2>" +
-    "<p>Nothing recorded yet. Here is how Scribe works.</p>" +
-    "<ol>" +
-      '<li><span class="num">1</span><span><b>Record a meeting</b>' +
-        "<span>Name it above and start - or say yes when Scribe notices a call begin.</span></span></li>" +
-      '<li><span class="num">2</span><span><b>Jot down what matters</b>' +
-        "<span>Type rough notes as you talk. When the call ends Scribe writes them up from the transcript.</span></span></li>" +
-      '<li><span class="num">3</span><span><b>Ask anything later</b>' +
-        "<span>Press Ctrl J to ask across every meeting - each answer links to the moment it came from.</span></span></li>" +
-    "</ol>" +
-  "</div>";
-
-/** Monday 00:00 this week, local time. */
-function weekStart() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-  return d.getTime() / 1000;
-}
-
-/** "3h 20m", "45m", "0m". */
-function spoken(seconds) {
-  const m = Math.round((seconds || 0) / 60);
-  return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ""}` : `${m}m`;
-}
-
-/** This week in three numbers: meetings, time recorded, what is still open. */
-function renderGlance() {
-  const host = $("glance");
-  const since = weekStart();
-  const week = state.meetings.filter((job) => (job.created_at || 0) >= since);
-  const seconds = week.reduce((sum, job) => sum + (job.elapsed_s || 0), 0);
-  const open = state.tasks.loaded ? String(state.tasks.items.length) : "–";
-  host.hidden = !state.meetings.length;
-  const cell = (n, label) => `<div><b>${esc(n)}</b><span>${esc(label)}</span></div>`;
-  host.innerHTML =
-    cell(week.length, week.length === 1 ? "meeting this week" : "meetings this week") +
-    cell(spoken(seconds), "recorded this week") +
-    cell(open, open === "1" ? "action item open" : "action items open");
-}
+/* ------------------------------------------------- the sidebar: action items */
 
 async function loadTasks() {
   const t = state.tasks;
@@ -1566,10 +1549,10 @@ async function loadTasks() {
     t.loading = false;
   }
   renderTasks();
-  renderGlance();
 }
 
-const TASKS_SHOWN = 5;
+/* The sidebar is narrow: the newest few, and the rest a click away. */
+const TASKS_SHOWN = 3;
 
 function renderTasks() {
   const host = $("todo");
@@ -1586,7 +1569,7 @@ function renderTasks() {
   const key = (task) => `${task.meeting_id}:${task.line}`;
   host.innerHTML =
     '<div class="todo-head"><h2>Action items</h2>' +
-      (items.length ? `<span class="n">${items.length} open</span>` : "") + "</div>" +
+      (items.length ? `<span class="n">${items.length}</span>` : "") + "</div>" +
     (items.length
       ? shown.map((task) => {
           const job = state.meetings.find((j) => j.id === task.meeting_id);
@@ -1636,7 +1619,6 @@ async function tickTask(task) {
   } finally {
     t.ticking.delete(key);
     renderTasks();
-    renderGlance();
   }
 }
 
@@ -1655,15 +1637,16 @@ function onTodoClick(event) {
   if (task) tickTask(task);
 }
 
-/** A click on a row opens it - except on the name, where it renames. */
+/** A click on a row opens it; a double-click on its name renames it. */
 function onListClick(event) {
   const row = event.target.closest(".mtg");
-  if (!row || state.renaming) return;
-  if (event.target.closest(".mtg-name")) {
-    renameRow(row);
-    return;
-  }
+  if (!row || state.renaming || event.target.closest(".mtg-edit")) return;
   select(row.dataset.id);
+}
+
+function onListDoubleClick(event) {
+  const row = event.target.closest(".mtg");
+  if (row && !state.renaming && event.target.closest(".mtg-name")) renameRow(row);
 }
 
 /** Rename a meeting from the list, in place. */
@@ -1723,20 +1706,14 @@ async function saveTitle(job, wanted, was) {
 /** The recording happening now, in the sidebar, one click from anywhere. */
 function renderSideLive() {
   const live = state.meetings.find(isLive);
-  const recent = state.meetings.filter((job) => !isLive(job)).slice(0, 6);
-  const signature = JSON.stringify([live && [live.id, meetingName(live)], state.selected,
-    recent.map((job) => [job.id, meetingName(job)])]);
+  const signature = live ? `${live.id}:${meetingName(live)}:${live.id === state.selected}` : "";
   if (signature === state.sig.live) return;
   state.sig.live = signature;
-  const item = (job, lead) =>
-    `<button class="nav-item${job.id === state.selected ? " on" : ""}" data-id="${esc(job.id)}" type="button">` +
-      `${lead}<span class="nav-text">${esc(meetingName(job))}</span></button>`;
-  $("side-live").innerHTML =
-    (live ? '<div class="side-label">Now</div>' + item(live, barsHtml()) : "") +
-    (recent.length
-      ? `<div class="side-label${live ? " gap" : ""}">Recent</div>` +
-        recent.map((job) => item(job, tileHtml(job, true))).join("")
-      : "");
+  $("side-live").innerHTML = live
+    ? '<div class="side-label">Now</div>' +
+      `<button class="nav-item${live.id === state.selected ? " on" : ""}" data-id="${esc(live.id)}" type="button">` +
+        `${barsHtml()}<span class="nav-text">${esc(meetingName(live))}</span></button>`
+    : "";
 }
 
 /* ----------------------------------------------------------------- main */
@@ -3950,6 +3927,7 @@ async function init() {
     if (item) select(item.dataset.id);
   });
   $("meetings").addEventListener("click", onListClick);
+  $("meetings").addEventListener("dblclick", onListDoubleClick);
   $("todo").addEventListener("click", onTodoClick);
   $("meetings").addEventListener("keydown", (event) => {
     const row = event.target.closest(".mtg");
