@@ -5,29 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scribe</title>
 <style>
-  /* Ink, air, and one living colour.
+  /* Ink on paper, and one living colour.
 
-     The page stays quiet: near-white (or near-black) space, ink for what you
-     wrote, a cooler grey for what the model added. The one colour is "iris" -
-     violet into blue into teal - and it only ever means *Scribe is doing
-     something*: listening, thinking, writing. It glows at the window's edge
-     while a call is recorded, turns in the mark while it works, and fills the
-     single button a screen is for. Amber is kept for a muted microphone. */
+     The page is warm paper: ink for what you wrote, a softer grey for what
+     the model added, a serif for the few things that are headings. The one
+     colour is "iris" - violet into blue into teal - and it only ever means
+     *Scribe is doing something*: listening, thinking, writing. It glows at
+     the window's edge while a call is recorded and turns in the mark while
+     it works; at rest there is none of it. Amber is kept for a muted
+     microphone. */
   @property --spin { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
   :root {
     color-scheme: light;
-    --bg: #f7f7f9;
-    --side: #f1f1f5;
+    --bg: #fbfaf7;
+    --side: #f4f3ee;
     --raised: #ffffff;
-    --sunk: #ededf2;
-    --ink: #0f0f14;
-    --ink-2: #4a4a57;
-    --ai: #7d7d8c;
-    --faint: #9a9aa8;
-    --line: #e6e6ec;
-    --line-2: #d8d8e1;
-    --hover: rgba(15, 15, 30, .045);
-    --press: rgba(15, 15, 30, .075);
+    --sunk: #f1f0ea;
+    --ink: #1d1c19;
+    --ink-2: #57544d;
+    --ai: #85827a;
+    --faint: #9d998f;
+    --line: #ebe9e2;
+    --line-2: #dcd9d0;
+    --hover: rgba(60, 50, 20, .045);
+    --press: rgba(60, 50, 20, .075);
     --accent: #6b5cff;
     --accent-ink: #ffffff;
     --accent-soft: rgba(107, 92, 255, .09);
@@ -39,29 +40,31 @@
     --amber-soft: #f7ecd8;
     --bad: #c2412d;
     --bad-soft: #fbe6e1;
-    --shadow: 0 1px 2px rgba(15, 15, 40, .05), 0 12px 32px -14px rgba(30, 30, 80, .22);
-    --float: 0 2px 6px rgba(15, 15, 40, .06), 0 30px 80px -24px rgba(40, 30, 120, .35);
+    --shadow: 0 1px 2px rgba(40, 32, 12, .05), 0 10px 28px -14px rgba(40, 32, 12, .18);
+    --float: 0 2px 6px rgba(40, 32, 12, .06), 0 28px 70px -24px rgba(40, 32, 12, .3);
     --focus: color-mix(in srgb, var(--accent) 50%, transparent);
     --radius: 16px;
     --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont,
             Inter, Roboto, "Helvetica Neue", sans-serif;
     --display: "Segoe UI Variable Display", "Segoe UI", -apple-system, BlinkMacSystemFont,
                Inter, Roboto, "Helvetica Neue", sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --askw: 400px;
     --lv: 0;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       color-scheme: dark;
-      --bg: #0b0b0f;
-      --side: #09090c;
-      --raised: #141419;
-      --sunk: #1b1b22;
-      --ink: #f3f3f7;
-      --ink-2: #b2b2c0;
-      --ai: #8b8b9b;
-      --faint: #6c6c7a;
-      --line: #21212a;
-      --line-2: #2d2d38;
+      --bg: #181715;
+      --side: #131211;
+      --raised: #201f1c;
+      --sunk: #272622;
+      --ink: #f1efe9;
+      --ink-2: #bcb8ae;
+      --ai: #908c82;
+      --faint: #77736a;
+      --line: #2b2a26;
+      --line-2: #38362f;
       --hover: rgba(255, 255, 255, .045);
       --press: rgba(255, 255, 255, .075);
       --accent: #a194ff;
@@ -681,96 +684,94 @@
   }
 
   /* ======================================================================
-     The iris layer. Everything above is structure; this is the light.
+     The paper layer. Everything above is structure; this is the finish.
      ====================================================================== */
 
-  /* Air: two faint pools of colour at the top of the page, far behind
-     everything, so the white is lit rather than blank. */
-  body {
-    background:
-      radial-gradient(900px 420px at 18% -12%, color-mix(in srgb, var(--iris-1) 9%, transparent), transparent 70%),
-      radial-gradient(800px 380px at 92% -8%, color-mix(in srgb, var(--iris-3) 7%, transparent), transparent 70%),
-      var(--bg);
-    background-attachment: fixed;
-  }
-  .side { background: color-mix(in srgb, var(--side) 82%, transparent); backdrop-filter: blur(20px); }
+  .side { background: var(--side); border-right-color: var(--line); }
+  .brand { font: 400 19px/1 var(--serif); letter-spacing: -0.01em; }
+  /* The mark is ink at rest, and takes the iris and turns while Scribe works. */
+  .brand .dot { background: var(--ink); transition: background .4s ease; }
+  .app.working .brand .dot { background: var(--iris); }
+  .find { background: var(--raised); border-radius: 10px; border-color: var(--line); }
+  .nav-item { height: 32px; }
+  .nav-item.on { background: var(--press); box-shadow: none; }
+  .nav-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .side-label { padding-top: 2px; }
+  .side-label.gap { margin-top: 14px; }
 
-  /* The mark takes the iris, and turns while Scribe works. */
-  .brand .dot { background: var(--iris); }
-  .brand { font-weight: 650; letter-spacing: -0.02em; }
-
-  /* The one button a screen is for: filled with the iris, lit on hover. */
-  .btn.primary {
-    background: var(--iris); color: #fff; border: 0; position: relative; isolation: isolate;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 8px 22px -10px color-mix(in srgb, var(--iris-1) 70%, transparent);
-    transition: box-shadow .25s ease, transform .15s ease, filter .2s ease;
-  }
-  .btn.primary:hover:not(:disabled) {
-    background: var(--iris); filter: saturate(1.15) brightness(1.04); transform: translateY(-1px);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, .3) inset, 0 14px 30px -10px color-mix(in srgb, var(--iris-2) 75%, transparent);
-  }
-  .btn.primary:active:not(:disabled) { transform: translateY(0); }
-  .rec-dot { background: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, .25); animation: beat 2.4s ease-in-out infinite; }
-  @keyframes beat { 50% { box-shadow: 0 0 0 6px rgba(255, 255, 255, 0); } }
+  /* The one button a screen is for: ink, the way a pen is. */
   .btn { border-radius: 10px; }
+  .btn.primary {
+    background: var(--ink); color: var(--bg); border: 0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
+    transition: background .15s ease, transform .15s ease;
+  }
+  .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 86%, var(--bg)); }
+  .btn.primary:active:not(:disabled) { transform: scale(.98); }
   .btn.quiet { color: var(--ink-2); }
+  .rec-dot { color: #e5484d; opacity: 1; box-shadow: 0 0 0 3px color-mix(in srgb, #e5484d 25%, transparent); }
+  .ok { color: var(--ink-2); }
+  .opt input { accent-color: var(--ink); }
 
   /* -- home ------------------------------------------------------------- */
-  .hello { margin: 18px 0 26px; }
-  .hello .date { font-size: 13px; color: var(--faint); letter-spacing: .01em; margin-bottom: 6px; }
-  .page h1#greeting {
-    font: 650 40px/1.1 var(--display); letter-spacing: -0.035em; margin: 0;
-  }
-  #greeting .name {
-    background: var(--iris); -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  /* The start box: a hairline that becomes a slowly turning ring of iris
-     the moment you go to use it. */
+  .page { padding-top: 56px; }
+  .hello { margin: 0 0 22px; }
+  .hello .date { font-size: 13px; color: var(--faint); margin-bottom: 8px; }
+  .page h1#greeting { font: 400 38px/1.15 var(--serif); letter-spacing: -0.015em; margin: 0; }
   .start {
-    position: relative; border-radius: 18px; padding: 10px; box-shadow: var(--shadow);
-    border: 1px solid var(--line);
+    border-radius: 16px; padding: 10px; border: 1px solid var(--line);
+    background: var(--raised); box-shadow: 0 1px 2px rgba(40, 32, 12, .04);
+    transition: border-color .2s ease, box-shadow .2s ease;
   }
-  .start::before {
-    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px;
-    background: var(--iris-ring); opacity: 0; transition: opacity .35s ease;
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
-    animation: spin 6s linear infinite;
-  }
-  .start::after {
-    content: ""; position: absolute; inset: 8px; border-radius: inherit; z-index: -1;
-    background: var(--iris-ring); filter: blur(26px); opacity: 0; transition: opacity .4s ease;
-    animation: spin 6s linear infinite;
-  }
-  .start:focus-within::before { opacity: 1; }
-  .start:focus-within::after { opacity: .28; }
-  @keyframes spin { to { --spin: 360deg; } }
+  .start:focus-within { border-color: var(--line-2); box-shadow: var(--shadow); }
   .start-row input { font-size: 16px; }
-  .daygroup { font-size: 12px; letter-spacing: .02em; }
-  .mtg { position: relative; border-radius: 12px; transition: background .15s ease; }
-  .mtg::before {
-    content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; border-radius: 2px;
-    background: var(--iris); opacity: 0; transition: opacity .2s ease;
+
+  .list { margin-top: 36px; }
+  .daygroup { font-size: 13px; font-weight: 500; color: var(--faint); padding: 22px 12px 6px; }
+  .mtg { min-height: 56px; border-radius: 12px; gap: 14px; transition: background .15s ease; }
+  /* A tile per meeting: its initial, in the serif, on a soft paper. */
+  .mtg-ic {
+    width: 32px; height: 32px; border-radius: 9px; font: 400 17px/1 var(--serif);
+    color: var(--tile-ink); background: var(--tile);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tile-ink) 14%, transparent);
   }
-  .mtg:hover::before { opacity: 1; }
-  .mtg-ic { background: var(--sunk); border-radius: 9px; }
-  .mtg:hover .mtg-ic { color: var(--accent); }
-  .mtg-state.live { color: var(--accent); }
+  .mtg-ic.sm { width: 20px; height: 20px; border-radius: 6px; font-size: 12px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .mtg-ic.t0 { --tile: #fbe3ee; --tile-ink: #a3365f; }
+  .mtg-ic.t1 { --tile: #dfe8fb; --tile-ink: #3756a6; }
+  .mtg-ic.t2 { --tile: #e2f1e4; --tile-ink: #2f7240; }
+  .mtg-ic.t3 { --tile: #fbecd8; --tile-ink: #9a5b12; }
+  .mtg-ic.t4 { --tile: #ebe4fa; --tile-ink: #6343b0; }
+  .mtg-ic.t5 { --tile: #dff0f1; --tile-ink: #2a6f75; }
+  @media (prefers-color-scheme: dark) {
+    .mtg-ic { background: color-mix(in srgb, var(--tile-ink) 30%, var(--raised)); color: color-mix(in srgb, var(--tile) 85%, #fff); }
+  }
+  .mtg-name { font-size: 15px; }
+  .mtg-who { font-size: 13px; }
+  .mtg-time { font-size: 13px; color: var(--faint); }
+  .mtg-time small { font-size: 10.5px; letter-spacing: .04em; }
+  .mtg-state.live { color: var(--iris-1); }
+
   .homebar {
-    border-radius: 18px; background: color-mix(in srgb, var(--raised) 86%, transparent);
-    backdrop-filter: blur(18px); box-shadow: var(--float);
+    border-radius: 16px; background: color-mix(in srgb, var(--raised) 92%, transparent);
+    backdrop-filter: blur(16px); border: 1px solid var(--line); box-shadow: var(--shadow);
   }
-  .homebar::before {
-    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
-    background: var(--iris); opacity: .35;
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
-  }
-  .homebar button.ask-open::before {
-    content: "\2726"; margin-right: 10px; background: var(--iris); -webkit-background-clip: text;
-    background-clip: text; color: transparent;
-  }
-  .slash-key { background: var(--iris); color: #fff; }
+  .homebar button.ask-open::before { content: "\2726"; margin-right: 10px; color: var(--faint); }
+  .chip { background: var(--sunk); border-color: transparent; }
+  .slash-key { background: var(--raised); color: var(--ink-2); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+  /* -- a meeting -------------------------------------------------------- */
+  .mtitle h2 { font: 400 36px/1.15 var(--serif); letter-spacing: -0.015em; }
+  .title-edit { font: 400 36px/1.15 var(--serif) !important; letter-spacing: -0.015em; }
+  .mode { background: var(--sunk); border-radius: 10px; }
+  .mode button.on { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), 0 0 0 1px var(--line); }
+  .doc .md-h1, .doc .md-h2 { font: 400 21px/1.3 var(--serif); letter-spacing: -0.01em; margin-top: 30px; }
+  .doc .md-h3 { letter-spacing: -0.01em; }
+  .doc li::marker { color: var(--faint); }
+  #enhanced .mine, #enhanced .ink { color: var(--ink); }
+  .doc .md-task .box { color: var(--bg); }
+  .doc .md-task.done .box { background: var(--ink); border-color: var(--ink); }
+  .modal h3 { font: 400 22px/1.3 var(--serif); }
 
   /* -- recording: the edge of the window listens --------------------------- */
   /* A ring of iris around the whole window while a call is recorded. It
@@ -790,12 +791,13 @@
     inset: -12px; padding: 18px; filter: blur(14px);
     opacity: calc(.3 + var(--lv) * .7); transition: opacity .15s linear;
   }
+  @keyframes spin { to { --spin: 360deg; } }
   .app.rec .halo { opacity: .75; }
   @media (prefers-color-scheme: dark) { .app.rec .halo { opacity: .9; } }
 
   /* The pill wears the same light, as an aura that swells with the room. */
   .recpill {
-    border-radius: 999px; background: color-mix(in srgb, var(--raised) 88%, transparent);
+    border-radius: 999px; background: color-mix(in srgb, var(--raised) 90%, transparent);
     backdrop-filter: blur(18px); border: 1px solid var(--line);
   }
   .recpill:not(.done):not(.paused) {
@@ -806,20 +808,21 @@
   .bars i { background: var(--iris); }
   .recpill.paused .bars i, .recpill.done .bars i { background: var(--faint); }
 
-  /* -- the live transcript ------------------------------------------------- */
-  .drawer { background: color-mix(in srgb, var(--raised) 92%, transparent); backdrop-filter: blur(24px); }
-  .main.docked .drawer { background: color-mix(in srgb, var(--raised) 70%, transparent); }
+  /* -- the transcript ------------------------------------------------------ */
+  .drawer { background: var(--raised); }
+  .main.docked .drawer { background: var(--raised); }
   .drawer-title { letter-spacing: -0.01em; }
   .live-line .bubble { border-radius: 18px 18px 18px 6px; background: var(--sunk); }
   .live-line.me .bubble {
-    background: linear-gradient(115deg, color-mix(in srgb, var(--iris-1) 16%, var(--raised)),
-                                        color-mix(in srgb, var(--iris-2) 12%, var(--raised)));
+    background: color-mix(in srgb, var(--iris-1) 10%, var(--raised));
     border-radius: 18px 18px 6px 18px;
   }
+  .live-line.cited .bubble { box-shadow: 0 0 0 2px var(--ink-2); }
+  @keyframes flash { 0%, 35% { background: color-mix(in srgb, var(--ink) 14%, var(--sunk)); } }
   /* Words arrive out of focus and settle - heard, then understood. */
   .w-in { opacity: 0; filter: blur(6px); animation: settle .55s cubic-bezier(.2, .75, .25, 1) forwards; animation-delay: var(--d, 0ms); }
   @keyframes settle { to { opacity: 1; filter: blur(0); } }
-  .tx-foot .dots i { background: var(--accent); opacity: .5; }
+  .tx-foot .dots i { background: var(--iris-1); opacity: .5; }
 
   /* -- thinking ------------------------------------------------------------ */
   .busy .word {
@@ -827,7 +830,7 @@
                 var(--iris-3) 55%, var(--faint) 65%, var(--faint) 100%);
     background-size: 250% 100%; -webkit-background-clip: text; background-clip: text;
   }
-  .busy svg { color: var(--accent); animation: twinkle 1.6s ease-in-out infinite; }
+  .busy svg { color: var(--iris-1); animation: twinkle 1.6s ease-in-out infinite; }
   @keyframes twinkle { 50% { transform: scale(.75) rotate(45deg); opacity: .6; } }
   /* While the notes are written: lines of light where they will appear. */
   .skeleton { display: grid; gap: 12px; margin: 6px 0 26px; }
@@ -845,43 +848,74 @@
   .reveal > * { animation: arrive .6s cubic-bezier(.2, .75, .25, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
   @keyframes arrive { from { opacity: 0; transform: translateY(6px); filter: blur(4px); } }
 
-  /* Your words: ink. The model's: grey - and on hover, a whisper of iris. */
-  .doc li::marker { color: var(--accent); }
-  #enhanced .mine, #enhanced .ink { color: var(--ink); }
-  .doc .md-task.done .box { background: var(--iris); border: 0; }
-  .doc .md-h1, .doc .md-h2, .doc .md-h3 { letter-spacing: -0.02em; }
-
-  /* -- ask --------------------------------------------------------------- */
-  .ask { border-radius: 22px; background: color-mix(in srgb, var(--raised) 88%, transparent); backdrop-filter: blur(28px) saturate(140%); }
-  .ask::before {
-    content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px;
-    background: var(--iris); opacity: .45; pointer-events: none;
-    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-    -webkit-mask-composite: xor; mask-composite: exclude;
+  /* -- ask: a column at the side of the page ----------------------------- */
+  /* Docked, the page moves over to make room, so the notes and the answer
+     are read side by side. On a narrow window it sits over the page. */
+  .ask {
+    top: 0; right: 0; bottom: 0; width: min(var(--askw), 100vw); height: auto;
+    border: 0; border-left: 1px solid var(--line); border-radius: 0;
+    background: var(--bg); box-shadow: none; animation: dock .22s cubic-bezier(.2, .8, .2, 1);
   }
-  .ask-head::before {
-    content: "\2726"; font-size: 15px; margin-right: 4px; background: var(--iris);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
+  @keyframes dock { from { opacity: 0; transform: translateX(16px); } }
+  .app.asking { padding-right: var(--askw); }
+  @media (max-width: 1100px) {
+    .app.asking { padding-right: 0; }
+    .ask { box-shadow: var(--float); }
   }
-  .turn .q { background: var(--iris); color: #fff; border-radius: 18px 18px 6px 18px; }
-  .composer { border-radius: 16px; background: var(--raised); }
-  .composer:focus-within { border-color: transparent; box-shadow: 0 0 0 1.5px var(--accent-line), 0 0 24px -6px color-mix(in srgb, var(--iris-2) 45%, transparent); }
-  .cite { color: var(--accent); }
-  .toast { border-radius: 14px; background: color-mix(in srgb, var(--ink) 92%, transparent); backdrop-filter: blur(16px); }
-
-  /* -- the meeting page ----------------------------------------------------- */
-  .mtitle h2 { font-size: 34px; letter-spacing: -0.035em; }
-  .who-chip { background: var(--sunk); }
-  .mode { background: var(--sunk); border-radius: 10px; }
-  .mode button.on { box-shadow: 0 1px 2px rgba(0, 0, 0, .08), 0 0 0 1px var(--line); }
-  .nav-item.on { background: var(--raised); box-shadow: var(--shadow); }
-  .find { background: var(--raised); border-radius: 10px; }
+  .ask-head { padding: 12px 10px 6px 20px; min-height: 52px; }
+  .ask-title { font: 400 17px/1 var(--serif); color: var(--ink); }
+  .chat-feed { padding: 10px 22px 16px; }
+  .turn { margin-bottom: 28px; }
+  .turn .q {
+    background: var(--sunk); color: var(--ink); border-radius: 14px; padding: 7px 13px;
+    margin-bottom: 14px;
+  }
+  .turn .a { font-size: 14.5px; line-height: 1.7; }
+  .turn .a.doc { color: var(--ink); }
+  .turn .a .md-h1, .turn .a .md-h2 { font: 400 22px/1.25 var(--serif); margin: 6px 0 12px; color: var(--ink); }
+  .turn .a .md-h3, .turn .a .md-h4 { font: 600 15px/1.4 var(--sans); color: var(--ink); margin: 20px 0 6px; }
+  /* A citation: a small grey number in a circle after the sentence it
+     supports. A run of them - [3][4][5] - is one, "3 +2". */
+  .cite {
+    height: 18px; min-width: 18px; padding: 0 5px; border-radius: 999px; margin-left: 4px;
+    font: 600 10.5px/1 var(--sans); color: var(--ink-2); background: var(--sunk);
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+  .cite:hover, .cite.on { background: var(--ink); color: var(--bg); box-shadow: none; }
+  .citecard { border: 1px solid var(--line); border-radius: 16px; }
+  .citecard::before { content: none; }
+  .cc-n { border-radius: 999px; background: var(--ink); color: var(--bg); }
+  .cc-said { background: var(--sunk); }
+  .cc-said::before { background: var(--ink-2); }
+  .cc-open { color: var(--ink); }
+  .cc-open:hover { background: var(--hover); }
+  /* The composer: what you type, and under it what it searches and send. */
+  .chat-foot { padding: 8px 14px 14px; }
+  .composer {
+    flex-direction: column; align-items: stretch; gap: 2px; padding: 8px 8px 8px 14px;
+    border-radius: 16px; background: var(--raised); border: 1px solid var(--line);
+    box-shadow: 0 1px 2px rgba(40, 32, 12, .04);
+  }
+  .composer:focus-within { border-color: var(--line-2); box-shadow: var(--shadow); }
+  .composer-foot { display: flex; align-items: center; gap: 6px; }
+  .scope { display: inline-flex; gap: 2px; margin-left: -8px; }
+  .scope button {
+    height: 26px; padding: 0 8px; border-radius: 7px; font-size: 12.5px; color: var(--faint);
+  }
+  .scope button:hover { color: var(--ink); background: var(--hover); }
+  .scope button.on { color: var(--ink); font-weight: 550; }
+  .composer .send { width: 30px; height: 30px; padding: 0; border-radius: 999px; }
+  /* The narrower column: a template's name keeps to one line, its prompt
+     gives way. */
+  .slash-item { white-space: nowrap; }
+  .slash-item small { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .toast { border-radius: 14px; }
 
   @media (prefers-reduced-motion: reduce) {
-    .halo::before, .halo::after, .start::before, .start::after { animation: none; }
+    .halo::before, .halo::after { animation: none; }
     .w-in { filter: none; }
     .reveal > * { animation: none; }
-    .skeleton i, .rec-dot, .busy svg { animation: none; }
+    .skeleton i, .busy svg { animation: none; }
   }
 </style>
 </head>
@@ -966,10 +1000,7 @@
 
 <div class="ask" id="ask" role="dialog" aria-label="Ask Scribe" hidden>
   <div class="ask-head">
-    <div class="mode" id="ask-scope">
-      <button type="button" data-scope="meeting">This meeting</button>
-      <button type="button" data-scope="all">All meetings</button>
-    </div>
+    <span class="ask-title">Ask</span>
     <span class="grow"></span>
     <button class="btn sm quiet" id="chat-clear" type="button" hidden>Clear</button>
     <button class="icon-btn" id="chat-close" type="button" title="Close" aria-label="Close">&times;</button>
@@ -979,7 +1010,16 @@
     <div class="slash" id="slash" role="listbox" hidden></div>
     <div class="composer">
       <textarea id="chat-input" rows="1" autocomplete="off" placeholder="Ask anything · / for templates"></textarea>
-      <button class="btn primary sm" id="chat-go" type="button">Ask</button>
+      <div class="composer-foot">
+        <div class="scope" id="ask-scope">
+          <button type="button" data-scope="meeting">This meeting</button>
+          <button type="button" data-scope="all">All meetings</button>
+        </div>
+        <span class="grow"></span>
+        <button class="btn primary sm send" id="chat-go" type="button" aria-label="Ask" title="Ask">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5.5 11.5L12 5l6.5 6.5"/></svg>
+        </button>
+      </div>
     </div>
   </div>
 </div>
@@ -1371,19 +1411,33 @@ function renderList() {
           : "";
     parts.push(
       `<div class="mtg${job.id === state.selected ? " on" : ""}" data-id="${esc(job.id)}" role="button" tabindex="0">` +
-        `<span class="mtg-ic">${ICON.doc}</span>` +
+        tileHtml(job) +
         '<span class="mtg-main">' +
           `<span class="mtg-name" title="Click to rename">${esc(meetingName(job))}</span>` +
           (job.attendees && job.attendees.length
             ? `<span class="mtg-who">${esc(whoLine(job.attendees, 3))}</span>` : "") +
         "</span>" +
         stateHtml +
-        `<span class="mtg-time">${esc(clock(job.created_at))}</span>` +
+        `<span class="mtg-time">${clockHtml(job.created_at)}</span>` +
       "</div>"
     );
   }
   host.innerHTML = parts.join("");
 }
+
+/** A meeting's tile: its first letter on one of six soft papers, the same
+    one every time for the same name, so a regular meeting is recognised
+    before it is read. */
+function tileHtml(job, small = false) {
+  const name = meetingName(job);
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
+  const letter = (name.match(/[\p{L}\p{N}]/u) || ["·"])[0].toUpperCase();
+  return `<span class="mtg-ic t${hash % 6}${small ? " sm" : ""}" aria-hidden="true">${esc(letter)}</span>`;
+}
+
+/** "5:30 PM" with the PM set small, the way a printed timetable has it. */
+const clockHtml = (epoch) => esc(clock(epoch)).replace(/\s*([AaPp]\.?\s?[Mm]\.?)$/, " <small>$1</small>");
 
 /** A click on a row opens it - except on the name, where it renames. */
 function onListClick(event) {
@@ -1453,14 +1507,20 @@ async function saveTitle(job, wanted, was) {
 /** The recording happening now, in the sidebar, one click from anywhere. */
 function renderSideLive() {
   const live = state.meetings.find(isLive);
-  const signature = live ? `${live.id}:${meetingName(live)}:${live.id === state.selected}` : "";
+  const recent = state.meetings.filter((job) => !isLive(job)).slice(0, 6);
+  const signature = JSON.stringify([live && [live.id, meetingName(live)], state.selected,
+    recent.map((job) => [job.id, meetingName(job)])]);
   if (signature === state.sig.live) return;
   state.sig.live = signature;
-  $("side-live").innerHTML = live
-    ? '<div class="side-label">Now</div>' +
-      `<button class="nav-item${live.id === state.selected ? " on" : ""}" data-id="${esc(live.id)}" type="button">` +
-        `${barsHtml()}<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(meetingName(live))}</span></button>`
-    : "";
+  const item = (job, lead) =>
+    `<button class="nav-item${job.id === state.selected ? " on" : ""}" data-id="${esc(job.id)}" type="button">` +
+      `${lead}<span class="nav-text">${esc(meetingName(job))}</span></button>`;
+  $("side-live").innerHTML =
+    (live ? '<div class="side-label">Now</div>' + item(live, barsHtml()) : "") +
+    (recent.length
+      ? `<div class="side-label${live ? " gap" : ""}">Recent</div>` +
+        recent.map((job) => item(job, tileHtml(job, true))).join("")
+      : "");
 }
 
 /* ----------------------------------------------------------------- main */
@@ -2336,6 +2396,7 @@ const RECIPES = {
 function openAsk({ focus = true, scope, text } = {}) {
   state.askOpen = true;
   $("ask").hidden = false;
+  $("app").classList.add("asking");
   $("chat-toggle").classList.add("on");
   setScope(scope || (state.selected ? "meeting" : "all"));
   if (!state.chat.loaded) loadChat();
@@ -2348,6 +2409,7 @@ function closeAsk() {
   closeCiteCard();
   state.askOpen = false;
   $("ask").hidden = true;
+  $("app").classList.remove("asking");
   $("chat-toggle").classList.remove("on");
   closeSlash();
 }
