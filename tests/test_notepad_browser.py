@@ -662,6 +662,28 @@ class TestTheSidebar:
                 await browser.close()
 
 
+class TestTheLogo:
+    async def test_the_logo_goes_home_from_anywhere(self, served) -> None:
+        """From a meeting with Ask open and the list searched, the logo is
+        one click back to a clean home page."""
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as pw:
+            browser, page, errors = await _signed_in_page(pw, served)
+            try:
+                await _open_ask(page)
+                assert "Ask Scribe" in await page.inner_text(".ask-title")
+                await page.fill("#mtg-find", "nothing like this")
+                await page.click("#home")
+                await page.wait_for_selector("#home-view", state="visible", timeout=10_000)
+                assert await page.is_hidden("#ask")
+                assert await page.input_value("#mtg-find") == ""
+                assert await page.locator("#meetings .mtg").count() >= 1
+                assert not errors, f"the page logged errors: {errors}"
+            finally:
+                await browser.close()
+
+
 class TestArrivingFromTheIcon:
     """The notification area's "Latest notes" names the meeting to open."""
 

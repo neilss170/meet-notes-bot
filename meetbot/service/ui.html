@@ -123,7 +123,7 @@
   /* The mark: Scribe's spiral, as a mask so it takes the accent. Still at
      rest; it turns slowly only while something is being recorded or
      written up, so the one moving thing on the page means "busy". */
-  .brand .dot {
+  .brand .dot, .ask-mark {
     width: 18px; height: 18px; flex: 0 0 auto; background-color: var(--accent);
     -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12.00,10.85 L12.14,10.80 L12.29,10.76 L12.45,10.74 L12.61,10.75 L12.78,10.77 L12.96,10.82 L13.13,10.89 L13.29,10.99 L13.45,11.11 L13.60,11.26 L13.73,11.42 L13.84,11.61 L13.94,11.82 L14.01,12.04 L14.05,12.27 L14.06,12.52 L14.05,12.77 L14.00,13.03 L13.92,13.28 L13.81,13.53 L13.67,13.77 L13.50,14.00 L13.29,14.21 L13.06,14.39 L12.80,14.56 L12.51,14.69 L12.21,14.79 L11.89,14.86 L11.56,14.89 L11.22,14.88 L10.87,14.83 L10.53,14.74 L10.19,14.60 L9.87,14.43 L9.56,14.21 L9.28,13.96 L9.02,13.67 L8.80,13.34 L8.61,12.99 L8.46,12.61 L8.35,12.20 L8.29,11.78 L8.28,11.35 L8.31,10.92 L8.40,10.49 L8.55,10.06 L8.74,9.64 L8.98,9.25 L9.27,8.88 L9.61,8.54 L9.99,8.23 L10.41,7.97 L10.86,7.76 L11.34,7.60 L11.84,7.49 L12.35,7.44 L12.88,7.45 L13.41,7.52 L13.93,7.65 L14.44,7.85 L14.93,8.10 L15.40,8.41 L15.83,8.78 L16.22,9.20 L16.57,9.67 L16.86,10.18 L17.09,10.73 L17.26,11.31 L17.37,11.91 L17.41,12.52 L17.37,13.15 L17.26,13.77 L17.09,14.38 L16.84,14.97 L16.52,15.54 L16.13,16.07 L15.68,16.56 L15.17,17.00 L14.61,17.38 L14.01,17.70 L13.36,17.95 L12.68,18.13 L11.98,18.23 L11.27,18.24 L10.56,18.18 L9.84,18.04 L9.15,17.81 L8.47,17.50 L7.83,17.11 L7.24,16.65 L6.69,16.12 L6.21,15.52 L5.79,14.87 L5.45,14.16 L5.19,13.42 L5.01,12.64 L4.92,11.85 L4.92,11.04 L5.02,10.23 L5.21,9.42 L5.49,8.64 L5.86,7.89 L6.32,7.18 L6.86,6.53 L7.48,5.93 L8.16,5.40 L8.91,4.95 L9.71,4.59 L10.55,4.32 L11.43,4.14 L12.33,4.07 L13.23,4.10 L14.14,4.23 L15.03,4.46 L15.89,4.80 L16.72,5.24 L17.49,5.77 L18.21,6.39 L18.85,7.10 L19.42,7.87 L19.89,8.72 L20.27,9.62 L20.55,10.56 L20.72,11.54 L20.78,12.53 L20.72,13.53 L20.55,14.53 L20.26,15.51 L19.87,16.45 L19.36,17.35' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12.00,10.85 L12.14,10.80 L12.29,10.76 L12.45,10.74 L12.61,10.75 L12.78,10.77 L12.96,10.82 L13.13,10.89 L13.29,10.99 L13.45,11.11 L13.60,11.26 L13.73,11.42 L13.84,11.61 L13.94,11.82 L14.01,12.04 L14.05,12.27 L14.06,12.52 L14.05,12.77 L14.00,13.03 L13.92,13.28 L13.81,13.53 L13.67,13.77 L13.50,14.00 L13.29,14.21 L13.06,14.39 L12.80,14.56 L12.51,14.69 L12.21,14.79 L11.89,14.86 L11.56,14.89 L11.22,14.88 L10.87,14.83 L10.53,14.74 L10.19,14.60 L9.87,14.43 L9.56,14.21 L9.28,13.96 L9.02,13.67 L8.80,13.34 L8.61,12.99 L8.46,12.61 L8.35,12.20 L8.29,11.78 L8.28,11.35 L8.31,10.92 L8.40,10.49 L8.55,10.06 L8.74,9.64 L8.98,9.25 L9.27,8.88 L9.61,8.54 L9.99,8.23 L10.41,7.97 L10.86,7.76 L11.34,7.60 L11.84,7.49 L12.35,7.44 L12.88,7.45 L13.41,7.52 L13.93,7.65 L14.44,7.85 L14.93,8.10 L15.40,8.41 L15.83,8.78 L16.22,9.20 L16.57,9.67 L16.86,10.18 L17.09,10.73 L17.26,11.31 L17.37,11.91 L17.41,12.52 L17.37,13.15 L17.26,13.77 L17.09,14.38 L16.84,14.97 L16.52,15.54 L16.13,16.07 L15.68,16.56 L15.17,17.00 L14.61,17.38 L14.01,17.70 L13.36,17.95 L12.68,18.13 L11.98,18.23 L11.27,18.24 L10.56,18.18 L9.84,18.04 L9.15,17.81 L8.47,17.50 L7.83,17.11 L7.24,16.65 L6.69,16.12 L6.21,15.52 L5.79,14.87 L5.45,14.16 L5.19,13.42 L5.01,12.64 L4.92,11.85 L4.92,11.04 L5.02,10.23 L5.21,9.42 L5.49,8.64 L5.86,7.89 L6.32,7.18 L6.86,6.53 L7.48,5.93 L8.16,5.40 L8.91,4.95 L9.71,4.59 L10.55,4.32 L11.43,4.14 L12.33,4.07 L13.23,4.10 L14.14,4.23 L15.03,4.46 L15.89,4.80 L16.72,5.24 L17.49,5.77 L18.21,6.39 L18.85,7.10 L19.42,7.87 L19.89,8.72 L20.27,9.62 L20.55,10.56 L20.72,11.54 L20.78,12.53 L20.72,13.53 L20.55,14.53 L20.26,15.51 L19.87,16.45 L19.36,17.35' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
@@ -925,12 +925,18 @@
   }
   @keyframes dock { from { opacity: 0; transform: translateX(16px); } }
   .app.asking { padding-right: var(--askw); }
+  /* With Ask open there is one place to type a question, not two. */
+  .app.asking .homebar { display: none; }
   @media (max-width: 1100px) {
     .app.asking { padding-right: 0; }
     .ask { box-shadow: var(--float); }
   }
   .ask-head { padding: 12px 10px 6px 20px; min-height: 52px; }
-  .ask-title { font: 400 17px/1 var(--serif); color: var(--ink); }
+  .ask-title { display: inline-flex; align-items: center; gap: 9px; font: 400 17px/1 var(--serif); color: var(--ink); }
+  /* Ask's mark is always iris and always turning, slowly - this panel is
+     Scribe listening for a question - and quickens while it answers. */
+  .ask-mark { width: 17px; height: 17px; background: var(--iris); animation: turn 9s linear infinite; }
+  .ask.thinking .ask-mark { animation-duration: 1.4s; }
   .chat-feed { padding: 10px 22px 16px; }
   .turn { margin-bottom: 28px; }
   .turn .q {
@@ -1080,7 +1086,7 @@
 
 <div class="ask" id="ask" role="dialog" aria-label="Ask Scribe" hidden>
   <div class="ask-head">
-    <span class="ask-title">Ask</span>
+    <span class="ask-title"><span class="ask-mark" aria-hidden="true"></span>Ask Scribe</span>
     <span class="grow"></span>
     <button class="btn sm quiet" id="chat-clear" type="button" hidden>Clear</button>
     <button class="icon-btn" id="chat-close" type="button" title="Close" aria-label="Close">&times;</button>
@@ -2695,6 +2701,7 @@ function renderChat(scrollToEnd) {
   };
   feed.onscroll = closeCiteCard;
   $("chat-clear").hidden = !turns.length;
+  $("ask").classList.toggle("thinking", asking);
   $("chat-go").disabled = asking;
   feed.scrollTop = scrollToEnd ? feed.scrollHeight : scroll;
 }
@@ -3862,7 +3869,6 @@ function onKey(event) {
   }
   if (mod && event.key.toLowerCase() === "k") {
     event.preventDefault();
-    goHome();
     $("mtg-find").focus();
     $("mtg-find").select();
     return;
@@ -3920,7 +3926,11 @@ async function init() {
   checkAudio();
   $("admin-open").addEventListener("click", openAdmin);
   $("settings-open").addEventListener("click", openSettings);
-  $("home").addEventListener("click", goHome);
+  $("home").addEventListener("click", () => {
+    if (state.askOpen) closeAsk();
+    if (state.filter) { $("mtg-find").value = ""; state.filter = ""; renderList(); }
+    goHome();
+  });
   $("nav-home").addEventListener("click", goHome);
   $("side-live").addEventListener("click", (event) => {
     const item = event.target.closest("[data-id]");
@@ -3977,7 +3987,6 @@ async function init() {
   const findBox = $("mtg-find");
   findBox.addEventListener("input", () => {
     state.filter = findBox.value;
-    if (state.selected) goHome();
     renderList();
   });
 
