@@ -218,11 +218,12 @@ function run() {
     // this machine starts up; a real first run does.
     if (app.isPackaged && !process.env.SCRIBE_SMOKE) {
       platform.retireSourceInstall(log, DATA_DIR);
-      if (!settings.get('loginItemDefaulted', false)) {
-        // On by default, once: a notetaker that is not running when the
-        // call starts is no use. The tray menu turns it off.
-        setLoginItem(true);
-        settings.set('loginItemDefaulted', true);
+      if (!settings.get('loginItemOffByDefault', false)) {
+        // Off by default: a resident app costs memory all day whether or not
+        // there is a call. Earlier builds turned it on at first run, so this
+        // undoes that once; the tray menu turns it back on.
+        setLoginItem(false);
+        settings.set('loginItemOffByDefault', true);
       }
     }
 

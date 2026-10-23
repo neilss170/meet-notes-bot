@@ -50,7 +50,7 @@ LLM keys are in it the page's readiness banner says what is missing.
   `scribe-server.exe`.
 - **Tray**: hover for status and the clock, click for the window, right-click
   for start/stop, **Mute my mic**, latest notes, folders, *Start Scribe when I
-  sign in* (on by default) and Quit. Red while recording, amber while your mic
+  sign in* (off by default) and Quit. Red while recording, amber while your mic
   is muted. **Ctrl+Alt+M** mutes from anywhere.
 - **"A call started"** arrives as a Windows notification with **Record** and
   **Ignore**.
